@@ -38,8 +38,8 @@ def main() -> int:
     """Validate configuration, then serve until interrupted."""
 
     try:
-        from hermes_cli.config import get_hermes_home
         from hermes_cli.env_loader import load_hermes_dotenv
+        from hermes_constants import get_hermes_home
 
         load_hermes_dotenv(hermes_home=get_hermes_home())
         config = load_private_service_config()
