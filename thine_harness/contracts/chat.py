@@ -25,6 +25,7 @@ class ChatCurrentStatus(ContractDTO[MobileChatCurrentStatusView]):
     """Immutable typed view of a validated chat_current_status payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("chat_event")
@@ -38,6 +39,7 @@ class ChatEvent(
     """Immutable typed view of a validated chat_event payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("chat_reconnect")
@@ -45,6 +47,7 @@ class ChatReconnect(ContractDTO[MobileChatReconnectView]):
     """Immutable typed view of a validated chat_reconnect payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("final_reply_outbox")
@@ -56,6 +59,7 @@ class FinalReplyOutbox(
     """Immutable typed view of a validated final_reply_outbox payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("final_reply_receipt")
@@ -63,6 +67,7 @@ class FinalReplyReceipt(ContractDTO[RuntimeFinalReplyReceiptView]):
     """Immutable typed view of a validated final_reply_receipt payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("mobile_chat_outbox")
@@ -76,6 +81,7 @@ class MobileChatOutbox(
     """Immutable typed view of a validated mobile_chat_outbox payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("p0_submission_outbox")
@@ -89,6 +95,7 @@ class P0SubmissionOutbox(
     """Immutable typed view of a validated p0_submission_outbox payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("queue_receipt")
@@ -96,6 +103,7 @@ class QueueReceipt(ContractDTO[RuntimeQueueReceiptView]):
     """Immutable typed view of a validated queue_receipt payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

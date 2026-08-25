@@ -17,6 +17,7 @@ class StopHookDecision(
     """Immutable typed view of a validated stop_hook_decision payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("working_memory_snapshot")
@@ -24,6 +25,7 @@ class WorkingMemorySnapshot(ContractDTO[RuntimeWorkingMemorySnapshotView]):
     """Immutable typed view of a validated working_memory_snapshot payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

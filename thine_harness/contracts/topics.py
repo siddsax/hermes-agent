@@ -14,6 +14,7 @@ class TopicLifecycle(
     """Immutable typed view of a validated topic_lifecycle payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

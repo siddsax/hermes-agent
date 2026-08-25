@@ -22,6 +22,7 @@ class TranscriptAck(ContractDTO[DataplaneTranscriptAckView]):
     """Immutable typed view of a validated transcript_ack payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("transcript_canonical_lookup")
@@ -29,6 +30,7 @@ class TranscriptCanonicalLookup(ContractDTO[DataplaneTranscriptCanonicalLookupVi
     """Immutable typed view of a validated transcript_canonical_lookup payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("transcript_claim")
@@ -42,6 +44,7 @@ class TranscriptClaim(
     """Immutable typed view of a validated transcript_claim payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("transcript_claim_lookup")
@@ -55,6 +58,7 @@ class TranscriptClaimLookup(
     """Immutable typed view of a validated transcript_claim_lookup payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("transcript_claim_request")
@@ -62,6 +66,7 @@ class TranscriptClaimRequest(ContractDTO[DataplaneTranscriptClaimRequestView]):
     """Immutable typed view of a validated transcript_claim_request payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("transcript_lease_renew_request")
@@ -71,6 +76,7 @@ class TranscriptLeaseRenewRequest(
     """Immutable typed view of a validated transcript_lease_renew_request payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("transcript_lease_renew_result")
@@ -78,6 +84,7 @@ class TranscriptLeaseRenewResult(ContractDTO[DataplaneTranscriptLeaseRenewResult
     """Immutable typed view of a validated transcript_lease_renew_result payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("transcript_reclaim_request")
@@ -85,6 +92,7 @@ class TranscriptReclaimRequest(ContractDTO[DataplaneTranscriptReclaimRequestView
     """Immutable typed view of a validated transcript_reclaim_request payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("transcript_reclaim_result")
@@ -97,6 +105,7 @@ class TranscriptReclaimResult(
     """Immutable typed view of a validated transcript_reclaim_result payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("transcript_release")
@@ -104,6 +113,7 @@ class TranscriptRelease(ContractDTO[DataplaneTranscriptReleaseView]):
     """Immutable typed view of a validated transcript_release payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

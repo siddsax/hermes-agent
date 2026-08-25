@@ -11,6 +11,7 @@ class Schedule(ContractDTO[PolicyScheduleView]):
     """Immutable typed view of a validated schedule payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

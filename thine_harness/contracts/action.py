@@ -24,6 +24,7 @@ class ActionIntent(
     """Immutable typed view of a validated action_intent payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("action_receipt")
@@ -31,6 +32,7 @@ class ActionReceipt(ContractDTO[RuntimeActionReceiptView]):
     """Immutable typed view of a validated action_receipt payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

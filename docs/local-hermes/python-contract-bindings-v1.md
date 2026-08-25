@@ -31,12 +31,17 @@ DTO. It rejects:
 - duplicate object members;
 - non-finite and unsafe-range JSON numbers;
 - unknown major versions, top-level fields, and closed enum values;
-- executable or authoritative data hidden in `extensions`;
+- the frozen pack's reserved executable or authoritative concept keys when
+  hidden in `extensions`;
 - privacy-sensitive field names forbidden by the pack.
 
 A same-major future minor remains decodable only when additions stay within the
 declared inert `extensions` object. DTOs serialize back to JSON without adding
 defaults or translating `snake_case` names.
+
+Other accepted extension members are opaque round-trip data. Contract bindings
+and later runtime implementations must never interpret them as tools, actions,
+routes, prompts, code, or other executable instructions.
 
 `validate_contract_pack()` verifies the vendored hashes and runs all 89
 positive and 62 negative golden cases. This is a consumer conformance check,

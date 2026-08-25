@@ -157,7 +157,103 @@ class RuntimeActionReceiptView(Protocol):
     def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
 
 
-class RuntimeAttemptView(Protocol):
+class RuntimeAttemptVariant1View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def attempt_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def ordinal(self) -> Literal[1]: ...
+
+    @property
+    def cause(self) -> Literal["initial"]: ...
+
+    @property
+    def status(self) -> Literal["running"]: ...
+
+    @property
+    def started_at_ms(self) -> int: ...
+
+    @property
+    def finished_at_ms(self) -> None: ...
+
+    @property
+    def failure_code(self) -> None: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeAttemptVariant2View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def attempt_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def ordinal(self) -> Literal[1]: ...
+
+    @property
+    def cause(self) -> Literal["initial"]: ...
+
+    @property
+    def status(self) -> Literal["succeeded"]: ...
+
+    @property
+    def started_at_ms(self) -> int: ...
+
+    @property
+    def finished_at_ms(self) -> int: ...
+
+    @property
+    def failure_code(self) -> None: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeAttemptVariant3View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def attempt_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def ordinal(self) -> Literal[1]: ...
+
+    @property
+    def cause(self) -> Literal["initial"]: ...
+
+    @property
+    def status(self) -> Literal["failed_fault"]: ...
+
+    @property
+    def started_at_ms(self) -> int: ...
+
+    @property
+    def finished_at_ms(self) -> int: ...
+
+    @property
+    def failure_code(self) -> str: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeAttemptVariant4View(Protocol):
     @property
     def schema_version(self) -> RuntimeVersionView: ...
 
@@ -171,19 +267,83 @@ class RuntimeAttemptView(Protocol):
     def ordinal(self) -> int: ...
 
     @property
-    def cause(self) -> Literal["initial", "fault_retry"]: ...
+    def cause(self) -> Literal["fault_retry"]: ...
 
     @property
-    def status(self) -> Literal["running", "succeeded", "failed_fault"]: ...
+    def status(self) -> Literal["running"]: ...
 
     @property
     def started_at_ms(self) -> int: ...
 
     @property
-    def finished_at_ms(self) -> int | None: ...
+    def finished_at_ms(self) -> None: ...
 
     @property
-    def failure_code(self) -> str | None: ...
+    def failure_code(self) -> None: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeAttemptVariant5View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def attempt_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def ordinal(self) -> int: ...
+
+    @property
+    def cause(self) -> Literal["fault_retry"]: ...
+
+    @property
+    def status(self) -> Literal["succeeded"]: ...
+
+    @property
+    def started_at_ms(self) -> int: ...
+
+    @property
+    def finished_at_ms(self) -> int: ...
+
+    @property
+    def failure_code(self) -> None: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeAttemptVariant6View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def attempt_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def ordinal(self) -> int: ...
+
+    @property
+    def cause(self) -> Literal["fault_retry"]: ...
+
+    @property
+    def status(self) -> Literal["failed_fault"]: ...
+
+    @property
+    def started_at_ms(self) -> int: ...
+
+    @property
+    def finished_at_ms(self) -> int: ...
+
+    @property
+    def failure_code(self) -> str: ...
 
     @property
     def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
@@ -828,7 +988,7 @@ class RuntimeInvocationEventVariant4View(Protocol):
     def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
 
 
-class RuntimeInvocationRequestView(Protocol):
+class RuntimeInvocationRequestVariant10View(Protocol):
     @property
     def schema_version(self) -> RuntimeVersionView: ...
 
@@ -842,14 +1002,10 @@ class RuntimeInvocationRequestView(Protocol):
     def tick_id(self) -> str: ...
 
     @property
-    def mode(self) -> Literal["new", "resumed"]: ...
+    def mode(self) -> Literal["resumed"]: ...
 
     @property
-    def kind(
-        self,
-    ) -> Literal[
-        "p0_user_chat", "p1_transcript", "p1_speaker", "p1_interaction", "p2_scheduled"
-    ]: ...
+    def kind(self) -> Literal["p2_scheduled"]: ...
 
     @property
     def prompt(self) -> str: ...
@@ -864,10 +1020,631 @@ class RuntimeInvocationRequestView(Protocol):
     def source_ref(self) -> RuntimeInvocationReferenceView: ...
 
     @property
-    def resume_token(self) -> str | None: ...
+    def resume_token(self) -> str: ...
 
     @property
-    def checkpoint_id(self) -> str | None: ...
+    def checkpoint_id(self) -> str: ...
+
+    @property
+    def context_messages(
+        self,
+    ) -> tuple[
+        RuntimeContextMessageVariant1View
+        | RuntimeContextMessageVariant2View
+        | RuntimeContextMessageVariant3View,
+        ...,
+    ]: ...
+
+    @property
+    def completed_tool_result_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def successful_action_receipt_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def partial_visible_assistant_output(self) -> str: ...
+
+    @property
+    def input_gap_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def runtime_diagnostics(self) -> RuntimeRuntimeDiagnosticsView: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeInvocationRequestVariant1View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def invocation_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def tick_id(self) -> str: ...
+
+    @property
+    def mode(self) -> Literal["new"]: ...
+
+    @property
+    def kind(self) -> Literal["p0_user_chat"]: ...
+
+    @property
+    def prompt(self) -> str: ...
+
+    @property
+    def prompt_token_count(self) -> int: ...
+
+    @property
+    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def resume_token(self) -> None: ...
+
+    @property
+    def checkpoint_id(self) -> None: ...
+
+    @property
+    def context_messages(
+        self,
+    ) -> tuple[
+        RuntimeContextMessageVariant1View
+        | RuntimeContextMessageVariant2View
+        | RuntimeContextMessageVariant3View,
+        ...,
+    ]: ...
+
+    @property
+    def completed_tool_result_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def successful_action_receipt_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def partial_visible_assistant_output(self) -> str: ...
+
+    @property
+    def input_gap_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def runtime_diagnostics(self) -> RuntimeRuntimeDiagnosticsView: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeInvocationRequestVariant2View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def invocation_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def tick_id(self) -> str: ...
+
+    @property
+    def mode(self) -> Literal["new"]: ...
+
+    @property
+    def kind(self) -> Literal["p1_transcript"]: ...
+
+    @property
+    def prompt(self) -> str: ...
+
+    @property
+    def prompt_token_count(self) -> int: ...
+
+    @property
+    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def resume_token(self) -> None: ...
+
+    @property
+    def checkpoint_id(self) -> None: ...
+
+    @property
+    def context_messages(
+        self,
+    ) -> tuple[
+        RuntimeContextMessageVariant1View
+        | RuntimeContextMessageVariant2View
+        | RuntimeContextMessageVariant3View,
+        ...,
+    ]: ...
+
+    @property
+    def completed_tool_result_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def successful_action_receipt_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def partial_visible_assistant_output(self) -> str: ...
+
+    @property
+    def input_gap_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def runtime_diagnostics(self) -> RuntimeRuntimeDiagnosticsView: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeInvocationRequestVariant3View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def invocation_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def tick_id(self) -> str: ...
+
+    @property
+    def mode(self) -> Literal["new"]: ...
+
+    @property
+    def kind(self) -> Literal["p1_speaker"]: ...
+
+    @property
+    def prompt(self) -> str: ...
+
+    @property
+    def prompt_token_count(self) -> int: ...
+
+    @property
+    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def resume_token(self) -> None: ...
+
+    @property
+    def checkpoint_id(self) -> None: ...
+
+    @property
+    def context_messages(
+        self,
+    ) -> tuple[
+        RuntimeContextMessageVariant1View
+        | RuntimeContextMessageVariant2View
+        | RuntimeContextMessageVariant3View,
+        ...,
+    ]: ...
+
+    @property
+    def completed_tool_result_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def successful_action_receipt_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def partial_visible_assistant_output(self) -> str: ...
+
+    @property
+    def input_gap_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def runtime_diagnostics(self) -> RuntimeRuntimeDiagnosticsView: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeInvocationRequestVariant4View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def invocation_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def tick_id(self) -> str: ...
+
+    @property
+    def mode(self) -> Literal["new"]: ...
+
+    @property
+    def kind(self) -> Literal["p1_interaction"]: ...
+
+    @property
+    def prompt(self) -> str: ...
+
+    @property
+    def prompt_token_count(self) -> int: ...
+
+    @property
+    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def resume_token(self) -> None: ...
+
+    @property
+    def checkpoint_id(self) -> None: ...
+
+    @property
+    def context_messages(
+        self,
+    ) -> tuple[
+        RuntimeContextMessageVariant1View
+        | RuntimeContextMessageVariant2View
+        | RuntimeContextMessageVariant3View,
+        ...,
+    ]: ...
+
+    @property
+    def completed_tool_result_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def successful_action_receipt_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def partial_visible_assistant_output(self) -> str: ...
+
+    @property
+    def input_gap_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def runtime_diagnostics(self) -> RuntimeRuntimeDiagnosticsView: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeInvocationRequestVariant5View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def invocation_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def tick_id(self) -> str: ...
+
+    @property
+    def mode(self) -> Literal["new"]: ...
+
+    @property
+    def kind(self) -> Literal["p2_scheduled"]: ...
+
+    @property
+    def prompt(self) -> str: ...
+
+    @property
+    def prompt_token_count(self) -> int: ...
+
+    @property
+    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def resume_token(self) -> None: ...
+
+    @property
+    def checkpoint_id(self) -> None: ...
+
+    @property
+    def context_messages(
+        self,
+    ) -> tuple[
+        RuntimeContextMessageVariant1View
+        | RuntimeContextMessageVariant2View
+        | RuntimeContextMessageVariant3View,
+        ...,
+    ]: ...
+
+    @property
+    def completed_tool_result_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def successful_action_receipt_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def partial_visible_assistant_output(self) -> str: ...
+
+    @property
+    def input_gap_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def runtime_diagnostics(self) -> RuntimeRuntimeDiagnosticsView: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeInvocationRequestVariant6View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def invocation_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def tick_id(self) -> str: ...
+
+    @property
+    def mode(self) -> Literal["resumed"]: ...
+
+    @property
+    def kind(self) -> Literal["p0_user_chat"]: ...
+
+    @property
+    def prompt(self) -> str: ...
+
+    @property
+    def prompt_token_count(self) -> int: ...
+
+    @property
+    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def resume_token(self) -> str: ...
+
+    @property
+    def checkpoint_id(self) -> str: ...
+
+    @property
+    def context_messages(
+        self,
+    ) -> tuple[
+        RuntimeContextMessageVariant1View
+        | RuntimeContextMessageVariant2View
+        | RuntimeContextMessageVariant3View,
+        ...,
+    ]: ...
+
+    @property
+    def completed_tool_result_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def successful_action_receipt_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def partial_visible_assistant_output(self) -> str: ...
+
+    @property
+    def input_gap_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def runtime_diagnostics(self) -> RuntimeRuntimeDiagnosticsView: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeInvocationRequestVariant7View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def invocation_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def tick_id(self) -> str: ...
+
+    @property
+    def mode(self) -> Literal["resumed"]: ...
+
+    @property
+    def kind(self) -> Literal["p1_transcript"]: ...
+
+    @property
+    def prompt(self) -> str: ...
+
+    @property
+    def prompt_token_count(self) -> int: ...
+
+    @property
+    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def resume_token(self) -> str: ...
+
+    @property
+    def checkpoint_id(self) -> str: ...
+
+    @property
+    def context_messages(
+        self,
+    ) -> tuple[
+        RuntimeContextMessageVariant1View
+        | RuntimeContextMessageVariant2View
+        | RuntimeContextMessageVariant3View,
+        ...,
+    ]: ...
+
+    @property
+    def completed_tool_result_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def successful_action_receipt_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def partial_visible_assistant_output(self) -> str: ...
+
+    @property
+    def input_gap_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def runtime_diagnostics(self) -> RuntimeRuntimeDiagnosticsView: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeInvocationRequestVariant8View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def invocation_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def tick_id(self) -> str: ...
+
+    @property
+    def mode(self) -> Literal["resumed"]: ...
+
+    @property
+    def kind(self) -> Literal["p1_speaker"]: ...
+
+    @property
+    def prompt(self) -> str: ...
+
+    @property
+    def prompt_token_count(self) -> int: ...
+
+    @property
+    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def resume_token(self) -> str: ...
+
+    @property
+    def checkpoint_id(self) -> str: ...
+
+    @property
+    def context_messages(
+        self,
+    ) -> tuple[
+        RuntimeContextMessageVariant1View
+        | RuntimeContextMessageVariant2View
+        | RuntimeContextMessageVariant3View,
+        ...,
+    ]: ...
+
+    @property
+    def completed_tool_result_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def successful_action_receipt_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def partial_visible_assistant_output(self) -> str: ...
+
+    @property
+    def input_gap_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def runtime_diagnostics(self) -> RuntimeRuntimeDiagnosticsView: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeInvocationRequestVariant9View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def invocation_id(self) -> str: ...
+
+    @property
+    def logical_run_id(self) -> str: ...
+
+    @property
+    def tick_id(self) -> str: ...
+
+    @property
+    def mode(self) -> Literal["resumed"]: ...
+
+    @property
+    def kind(self) -> Literal["p1_interaction"]: ...
+
+    @property
+    def prompt(self) -> str: ...
+
+    @property
+    def prompt_token_count(self) -> int: ...
+
+    @property
+    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+
+    @property
+    def resume_token(self) -> str: ...
+
+    @property
+    def checkpoint_id(self) -> str: ...
 
     @property
     def context_messages(
@@ -1172,7 +1949,7 @@ class RuntimeQueueReceiptView(Protocol):
     def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
 
 
-class RuntimeResetCommandView(Protocol):
+class RuntimeResetCommandVariant1View(Protocol):
     @property
     def schema_version(self) -> RuntimeVersionView: ...
 
@@ -1183,28 +1960,157 @@ class RuntimeResetCommandView(Protocol):
     def scope(
         self,
     ) -> Literal[
-        "working_memory_topics",
-        "queues_schedules_receipts",
-        "home_state",
-        "all_hermes_state",
+        "working_memory_topics", "queues_schedules_receipts", "home_state"
     ]: ...
 
     @property
     def confirmed(self) -> bool: ...
 
     @property
-    def confirmed_preferences_revision(self) -> int | None: ...
+    def confirmed_preferences_revision(self) -> None: ...
 
     @property
-    def current_preferences_revision(self) -> int | None: ...
+    def current_preferences_revision(self) -> None: ...
 
     @property
     def explicit_preferences_to_delete(
         self,
-    ) -> tuple[RuntimeRuntimeResetCommandExplicitPreferencesToDeleteItemView, ...]: ...
+    ) -> tuple[
+        RuntimeRuntimeResetCommandVariant1ExplicitPreferencesToDeleteItemView, ...
+    ]: ...
 
     @property
-    def execute(self) -> bool: ...
+    def execute(self) -> Literal[True]: ...
+
+    @property
+    def harness_stopped(self) -> Literal[True]: ...
+
+    @property
+    def live_work_count(self) -> Literal[0]: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeResetCommandVariant2View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def reset_id(self) -> str: ...
+
+    @property
+    def scope(
+        self,
+    ) -> Literal[
+        "working_memory_topics", "queues_schedules_receipts", "home_state"
+    ]: ...
+
+    @property
+    def confirmed(self) -> bool: ...
+
+    @property
+    def confirmed_preferences_revision(self) -> None: ...
+
+    @property
+    def current_preferences_revision(self) -> None: ...
+
+    @property
+    def explicit_preferences_to_delete(
+        self,
+    ) -> tuple[
+        RuntimeRuntimeResetCommandVariant2ExplicitPreferencesToDeleteItemView, ...
+    ]: ...
+
+    @property
+    def execute(self) -> Literal[False]: ...
+
+    @property
+    def harness_stopped(self) -> bool: ...
+
+    @property
+    def live_work_count(self) -> int: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeResetCommandVariant3View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def reset_id(self) -> str: ...
+
+    @property
+    def scope(self) -> Literal["all_hermes_state"]: ...
+
+    @property
+    def confirmed(self) -> Literal[True]: ...
+
+    @property
+    def confirmed_preferences_revision(self) -> int: ...
+
+    @property
+    def current_preferences_revision(self) -> int: ...
+
+    @property
+    def explicit_preferences_to_delete(
+        self,
+    ) -> tuple[
+        RuntimeRuntimeResetCommandVariant3ExplicitPreferencesToDeleteItemView, ...
+    ]: ...
+
+    @property
+    def execute(self) -> Literal[True]: ...
+
+    @property
+    def harness_stopped(self) -> Literal[True]: ...
+
+    @property
+    def live_work_count(self) -> Literal[0]: ...
+
+    @property
+    def requested_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class RuntimeResetCommandVariant4View(Protocol):
+    @property
+    def schema_version(self) -> RuntimeVersionView: ...
+
+    @property
+    def reset_id(self) -> str: ...
+
+    @property
+    def scope(self) -> Literal["all_hermes_state"]: ...
+
+    @property
+    def confirmed(self) -> Literal[True]: ...
+
+    @property
+    def confirmed_preferences_revision(self) -> int: ...
+
+    @property
+    def current_preferences_revision(self) -> int: ...
+
+    @property
+    def explicit_preferences_to_delete(
+        self,
+    ) -> tuple[
+        RuntimeRuntimeResetCommandVariant4ExplicitPreferencesToDeleteItemView, ...
+    ]: ...
+
+    @property
+    def execute(self) -> Literal[False]: ...
 
     @property
     def harness_stopped(self) -> bool: ...
@@ -2576,7 +3482,31 @@ class RuntimeRuntimeQuarantineRecordVariant3ImmutableRangeView(Protocol):
     def last_cursor(self) -> int: ...
 
 
-class RuntimeRuntimeResetCommandExplicitPreferencesToDeleteItemView(Protocol):
+class RuntimeRuntimeResetCommandVariant1ExplicitPreferencesToDeleteItemView(Protocol):
+    @property
+    def key(self) -> Literal["notifications_enabled", "speaker_tag_nudges_enabled"]: ...
+
+    @property
+    def current_value(self) -> bool: ...
+
+
+class RuntimeRuntimeResetCommandVariant2ExplicitPreferencesToDeleteItemView(Protocol):
+    @property
+    def key(self) -> Literal["notifications_enabled", "speaker_tag_nudges_enabled"]: ...
+
+    @property
+    def current_value(self) -> bool: ...
+
+
+class RuntimeRuntimeResetCommandVariant3ExplicitPreferencesToDeleteItemView(Protocol):
+    @property
+    def key(self) -> Literal["notifications_enabled", "speaker_tag_nudges_enabled"]: ...
+
+    @property
+    def current_value(self) -> bool: ...
+
+
+class RuntimeRuntimeResetCommandVariant4ExplicitPreferencesToDeleteItemView(Protocol):
     @property
     def key(self) -> Literal["notifications_enabled", "speaker_tag_nudges_enabled"]: ...
 
@@ -5265,9 +6195,9 @@ class DataplaneSegmentVariant1View(Protocol):
         self,
     ) -> (
         None
-        | DataplaneSpeakerVariant2Variant1View
-        | DataplaneSpeakerVariant2Variant2View
-        | DataplaneSpeakerVariant2Variant3View
+        | DataplaneSpeakerVariant2View
+        | DataplaneSpeakerVariant3View
+        | DataplaneSpeakerVariant4View
     ): ...
 
     @property
@@ -5301,9 +6231,9 @@ class DataplaneSegmentVariant2View(Protocol):
         self,
     ) -> (
         None
-        | DataplaneSpeakerVariant2Variant1View
-        | DataplaneSpeakerVariant2Variant2View
-        | DataplaneSpeakerVariant2Variant3View
+        | DataplaneSpeakerVariant2View
+        | DataplaneSpeakerVariant3View
+        | DataplaneSpeakerVariant4View
     ): ...
 
     @property
@@ -5351,7 +6281,7 @@ class DataplaneVersionView(Protocol):
     def minor(self) -> int: ...
 
 
-class DataplaneSpeakerVariant2Variant1View(Protocol):
+class DataplaneSpeakerVariant2View(Protocol):
     @property
     def source_speaker_id(self) -> str | None: ...
 
@@ -5368,7 +6298,7 @@ class DataplaneSpeakerVariant2Variant1View(Protocol):
     def attribution(self) -> Literal["you"]: ...
 
 
-class DataplaneSpeakerVariant2Variant2View(Protocol):
+class DataplaneSpeakerVariant3View(Protocol):
     @property
     def source_speaker_id(self) -> str | None: ...
 
@@ -5385,7 +6315,7 @@ class DataplaneSpeakerVariant2Variant2View(Protocol):
     def attribution(self) -> Literal["others"]: ...
 
 
-class DataplaneSpeakerVariant2Variant3View(Protocol):
+class DataplaneSpeakerVariant4View(Protocol):
     @property
     def source_speaker_id(self) -> str | None: ...
 

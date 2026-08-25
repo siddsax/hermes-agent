@@ -20,6 +20,7 @@ class NotificationIntent(
     """Immutable typed view of a validated notification_intent payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("notification_outcome")
@@ -33,6 +34,7 @@ class NotificationOutcome(
     """Immutable typed view of a validated notification_outcome payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("notification_permission")
@@ -40,6 +42,7 @@ class NotificationPermission(ContractDTO[MobileNotificationPermissionView]):
     """Immutable typed view of a validated notification_permission payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

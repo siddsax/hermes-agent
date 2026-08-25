@@ -36,14 +36,10 @@ class ViewGenerator:
             return f"Literal[{schema['const']!r}]"
         if "enum" in schema:
             return "Literal[" + ", ".join(repr(value) for value in schema["enum"]) + "]"
-        if "oneOf" in schema:
-            base = {key: value for key, value in schema.items() if key != "oneOf"}
+        if "oneOf" in schema or "allOf" in schema:
             return " | ".join(
-                self.type_for(
-                    _overlay_schema(base, option),
-                    f"{hint}Variant{index}",
-                )
-                for index, option in enumerate(schema["oneOf"], start=1)
+                self.type_for(option, f"{hint}Variant{index}")
+                for index, option in enumerate(self.variants(schema), start=1)
             )
 
         schema_type = schema.get("type")
@@ -86,6 +82,64 @@ class ViewGenerator:
     def target_view(self, target_name: str, schema: dict[str, Any]) -> str:
         return self.type_for(schema, _pascal(target_name))
 
+    def variants(self, schema: dict[str, Any]) -> list[dict[str, Any]]:
+        if "oneOf" in schema:
+            base = {key: value for key, value in schema.items() if key != "oneOf"}
+            return [
+                nested
+                for option in schema["oneOf"]
+                for nested in self.variants(_overlay_schema(base, option))
+            ]
+        if "allOf" in schema:
+            combinations = [
+                {key: value for key, value in schema.items() if key != "allOf"}
+            ]
+            for component in schema["allOf"]:
+                combinations = [
+                    _overlay_schema(current, refinement)
+                    for current in combinations
+                    for refinement in self.variants(component)
+                ]
+            return combinations
+        return [schema]
+
+    def optional_paths(
+        self,
+        schema: dict[str, Any],
+        path: tuple[str, ...] = (),
+    ) -> dict[tuple[str, ...], set[str]]:
+        if "$ref" in schema:
+            reference = schema["$ref"]
+            if not reference.startswith("#/$defs/"):
+                return {}
+            return self.optional_paths(
+                self.document["$defs"][reference.rsplit("/", 1)[-1]], path
+            )
+        if "oneOf" in schema or "allOf" in schema:
+            combined: dict[tuple[str, ...], set[str]] = {}
+            for variant in self.variants(schema):
+                _merge_optional_paths(combined, self.optional_paths(variant, path))
+            return combined
+
+        schema_type = schema.get("type")
+        if schema_type is None and "properties" in schema:
+            schema_type = "object"
+        if schema_type == "array":
+            return self.optional_paths(schema.get("items", {}), (*path, "*"))
+        if schema_type != "object":
+            return {}
+
+        required = set(schema.get("required", []))
+        result: dict[tuple[str, ...], set[str]] = {}
+        for field, child in schema.get("properties", {}).items():
+            if field not in required:
+                result.setdefault(path, set()).add(field)
+            _merge_optional_paths(
+                result,
+                self.optional_paths(child, (*path, field)),
+            )
+        return result
+
     def render(self) -> str:
         rendered: set[str] = set()
         blocks: list[str] = []
@@ -120,6 +174,7 @@ def generate() -> None:
     documents: dict[str, dict[str, Any]] = {}
     generators: dict[str, ViewGenerator] = {}
     target_views: dict[str, str] = {}
+    target_optional_paths: dict[str, dict[tuple[str, ...], set[str]]] = {}
 
     for target_name, pointer in manifest["schema_targets"].items():
         relative, fragment = pointer.split("#", 1)
@@ -134,6 +189,7 @@ def generate() -> None:
         for part in fragment.removeprefix("/").split("/"):
             schema = schema[part]
         target_views[target_name] = generator.target_view(target_name, schema)
+        target_optional_paths[target_name] = generator.optional_paths(schema)
 
     view_blocks = [generator.render() for generator in generators.values()]
     view_source = '''"""Generated immutable structural views for local-Hermes contract v1.
@@ -182,6 +238,7 @@ from ._base import FrozenJSONValue
             "",
         ]
         for target, class_name, view_name in target_rows:
+            optional_literal = _render_optional_paths(target_optional_paths[target])
             body.extend([
                 "",
                 f'@contract_type("{target}")',
@@ -189,6 +246,7 @@ from ._base import FrozenJSONValue
                 f'    """Immutable typed view of a validated {target} payload."""',
                 "",
                 "    __slots__ = ()",
+                f"    _optional_fields = {optional_literal}",
             ])
         exports = ",\n    ".join(f'"{class_name}"' for _, class_name, _ in target_rows)
         body.extend(["", "", "__all__ = [", f"    {exports},", "]", ""])
@@ -216,6 +274,24 @@ def _overlay_schema(base: dict[str, Any], refinement: dict[str, Any]) -> dict[st
         }
         merged["properties"] = {**base_properties, **merged["properties"]}
     return merged
+
+
+def _merge_optional_paths(
+    destination: dict[tuple[str, ...], set[str]],
+    source: dict[tuple[str, ...], set[str]],
+) -> None:
+    for path, fields in source.items():
+        destination.setdefault(path, set()).update(fields)
+
+
+def _render_optional_paths(paths: dict[tuple[str, ...], set[str]]) -> str:
+    if not paths:
+        return "{}"
+    entries = [
+        f"{path!r}: frozenset({tuple(sorted(fields))!r})"
+        for path, fields in sorted(paths.items())
+    ]
+    return "{" + ", ".join(entries) + "}"
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ class HermesControlRequest(
     """Immutable typed view of a validated hermes_control_request payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("hermes_control_response")
@@ -31,6 +32,7 @@ class HermesControlResponse(
     """Immutable typed view of a validated hermes_control_response payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

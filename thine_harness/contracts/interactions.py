@@ -28,6 +28,7 @@ class InteractionBatch(ContractDTO[MobileInteractionBatchView]):
     """Immutable typed view of a validated interaction_batch payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("interaction_cursor_consumption_receipt")
@@ -37,6 +38,7 @@ class InteractionCursorConsumptionReceipt(
     """Immutable typed view of a validated interaction_cursor_consumption_receipt payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("interaction_delivery_ack")
@@ -44,6 +46,7 @@ class InteractionDeliveryAck(ContractDTO[MobileInteractionDeliveryAckView]):
     """Immutable typed view of a validated interaction_delivery_ack payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("interaction_event")
@@ -69,6 +72,7 @@ class InteractionEvent(
     """Immutable typed view of a validated interaction_event payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

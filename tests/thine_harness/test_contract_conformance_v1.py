@@ -6,7 +6,7 @@ import math
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 import tomllib
-from typing import Any, assert_type, cast, get_type_hints
+from typing import Any, Literal, assert_type, cast, get_type_hints
 
 import pytest
 
@@ -18,7 +18,14 @@ from thine_harness.contracts import (
     validate_contract_pack,
 )
 from thine_harness.contracts.tool_metadata import PRODUCT_TOOL_NAMESPACES
-from thine_harness.contracts.runtime import Attempt, Checkpoint, InvocationEvent
+from thine_harness.contracts.home import NavigationIntent
+from thine_harness.contracts.reset import ResetCommand
+from thine_harness.contracts.runtime import (
+    Attempt,
+    Checkpoint,
+    InvocationEvent,
+    InvocationRequest,
+)
 from thine_harness.contracts.ports import (
     ClaimRequestId,
     SpeakerMappingPort,
@@ -120,6 +127,48 @@ def test_union_payload_views_keep_common_and_nested_discriminated_fields():
     assert role in {"system", "user", "assistant", "tool"}
 
 
+def test_all_of_payload_views_preserve_correlated_discriminants():
+    attempt_case = next(
+        case for case in _fixture_cases("valid") if case["target"] == "attempt"
+    )
+    attempt = Attempt.from_dict(attempt_case["payload"])
+    if attempt.payload.cause == "initial":
+        assert_type(attempt.payload.ordinal, Literal[1])
+
+    request_case = next(
+        case
+        for case in _fixture_cases("valid")
+        if case["target"] == "invocation_request"
+    )
+    request = InvocationRequest.from_dict(request_case["payload"])
+    if request.payload.mode == "new":
+        assert_type(request.payload.resume_token, None)
+
+    reset_case = next(
+        case for case in _fixture_cases("valid") if case["target"] == "reset_command"
+    )
+    reset = ResetCommand.from_dict(reset_case["payload"])
+    if reset.payload.execute is True:
+        assert_type(reset.payload.harness_stopped, Literal[True])
+
+
+def test_known_optional_view_fields_are_none_when_omitted_but_typos_still_fail():
+    case = next(
+        case
+        for case in _fixture_cases("valid")
+        if case["target"] == "navigation_intent"
+    )
+    payload = json.loads(json.dumps(case["payload"]))
+    payload["parameters"].pop("message_id")
+    payload["parameters"].pop("open_add_sheet")
+
+    navigation = NavigationIntent.from_dict(payload)
+    assert navigation.payload.parameters.message_id is None
+    assert navigation.payload.parameters.open_add_sheet is None
+    with pytest.raises(AttributeError):
+        getattr(navigation.payload.parameters, "message_ide")
+
+
 def test_every_unchanged_negative_fixture_fails_closed_with_the_frozen_reason():
     for case in _fixture_cases("invalid"):
         with pytest.raises(ContractDecodeError) as error:
@@ -210,9 +259,7 @@ def test_dictionary_boundary_rejects_non_interoperable_numbers(unsafe):
     case = next(case for case in _fixture_cases("valid") if case["target"] == "attempt")
     payload = case["payload"] | {"extensions": {"vendor_counter": unsafe}}
 
-    with pytest.raises(
-        (ContractDecodeError, ValueError), match="non-finite|safe range"
-    ):
+    with pytest.raises(ContractDecodeError, match="non-finite|safe range"):
         importlib.import_module("thine_harness.contracts.runtime").Attempt.from_dict(
             payload
         )

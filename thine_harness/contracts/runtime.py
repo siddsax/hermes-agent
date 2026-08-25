@@ -2,14 +2,28 @@
 
 from ._base import ContractDTO, contract_type
 from ._views_generated import (
-    RuntimeAttemptView,
+    RuntimeAttemptVariant1View,
+    RuntimeAttemptVariant2View,
+    RuntimeAttemptVariant3View,
+    RuntimeAttemptVariant4View,
+    RuntimeAttemptVariant5View,
+    RuntimeAttemptVariant6View,
     RuntimeCheckpointView,
     RuntimeInputReceiptView,
     RuntimeInvocationEventVariant1View,
     RuntimeInvocationEventVariant2View,
     RuntimeInvocationEventVariant3View,
     RuntimeInvocationEventVariant4View,
-    RuntimeInvocationRequestView,
+    RuntimeInvocationRequestVariant10View,
+    RuntimeInvocationRequestVariant1View,
+    RuntimeInvocationRequestVariant2View,
+    RuntimeInvocationRequestVariant3View,
+    RuntimeInvocationRequestVariant4View,
+    RuntimeInvocationRequestVariant5View,
+    RuntimeInvocationRequestVariant6View,
+    RuntimeInvocationRequestVariant7View,
+    RuntimeInvocationRequestVariant8View,
+    RuntimeInvocationRequestVariant9View,
     RuntimeRunFinalizationVariant1View,
     RuntimeRunFinalizationVariant2View,
     RuntimeRunFinalizationVariant3View,
@@ -31,10 +45,20 @@ from ._views_generated import (
 
 
 @contract_type("attempt")
-class Attempt(ContractDTO[RuntimeAttemptView]):
+class Attempt(
+    ContractDTO[
+        RuntimeAttemptVariant1View
+        | RuntimeAttemptVariant2View
+        | RuntimeAttemptVariant3View
+        | RuntimeAttemptVariant4View
+        | RuntimeAttemptVariant5View
+        | RuntimeAttemptVariant6View
+    ]
+):
     """Immutable typed view of a validated attempt payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("checkpoint")
@@ -42,6 +66,7 @@ class Checkpoint(ContractDTO[RuntimeCheckpointView]):
     """Immutable typed view of a validated checkpoint payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("input_receipt")
@@ -49,6 +74,7 @@ class InputReceipt(ContractDTO[RuntimeInputReceiptView]):
     """Immutable typed view of a validated input_receipt payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("invocation_event")
@@ -63,13 +89,28 @@ class InvocationEvent(
     """Immutable typed view of a validated invocation_event payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("invocation_request")
-class InvocationRequest(ContractDTO[RuntimeInvocationRequestView]):
+class InvocationRequest(
+    ContractDTO[
+        RuntimeInvocationRequestVariant1View
+        | RuntimeInvocationRequestVariant2View
+        | RuntimeInvocationRequestVariant3View
+        | RuntimeInvocationRequestVariant4View
+        | RuntimeInvocationRequestVariant5View
+        | RuntimeInvocationRequestVariant6View
+        | RuntimeInvocationRequestVariant7View
+        | RuntimeInvocationRequestVariant8View
+        | RuntimeInvocationRequestVariant9View
+        | RuntimeInvocationRequestVariant10View
+    ]
+):
     """Immutable typed view of a validated invocation_request payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("run_finalization")
@@ -88,6 +129,7 @@ class RunFinalization(
     """Immutable typed view of a validated run_finalization payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("run_receipt")
@@ -97,6 +139,7 @@ class RunReceipt(
     """Immutable typed view of a validated run_receipt payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("tick")
@@ -112,6 +155,7 @@ class Tick(
     """Immutable typed view of a validated tick payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("tool_result")
@@ -121,6 +165,7 @@ class ToolResult(
     """Immutable typed view of a validated tool_result payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

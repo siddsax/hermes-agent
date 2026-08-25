@@ -16,6 +16,7 @@ class ExplicitRetry(ContractDTO[RuntimeExplicitRetryView]):
     """Immutable typed view of a validated explicit_retry payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("input_gap")
@@ -23,6 +24,7 @@ class InputGap(ContractDTO[DataplaneInputGapView]):
     """Immutable typed view of a validated input_gap payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("quarantine_record")
@@ -37,6 +39,7 @@ class QuarantineRecord(
     """Immutable typed view of a validated quarantine_record payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

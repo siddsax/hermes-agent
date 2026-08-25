@@ -58,6 +58,7 @@ class ContractDTO(Generic[Payload]):
     """One validated wire payload with a contract-specific Python type."""
 
     type_id: ClassVar[str]
+    _optional_fields: ClassVar[Mapping[tuple[str, ...], frozenset[str]]] = {}
     _wire_json: str
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -106,7 +107,7 @@ class ContractDTO(Generic[Payload]):
     @property
     def payload(self) -> Payload:
         value = json.loads(self._wire_json)
-        return cast(Payload, _freeze_json(value))
+        return cast(Payload, _freeze_json(value, self._optional_fields))
 
 
 DTO = TypeVar("DTO", bound=ContractDTO)
@@ -125,11 +126,21 @@ def contract_type(type_id: str):
     return decorate
 
 
-def _freeze_json(value: JSONValue) -> FrozenJSONValue:
+def _freeze_json(
+    value: JSONValue,
+    optional_fields: Mapping[tuple[str, ...], frozenset[str]],
+    path: tuple[str, ...] = (),
+) -> FrozenJSONValue:
     if isinstance(value, dict):
-        return FrozenJSONObject({
-            key: _freeze_json(child) for key, child in value.items()
-        })
+        frozen = {
+            key: _freeze_json(child, optional_fields, (*path, key))
+            for key, child in value.items()
+        }
+        for optional_field in optional_fields.get(path, ()):
+            frozen.setdefault(optional_field, None)
+        return FrozenJSONObject(frozen)
     if isinstance(value, list):
-        return tuple(_freeze_json(child) for child in value)
+        return tuple(
+            _freeze_json(child, optional_fields, (*path, "*")) for child in value
+        )
     return value

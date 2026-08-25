@@ -11,6 +11,7 @@ class Preferences(ContractDTO[PolicyPreferencesView]):
     """Immutable typed view of a validated preferences payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [

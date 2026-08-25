@@ -12,6 +12,7 @@ class DashboardReadModel(ContractDTO[RuntimeDashboardReadModelView]):
     """Immutable typed view of a validated dashboard_read_model payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 @contract_type("dashboard_snapshot")
@@ -19,6 +20,7 @@ class DashboardSnapshot(ContractDTO[RuntimeDashboardSnapshotView]):
     """Immutable typed view of a validated dashboard_snapshot payload."""
 
     __slots__ = ()
+    _optional_fields = {}
 
 
 __all__ = [
