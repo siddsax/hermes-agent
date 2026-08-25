@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 import sqlite3
 
@@ -9,6 +8,7 @@ import pytest
 
 from thine_harness.contracts.runtime import Tick
 from thine_harness.run_coordinator import (
+    DurableFeatureTools,
     FakeFeatureAcknowledgement,
     FakeFeatureCommand,
     HarnessRuntimeConfiguration,
@@ -92,7 +92,7 @@ class _CheckpointAfterFeature:
 
     def invoke(self, context, *, tools, control):
         self.contexts.append(context)
-        receipt = tools.execute_once(
+        tools.execute_once(
             FakeFeatureCommand(
                 action_id=f"{context.tick.payload.tick_id}:effect:1",
                 intent_fingerprint="a" * 64,
@@ -101,7 +101,6 @@ class _CheckpointAfterFeature:
         )
         return InvocationOutcome.checkpointed(
             remaining_work="finish after restart",
-            completed_receipt_ids=(receipt.receipt_id,),
         )
 
 
@@ -225,6 +224,50 @@ class _BlockingRuntime:
         return InvocationOutcome.completed()
 
 
+class _ManualClock:
+    def __init__(self, now_ms: int) -> None:
+        self._now_ms = now_ms
+        self._lock = threading.Lock()
+
+    def __call__(self) -> int:
+        with self._lock:
+            return self._now_ms
+
+    def set(self, now_ms: int) -> None:
+        with self._lock:
+            self._now_ms = now_ms
+
+
+class _RenewalObservedState(DurableRunState):
+    def __init__(self, path: Path, *, lease_duration_ms: int) -> None:
+        super().__init__(path, lease_duration_ms=lease_duration_ms)
+        self.allow_renewal = threading.Event()
+        self.renewal_observed = threading.Event()
+
+    def renew_lease(
+        self,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        owner: str,
+        attempt_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> bool:
+        assert self.allow_renewal.wait(2)
+        renewed = super().renew_lease(
+            user_id=user_id,
+            logical_run_id=logical_run_id,
+            owner=owner,
+            attempt_id=attempt_id,
+            lease_token=lease_token,
+            now_ms=now_ms,
+        )
+        if renewed:
+            self.renewal_observed.set()
+        return renewed
+
+
 def test_only_one_invocation_runs_for_a_user(tmp_path: Path):
     runtime = _BlockingRuntime()
     coordinator = RunCoordinator(
@@ -253,15 +296,19 @@ def test_only_one_invocation_runs_for_a_user(tmp_path: Path):
 def test_live_invocation_renews_its_lease_across_coordinator_instances(tmp_path: Path):
     database = tmp_path / "state.sqlite3"
     runtime = _BlockingRuntime()
+    clock = _ManualClock(100)
+    state = _RenewalObservedState(database, lease_duration_ms=300)
     first = RunCoordinator(
-        DurableRunState(database, lease_duration_ms=60),
+        state,
         runtime=runtime,
         feature_port=_RecordingFeature(),
+        clock_ms=clock,
     )
     competitor = RunCoordinator(
-        DurableRunState(database, lease_duration_ms=60),
+        DurableRunState(database, lease_duration_ms=300),
         runtime=_CompleteInOrder(),
         feature_port=_RecordingFeature(),
+        clock_ms=clock,
         lease_owner="competing-harness",
     )
     first.enqueue(_tick("one"))
@@ -269,7 +316,10 @@ def test_live_invocation_renews_its_lease_across_coordinator_instances(tmp_path:
     worker.start()
     assert runtime.entered.wait(2)
 
-    time.sleep(0.15)
+    clock.set(399)
+    state.allow_renewal.set()
+    assert state.renewal_observed.wait(2)
+    clock.set(401)
 
     assert competitor.run_next("daily-user") is None
     runtime.release.set()
@@ -501,17 +551,51 @@ def test_stale_lease_cannot_finalize_a_recovered_attempt(tmp_path: Path):
         (2, "running"),
     ]
 
+    feature = _RecordingFeature()
+    stale_tools = DurableFeatureTools(
+        state=state,
+        feature_port=feature,
+        user_id="daily-user",
+        logical_run_id="run:stale",
+        lease_owner="local-harness",
+        attempt_id=first.attempt_id,
+        lease_token=first.lease_token,
+        clock_ms=lambda: 12,
+    )
+    with pytest.raises(DurableStateError):
+        stale_tools.execute_once(
+            FakeFeatureCommand(
+                action_id="late",
+                intent_fingerprint="e" * 64,
+                payload={"value": "must-not-run"},
+            )
+        )
+    assert feature.commands == []
+    assert (
+        state.get_receipt(
+            user_id="daily-user", logical_run_id="run:stale", action_id="late"
+        )
+        is None
+    )
+
 
 def test_same_action_id_is_isolated_between_users(tmp_path: Path):
     state = DurableRunState(tmp_path / "state.sqlite3")
     state.enqueue(_tick("first", user_id="user-a"), now_ms=1)
     state.enqueue(_tick("second", user_id="user-b"), now_ms=2)
+    first_lease = state.lease_next("user-a", owner="owner-a", now_ms=2)
+    second_lease = state.lease_next("user-b", owner="owner-b", now_ms=2)
+    assert first_lease is not None
+    assert second_lease is not None
 
     first = state.record_or_get_receipt(
         user_id="user-a",
         logical_run_id="run:first",
         action_id="shared-action",
         intent_fingerprint="a" * 64,
+        owner="owner-a",
+        attempt_id=first_lease.attempt_id,
+        lease_token=first_lease.lease_token,
         provider_reference="feature:first",
         result={"user": "a"},
         acknowledged_at_ms=3,
@@ -521,6 +605,9 @@ def test_same_action_id_is_isolated_between_users(tmp_path: Path):
         logical_run_id="run:second",
         action_id="shared-action",
         intent_fingerprint="b" * 64,
+        owner="owner-b",
+        attempt_id=second_lease.attempt_id,
+        lease_token=second_lease.lease_token,
         provider_reference="feature:second",
         result={"user": "b"},
         acknowledged_at_ms=4,
@@ -539,52 +626,6 @@ def test_same_action_id_is_isolated_between_users(tmp_path: Path):
         )
         == second
     )
-
-
-class _CheckpointWithUntrustedReceiptIds:
-    def invoke(self, context, *, tools, control):
-        receipt = tools.execute_once(
-            FakeFeatureCommand(
-                action_id="current-action",
-                intent_fingerprint="c" * 64,
-                payload={"value": "current"},
-            )
-        )
-        return InvocationOutcome.checkpointed(
-            remaining_work="resume safely",
-            completed_receipt_ids=(
-                receipt.receipt_id,
-                "receipt:bogus",
-                "receipt:other",
-            ),
-        )
-
-
-def test_checkpoint_receipts_are_derived_from_current_run_only(tmp_path: Path):
-    state = DurableRunState(tmp_path / "state.sqlite3")
-    state.enqueue(_tick("other", user_id="other-user"), now_ms=1)
-    state.record_or_get_receipt(
-        user_id="other-user",
-        logical_run_id="run:other",
-        action_id="other",
-        intent_fingerprint="d" * 64,
-        provider_reference="feature:other",
-        result={"value": "other"},
-        acknowledged_at_ms=2,
-    )
-    coordinator = RunCoordinator(
-        state,
-        runtime=_CheckpointWithUntrustedReceiptIds(),
-        feature_port=_RecordingFeature(),
-        clock_ms=lambda: 3,
-    )
-    coordinator.enqueue(_tick("current", queued_at_ms=2))
-
-    result = _require_result(coordinator)
-
-    assert result.tick_id == "current"
-    checkpoint = state.diagnostics("daily-user").checkpoints[0]
-    assert checkpoint.completed_receipt_ids == ("receipt:current-action",)
 
 
 def test_state_path_is_profile_scoped_and_future_schema_fails_closed(
@@ -614,6 +655,8 @@ def test_receipt_reuse_with_changed_intent_fails_closed(tmp_path: Path):
     )
     coordinator.enqueue(_tick("background"))
     coordinator.run_next("daily-user")
+    lease = state.lease_next("daily-user", owner="conflict-test", now_ms=2)
+    assert lease is not None
 
     with pytest.raises(ReceiptConflict, match="different intent"):
         state.record_or_get_receipt(
@@ -621,6 +664,9 @@ def test_receipt_reuse_with_changed_intent_fails_closed(tmp_path: Path):
             logical_run_id="run:background",
             action_id="background:effect:1",
             intent_fingerprint="b" * 64,
+            owner="conflict-test",
+            attempt_id=lease.attempt_id,
+            lease_token=lease.lease_token,
             provider_reference="different",
             result={"saved": "different"},
             acknowledged_at_ms=2,

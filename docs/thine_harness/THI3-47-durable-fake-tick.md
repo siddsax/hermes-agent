@@ -14,7 +14,9 @@ profile's `HERMES_HOME` by default.
   before P2 with FIFO inside a priority, signals a live background invocation
   when P0 arrives, and renews its lease while the invocation is active. Every
   acquisition carries a unique fence token, so an expired worker cannot
-  finalize a later Attempt even when both processes use the same owner name.
+  finalize a later Attempt or invoke the fake feature seam even when both
+  processes use the same owner name. Lease-renewal loss requests cooperative
+  preemption at the next safe boundary.
 - `FakeFeaturePort` is the only feature seam in this slice. It accepts a typed
   command and returns an acknowledgement. It exposes no database or generic
   backend operation.
@@ -36,6 +38,8 @@ resume, both the checkpoint and acknowledged receipts are loaded into the next
 invocation context. Repeating the same user-scoped action identity and
 fingerprint returns the stored receipt without calling the feature port.
 Reusing an action identity with a different fingerprint fails closed.
+Production effect-before-receipt reconciliation remains outside this fake seam
+and belongs to the later action-dispatch slice.
 
 ## Verification
 

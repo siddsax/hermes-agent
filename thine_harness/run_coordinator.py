@@ -100,7 +100,6 @@ OutcomeStatus = Literal[
 class InvocationOutcome:
     status: OutcomeStatus
     remaining_work: str = ""
-    completed_receipt_ids: tuple[str, ...] = ()
     failure_code: str | None = None
 
     @classmethod
@@ -112,45 +111,40 @@ class InvocationOutcome:
         cls,
         *,
         remaining_work: str,
-        completed_receipt_ids: tuple[str, ...] = (),
     ) -> "InvocationOutcome":
-        return cls("checkpointed", remaining_work, completed_receipt_ids)
+        return cls("checkpointed", remaining_work)
 
     @classmethod
     def cancelled(
         cls,
         *,
         remaining_work: str,
-        completed_receipt_ids: tuple[str, ...] = (),
     ) -> "InvocationOutcome":
-        return cls("cancelled", remaining_work, completed_receipt_ids)
+        return cls("cancelled", remaining_work)
 
     @classmethod
     def preempted(
         cls,
         *,
         remaining_work: str,
-        completed_receipt_ids: tuple[str, ...] = (),
     ) -> "InvocationOutcome":
-        return cls("preempted", remaining_work, completed_receipt_ids)
+        return cls("preempted", remaining_work)
 
     @classmethod
     def yielded(
         cls,
         *,
         remaining_work: str,
-        completed_receipt_ids: tuple[str, ...] = (),
     ) -> "InvocationOutcome":
-        return cls("yielded", remaining_work, completed_receipt_ids)
+        return cls("yielded", remaining_work)
 
     @classmethod
     def continuation(
         cls,
         *,
         remaining_work: str,
-        completed_receipt_ids: tuple[str, ...] = (),
     ) -> "InvocationOutcome":
-        return cls("continuation", remaining_work, completed_receipt_ids)
+        return cls("continuation", remaining_work)
 
     @classmethod
     def fault(cls, failure_code: str) -> "InvocationOutcome":
@@ -256,15 +250,29 @@ class DurableFeatureTools:
         feature_port: FakeFeaturePort,
         user_id: str,
         logical_run_id: str,
+        lease_owner: str,
+        attempt_id: str,
+        lease_token: str,
         clock_ms: Callable[[], int],
     ) -> None:
         self._state = state
         self._feature_port = feature_port
         self._user_id = user_id
         self._logical_run_id = logical_run_id
+        self._lease_owner = lease_owner
+        self._attempt_id = attempt_id
+        self._lease_token = lease_token
         self._clock_ms = clock_ms
 
     def execute_once(self, command: FakeFeatureCommand) -> ToolReceiptRecord:
+        self._state.assert_active_lease(
+            user_id=self._user_id,
+            logical_run_id=self._logical_run_id,
+            owner=self._lease_owner,
+            attempt_id=self._attempt_id,
+            lease_token=self._lease_token,
+            now_ms=self._clock_ms(),
+        )
         existing = self._state.get_receipt(
             user_id=self._user_id,
             logical_run_id=self._logical_run_id,
@@ -284,6 +292,9 @@ class DurableFeatureTools:
             logical_run_id=self._logical_run_id,
             action_id=command.action_id,
             intent_fingerprint=command.intent_fingerprint,
+            owner=self._lease_owner,
+            attempt_id=self._attempt_id,
+            lease_token=self._lease_token,
             provider_reference=acknowledgement.provider_reference,
             result=dict(acknowledgement.result),
             acknowledged_at_ms=self._clock_ms(),
@@ -361,6 +372,7 @@ class RunCoordinator:
                         lease_token=leased.lease_token,
                         now_ms=self._clock_ms(),
                     ):
+                        control.request_preemption("lease_lost")
                         return
 
             renewal_thread = threading.Thread(
@@ -381,6 +393,9 @@ class RunCoordinator:
                 feature_port=self._feature_port,
                 user_id=user_id,
                 logical_run_id=str(payload.logical_run_id),
+                lease_owner=self._lease_owner,
+                attempt_id=leased.attempt_id,
+                lease_token=leased.lease_token,
                 clock_ms=self._clock_ms,
             )
             try:

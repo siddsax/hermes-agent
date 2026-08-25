@@ -409,6 +409,7 @@ class DurableRunState:
                 owner=owner,
                 attempt_id=attempt_id,
                 lease_token=lease_token,
+                now_ms=now_ms,
             )
             checkpoint_ordinal = (
                 int(
@@ -476,6 +477,7 @@ class DurableRunState:
                 SET lease_expires_at_ms = ?, updated_at_ms = ?
                 WHERE user_id = ? AND logical_run_id = ? AND state = 'running'
                   AND lease_owner = ? AND lease_token = ?
+                  AND lease_expires_at_ms > ?
                   AND EXISTS (
                     SELECT 1 FROM attempts
                     WHERE attempts.user_id = queue_items.user_id
@@ -490,6 +492,7 @@ class DurableRunState:
                     logical_run_id,
                     owner,
                     lease_token,
+                    now_ms,
                     attempt_id,
                 ),
             ).rowcount
@@ -513,6 +516,7 @@ class DurableRunState:
                 owner=owner,
                 attempt_id=attempt_id,
                 lease_token=lease_token,
+                now_ms=now_ms,
             )
             connection.execute(
                 """
@@ -552,6 +556,7 @@ class DurableRunState:
                 owner=owner,
                 attempt_id=attempt_id,
                 lease_token=lease_token,
+                now_ms=now_ms,
             )
             attempt = connection.execute(
                 """
@@ -647,12 +652,24 @@ class DurableRunState:
         logical_run_id: str,
         action_id: str,
         intent_fingerprint: str,
+        owner: str,
+        attempt_id: str,
+        lease_token: str,
         provider_reference: str,
         result: dict[str, Any],
         acknowledged_at_ms: int,
     ) -> ToolReceiptRecord:
         receipt_id = f"receipt:{action_id}"
         with self._transaction() as connection:
+            self._require_active_owner(
+                connection,
+                user_id=user_id,
+                logical_run_id=logical_run_id,
+                owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
+                now_ms=acknowledged_at_ms,
+            )
             existing = connection.execute(
                 """
                 SELECT * FROM tool_receipts
@@ -914,6 +931,7 @@ class DurableRunState:
         owner: str,
         attempt_id: str,
         lease_token: str,
+        now_ms: int,
     ) -> sqlite3.Row:
         row = connection.execute(
             """
@@ -924,13 +942,36 @@ class DurableRunState:
             WHERE queue_items.user_id = ? AND queue_items.logical_run_id = ?
               AND queue_items.state = 'running' AND queue_items.lease_owner = ?
               AND queue_items.lease_token = ? AND attempts.attempt_id = ?
+              AND queue_items.lease_expires_at_ms > ?
               AND attempts.status = 'running'
             """,
-            (user_id, logical_run_id, owner, lease_token, attempt_id),
+            (user_id, logical_run_id, owner, lease_token, attempt_id, now_ms),
         ).fetchone()
         if row is None:
             raise DurableStateError("Logical Run is not owned by this active lease")
         return row
+
+    def assert_active_lease(
+        self,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        owner: str,
+        attempt_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> None:
+        """Fail closed unless this exact, unexpired acquisition is still active."""
+        with self._connect() as connection:
+            self._require_active_owner(
+                connection,
+                user_id=user_id,
+                logical_run_id=logical_run_id,
+                owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
+                now_ms=now_ms,
+            )
 
     def has_queued_p0(self, user_id: str) -> bool:
         """Return whether this user has an eligible user-chat Tick queued."""
