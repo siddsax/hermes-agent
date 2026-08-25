@@ -12,7 +12,10 @@
   "measurement": {
     "hermes_sha": "41447a6d7063b2772b0c2f26a5b22d9bd444fb43",
     "fixed_prefix_estimator": "agent.model_metadata.estimate_request_tokens_rough",
-    "working_memory_hard_guard": "conservative_utf8_byte_upper_bound_for_byte_level_bpe",
+    "working_memory_hard_guard": "unresolved_no_exact_openai_codex_gpt_5_6_sol_tokenizer_changed_writes_fail_closed",
+    "working_memory_token_count_storage": "exact_configured_model_tokens_only_nullable_when_unmeasured",
+    "working_memory_auxiliary_utf8_byte_ceiling": 16000,
+    "working_memory_auxiliary_utf8_byte_correction_target": 14000,
     "working_memory_correction_target_tokens": 14000,
     "eager_bridge_tools": ["tool_search", "tool_describe", "tool_call"],
     "deferred_catalog_listing": "off"

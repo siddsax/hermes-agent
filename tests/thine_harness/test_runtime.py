@@ -294,6 +294,8 @@ class _FakeAIAgent:
     def __init__(self) -> None:
         self.interrupts: list[str] = []
         self._executing_tools = False
+        self._fallback_chain = []
+        self._fallback_model = None
 
     def interrupt(self, message=None, **kwargs):
         self.interrupts.append(message)
@@ -303,6 +305,8 @@ class _FakeAIAgent:
         return {
             "final_response": "answer",
             "messages": [{"role": "assistant", "content": "answer"}],
+            "completed": True,
+            "failed": False,
             "interrupted": False,
             "input_tokens": 100,
             "output_tokens": 5,
@@ -343,6 +347,210 @@ def test_aiagent_session_fails_closed_on_model_drift_and_maps_usage():
         "cache_write_tokens": 0,
     }
     assert events[2].phase == "assistant_delta"
+
+
+def test_aiagent_session_rejects_any_nonempty_fallback_chain():
+    agent = _FakeAIAgent()
+    agent._fallback_chain = [
+        {"provider": "openai-codex", "model": "gpt-5.6-terra"}
+    ]
+
+    with pytest.raises(RuntimeSelectionError, match="fallback chain"):
+        HermesAIAgentSession(
+            agent=agent,
+            expected=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+        )
+
+
+def test_aiagent_session_fails_closed_on_in_turn_runtime_drift():
+    class _DriftingAIAgent(_FakeAIAgent):
+        def run_conversation(self, prompt, **kwargs):
+            raw = super().run_conversation(prompt, **kwargs)
+            self.reasoning_config = {"enabled": True, "effort": "low"}
+            return raw
+
+    session = HermesAIAgentSession(
+        agent=_DriftingAIAgent(),
+        expected=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+    )
+
+    with pytest.raises(RuntimeSelectionError, match="reasoning_effort"):
+        session.invoke(
+            InvocationRequest("drift", InvocationKind.USER_CHAT, "hello"),
+            emit=lambda event: None,
+            control=InvocationControl(),
+        )
+
+
+def test_raw_hermes_failed_turn_never_emits_final():
+    class _FailedAIAgent(_FakeAIAgent):
+        def run_conversation(self, prompt, **kwargs):
+            kwargs["stream_callback"]("partial")
+            return {
+                "final_response": "provider failure text",
+                "messages": [],
+                "completed": False,
+                "failed": True,
+                "failure_reason": "provider_rejected",
+                "interrupted": False,
+            }
+
+    events: list[InvocationEvent] = []
+    runtime = HermesInvocationRuntime(
+        session=HermesAIAgentSession(
+            agent=_FailedAIAgent(),
+            expected=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+        ),
+        config=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+    )
+
+    result = runtime.invoke(
+        InvocationRequest("failed", InvocationKind.USER_CHAT, "hello"),
+        emit=events.append,
+    )
+
+    assert result.failed is True
+    assert result.completed is False
+    assert result.failure_reason == "provider_rejected"
+    assert [event.kind for event in events] == [
+        InvocationEventKind.ACCEPTED,
+        InvocationEventKind.STARTED,
+        InvocationEventKind.PROGRESS,
+        InvocationEventKind.FAILED,
+    ]
+    assert InvocationEventKind.FINAL not in [event.kind for event in events]
+
+
+@pytest.mark.parametrize(
+    ("first_completed", "first_failed", "delivery_overlaps_provider_return"),
+    [
+        (True, False, False),
+        (True, False, True),
+        (False, True, False),
+        (False, True, True),
+    ],
+)
+def test_late_cancel_cannot_poison_the_next_turn_on_a_reused_agent(
+    first_completed,
+    first_failed,
+    delivery_overlaps_provider_return,
+):
+    class _ObservedControl(InvocationControl):
+        def __init__(self) -> None:
+            super().__init__()
+            self.unbind_started = threading.Event()
+
+        def bind_cancel(self, callback):
+            unbind = super().bind_cancel(callback)
+
+            def observed_unbind():
+                self.unbind_started.set()
+                unbind()
+
+            return observed_unbind
+
+    class _LateCancelAIAgent(_FakeAIAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first_running = threading.Event()
+            self.release_first = threading.Event()
+            self.first_result_ready = threading.Event()
+            self.release_first_result = threading.Event()
+            self.cancel_delivery_started = threading.Event()
+            self.release_cancel_delivery = threading.Event()
+            self.turns = 0
+            self._interrupt_requested = False
+
+        def request_interrupt_at_tool_safe_boundary(self, reason):
+            self.cancel_delivery_started.set()
+            if delivery_overlaps_provider_return:
+                assert self.release_cancel_delivery.wait(2)
+            self._interrupt_requested = True
+            self.interrupt(reason)
+            return False
+
+        def clear_interrupt(self):
+            self._interrupt_requested = False
+
+        def run_conversation(self, prompt, **kwargs):
+            self.turns += 1
+            if self.turns == 1:
+                self.first_running.set()
+                assert self.release_first.wait(2)
+                interrupted = self._interrupt_requested
+                self.first_result_ready.set()
+                assert self.release_first_result.wait(2)
+            else:
+                interrupted = self._interrupt_requested
+            if interrupted:
+                return {
+                    "final_response": None,
+                    "messages": [],
+                    "completed": False,
+                    "failed": False,
+                    "interrupted": True,
+                }
+            return {
+                "final_response": (
+                    f"answer-{self.turns}"
+                    if self.turns > 1 or first_completed
+                    else "failed-first"
+                ),
+                "messages": [],
+                "completed": self.turns > 1 or first_completed,
+                "failed": self.turns == 1 and first_failed,
+                "failure_reason": (
+                    "provider_rejected"
+                    if self.turns == 1 and first_failed
+                    else None
+                ),
+                "interrupted": False,
+            }
+
+    agent = _LateCancelAIAgent()
+    session = HermesAIAgentSession(
+        agent=agent,
+        expected=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+    )
+    control = _ObservedControl()
+    first: list[AgentTurnResult] = []
+    first_worker = threading.Thread(
+        target=lambda: first.append(
+            session.invoke(
+                InvocationRequest("first", InvocationKind.USER_CHAT, "one"),
+                emit=lambda event: None,
+                control=control,
+            )
+        )
+    )
+    first_worker.start()
+    assert agent.first_running.wait(2)
+    agent.release_first.set()
+    assert agent.first_result_ready.wait(2)
+    cancel_worker = threading.Thread(target=lambda: control.cancel("too-late"))
+    cancel_worker.start()
+    assert agent.cancel_delivery_started.wait(2)
+    if delivery_overlaps_provider_return:
+        agent.release_first_result.set()
+        agent.release_cancel_delivery.set()
+        assert control.unbind_started.wait(2)
+    else:
+        cancel_worker.join(2)
+        assert agent._interrupt_requested is True
+        agent.release_first_result.set()
+    cancel_worker.join(2)
+    first_worker.join(2)
+
+    assert first[0].completed is first_completed
+    assert first[0].failed is first_failed
+    second = session.invoke(
+        InvocationRequest("second", InvocationKind.USER_CHAT, "two"),
+        emit=lambda event: None,
+        control=InvocationControl(),
+    )
+    assert second.completed is True
+    assert second.interrupted is False
+    assert second.final_output == "answer-2"
 
 
 class _InterruptedMappingAIAgent(_FakeAIAgent):

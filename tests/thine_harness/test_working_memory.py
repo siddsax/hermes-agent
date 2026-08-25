@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from thine_harness.working_memory import (
+    CONFIGURED_MODEL_TOKENIZER_LIMITATION,
     CacheIdentity,
     HermesCachedStopHookContext,
     StopHookContextChanged,
@@ -12,6 +13,7 @@ from thine_harness.working_memory import (
     WorkingMemoryLimitError,
     WorkingMemoryProposal,
     WorkingMemorySnapshot,
+    WorkingMemoryTokenizerUnavailable,
     tool_schema_sha256,
 )
 from agent.transports.codex import ResponsesApiTransport
@@ -195,21 +197,91 @@ class _UnicodeCompactingContext:
         return WorkingMemoryProposal.changed("bounded")
 
 
-def test_default_working_memory_guard_is_hard_for_token_dense_unicode():
+def test_default_working_memory_guard_does_not_store_utf8_bytes_as_tokens():
     store = _MemoryStore()
     context = _UnicodeCompactingContext()
+    runner = StopHookRunner()
 
-    outcome = StopHookRunner().finalize(
-        run_id="run-unicode",
-        current=WorkingMemorySnapshot(1, "prior", 5),
-        context=context,
-        store=store,
-        interrupted=False,
-    )
+    with pytest.raises(
+        WorkingMemoryTokenizerUnavailable,
+        match="configured-model tokenizer is unavailable",
+    ):
+        runner.finalize(
+            run_id="run-unicode",
+            current=WorkingMemorySnapshot(1, "prior", None),
+            context=context,
+            store=store,
+            interrupted=False,
+        )
 
     assert len(context.requests) == 2
     assert context.requests[1].target_tokens == 14_000
-    assert outcome.token_count == len("bounded".encode("utf-8"))
+    assert runner.tokenizer_status == CONFIGURED_MODEL_TOKENIZER_LIMITATION
+    assert store.commits == []
+
+
+def test_stop_hook_keeps_tool_schemas_but_denies_handler_execution():
+    from model_tools import handle_function_call
+    from tools.registry import registry
+
+    handler_calls: list[dict] = []
+    tool_name = "thine_test_stop_hook_denied"
+    schema = {
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "description": "A fake helper that must not execute in Stop Hook.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+    def handler(args, **_kwargs):
+        handler_calls.append(args)
+        return '{"executed":true}'
+
+    registry.register(
+        name=tool_name,
+        toolset="thine-test-stop-hook",
+        schema=schema,
+        handler=handler,
+    )
+
+    class _ModelEmitsToolCall(_CachedAIAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tools = [schema]
+            self.dispatch_result = None
+
+        def run_conversation(self, prompt, **kwargs):
+            self.dispatch_result = handle_function_call(tool_name, {})
+            return super().run_conversation(prompt, **kwargs)
+
+    agent = _ModelEmitsToolCall()
+    captured_tools = list(agent.tools)
+    context = HermesCachedStopHookContext(
+        agent=agent,
+        conversation_history=[],
+        cache_identity=CacheIdentity.from_request(
+            session_id=agent.session_id,
+            prompt_cache_key="pck-denied",
+            tools=captured_tools,
+        ),
+    )
+
+    try:
+        StopHookRunner(token_counter=len).finalize(
+            run_id="run-denied",
+            current=WorkingMemorySnapshot(1, "prior", 1),
+            context=context,
+            store=_MemoryStore(),
+            interrupted=False,
+        )
+    finally:
+        registry.deregister(tool_name)
+
+    assert agent.tools == captured_tools
+    assert handler_calls == []
+    assert "denied" in str(agent.dispatch_result).lower()
 
 
 def test_corrected_working_memory_must_meet_the_14k_correction_target():

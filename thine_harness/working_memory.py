@@ -10,6 +10,11 @@ from typing import Any, Callable, Protocol
 
 MAX_WORKING_MEMORY_TOKENS = 16_000
 COMPACTION_TARGET_TOKENS = 14_000
+MAX_WORKING_MEMORY_UTF8_BYTES = 16_000
+COMPACTION_TARGET_UTF8_BYTES = 14_000
+CONFIGURED_MODEL_TOKENIZER_LIMITATION = (
+    "unresolved: no exact tokenizer is available for openai-codex/gpt-5.6-sol"
+)
 
 
 def tool_schema_sha256(tools: list[dict]) -> str:
@@ -45,13 +50,8 @@ class CacheIdentity:
         )
 
 
-def conservative_model_token_bound(text: str) -> int:
-    """Return a dependency-free hard upper bound for byte-level BPE tokens.
-
-    GPT-family token vocabularies encode non-empty byte sequences, so a UTF-8
-    byte count cannot undercount model tokens. It is deliberately conservative
-    when the configured model tokenizer is unavailable in the core runtime.
-    """
+def utf8_byte_size(text: str) -> int:
+    """Return an auxiliary byte ceiling measurement, never a token count."""
     return len(str(text).encode("utf-8", errors="surrogatepass"))
 
 
@@ -59,7 +59,7 @@ def conservative_model_token_bound(text: str) -> int:
 class WorkingMemorySnapshot:
     version: int
     markdown: str
-    token_count: int
+    token_count: int | None
 
 
 @dataclass(frozen=True)
@@ -94,7 +94,7 @@ class StopHookOutcome:
     kind: StopHookOutcomeKind
     cache_identity: CacheIdentity
     memory_version: int
-    token_count: int
+    token_count: int | None
 
 
 class CachedStopHookContextPort(Protocol):
@@ -125,6 +125,10 @@ class WorkingMemoryLimitError(RuntimeError):
     """Agent-directed compaction failed to produce a bounded document."""
 
 
+class WorkingMemoryTokenizerUnavailable(RuntimeError):
+    """A changed document cannot be measured in configured-model tokens."""
+
+
 class StopHookResponseError(RuntimeError):
     """The same-context Stop Hook returned an invalid structured decision."""
 
@@ -150,6 +154,7 @@ class HermesCachedStopHookContext:
         self._agent_tool_fingerprint = tool_schema_sha256(
             list(getattr(agent, "tools", None) or [])
         )
+        self._agent_runtime_fingerprint = self._runtime_fingerprint(agent)
         if str(getattr(agent, "session_id", "") or "") != cache_identity.session_id:
             raise StopHookContextChanged(
                 "captured cache identity does not match the existing AIAgent session"
@@ -179,11 +184,20 @@ class HermesCachedStopHookContext:
         tool_fingerprint = self._cache_identity.tool_schema_sha256
         if current_tool_fingerprint != self._agent_tool_fingerprint:
             tool_fingerprint = "agent-tool-array-changed"
+        prompt_cache_key = self._cache_identity.prompt_cache_key
+        if self._runtime_fingerprint(self._agent) != self._agent_runtime_fingerprint:
+            prompt_cache_key = "agent-runtime-selection-changed"
         return CacheIdentity(
             session_id=str(getattr(self._agent, "session_id", "") or ""),
-            prompt_cache_key=self._cache_identity.prompt_cache_key,
+            prompt_cache_key=prompt_cache_key,
             tool_schema_sha256=tool_fingerprint,
         )
+
+    @staticmethod
+    def _runtime_fingerprint(agent: Any) -> tuple[str, str, str, str]:
+        from thine_harness.runtime import runtime_selection_fingerprint
+
+        return runtime_selection_fingerprint(agent)
 
     def continue_stop_hook(self, request: StopHookRequest) -> WorkingMemoryProposal:
         payload = {
@@ -203,10 +217,13 @@ class HermesCachedStopHookContext:
         )
         self._agent._persist_disabled = True
         try:
-            raw = self._agent.run_conversation(
-                prompt,
-                conversation_history=list(self._conversation_history),
-            )
+            from agent.tool_execution_scope import deny_tool_execution
+
+            with deny_tool_execution("Stop Hook is memory-only"):
+                raw = self._agent.run_conversation(
+                    prompt,
+                    conversation_history=list(self._conversation_history),
+                )
         finally:
             self._agent._persist_disabled = prior_persist_disabled
         self._last_usage = {
@@ -244,9 +261,15 @@ class StopHookRunner:
     def __init__(
         self,
         *,
-        token_counter: Callable[[str], int] = conservative_model_token_bound,
+        token_counter: Callable[[str], int] | None = None,
     ):
         self._token_counter = token_counter
+
+    @property
+    def tokenizer_status(self) -> str:
+        if self._token_counter is None:
+            return CONFIGURED_MODEL_TOKENIZER_LIMITATION
+        return "configured-model tokenizer supplied"
 
     def finalize(
         self,
@@ -288,8 +311,15 @@ class StopHookRunner:
             )
 
         markdown = proposal.markdown
-        token_count = self._token_counter(markdown)
-        if token_count > MAX_WORKING_MEMORY_TOKENS:
+        byte_count = utf8_byte_size(markdown)
+        token_count = (
+            self._token_counter(markdown)
+            if self._token_counter is not None
+            else None
+        )
+        if byte_count > MAX_WORKING_MEMORY_UTF8_BYTES or (
+            token_count is not None and token_count > MAX_WORKING_MEMORY_TOKENS
+        ):
             oversized_candidate = markdown
             proposal = context.continue_stop_hook(
                 StopHookRequest(
@@ -304,8 +334,18 @@ class StopHookRunner:
                     "working memory correction did not return a compacted proposal"
                 )
             markdown = proposal.markdown
-            token_count = self._token_counter(markdown)
-            if token_count > COMPACTION_TARGET_TOKENS:
+            byte_count = utf8_byte_size(markdown)
+            token_count = (
+                self._token_counter(markdown)
+                if self._token_counter is not None
+                else None
+            )
+            if byte_count > COMPACTION_TARGET_UTF8_BYTES:
+                raise WorkingMemoryLimitError(
+                    f"compacted working memory is {byte_count} UTF-8 bytes; "
+                    f"auxiliary byte target is {COMPACTION_TARGET_UTF8_BYTES}"
+                )
+            if token_count is not None and token_count > COMPACTION_TARGET_TOKENS:
                 raise WorkingMemoryLimitError(
                     f"compacted working memory is {token_count} tokens; "
                     f"correction target is {COMPACTION_TARGET_TOKENS}"
@@ -318,6 +358,11 @@ class StopHookRunner:
                     current.version,
                     current.token_count,
                 )
+        if token_count is None:
+            raise WorkingMemoryTokenizerUnavailable(
+                "configured-model tokenizer is unavailable; refusing to store "
+                "UTF-8 bytes as token_count"
+            )
         version = store.commit(
             expected_version=current.version,
             markdown=markdown,
@@ -343,7 +388,10 @@ class StopHookRunner:
 
 
 __all__ = [
+    "COMPACTION_TARGET_UTF8_BYTES",
     "COMPACTION_TARGET_TOKENS",
+    "CONFIGURED_MODEL_TOKENIZER_LIMITATION",
+    "MAX_WORKING_MEMORY_UTF8_BYTES",
     "MAX_WORKING_MEMORY_TOKENS",
     "CacheIdentity",
     "CachedStopHookContextPort",
@@ -358,6 +406,7 @@ __all__ = [
     "WorkingMemoryProposal",
     "WorkingMemorySnapshot",
     "WorkingMemoryStorePort",
-    "conservative_model_token_bound",
+    "WorkingMemoryTokenizerUnavailable",
     "tool_schema_sha256",
+    "utf8_byte_size",
 ]

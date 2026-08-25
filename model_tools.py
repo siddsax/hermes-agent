@@ -1230,6 +1230,11 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    from agent.tool_execution_scope import tool_execution_denied_result
+
+    denied_result = tool_execution_denied_result(function_name)
+    if denied_result is not None:
+        return denied_result
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):

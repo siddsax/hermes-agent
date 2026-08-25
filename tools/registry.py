@@ -1144,6 +1144,11 @@ class ToolRegistry:
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
+        from agent.tool_execution_scope import tool_execution_denied_result
+
+        denied_result = tool_execution_denied_result(name)
+        if denied_result is not None:
+            return denied_result
         try:
             if entry.is_async:
                 from model_tools import _run_async

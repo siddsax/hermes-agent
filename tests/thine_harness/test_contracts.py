@@ -31,8 +31,12 @@ def test_model_and_envelope_fixtures_match_public_runtime_contract():
     assert model_fixture["runtime"] == RuntimeModelConfig.openai_gpt_5_6_sol_medium().__dict__
     assert envelope_fixture["budget"] == RuntimeEnvelopeBudget.pinned().as_dict()
     assert envelope_fixture["measurement"]["working_memory_hard_guard"] == (
-        "conservative_utf8_byte_upper_bound_for_byte_level_bpe"
+        "unresolved_no_exact_openai_codex_gpt_5_6_sol_tokenizer_changed_writes_fail_closed"
     )
+    assert envelope_fixture["measurement"]["working_memory_token_count_storage"] == (
+        "exact_configured_model_tokens_only_nullable_when_unmeasured"
+    )
+    assert envelope_fixture["measurement"]["working_memory_auxiliary_utf8_byte_ceiling"] == 16_000
     assert envelope_fixture["measurement"][
         "working_memory_correction_target_tokens"
     ] == 14_000

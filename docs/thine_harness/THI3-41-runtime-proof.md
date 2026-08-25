@@ -41,6 +41,19 @@ context window before admission.
 The binding machine-readable selection is
 `thine_harness/contracts/runtime-model-v1.json`.
 
+The integrated executable exercises the complete live path on one actual
+`AIAgent`:
+
+```bash
+python scripts/thi3_41_integrated_live_probe.py
+```
+
+It prints one JSON object. The object includes every exact flat `tools` array
+observed immediately before the OpenAI SDK's `responses.create(...)`, its
+SHA-256, and the corresponding `prompt_cache_key` for all primary iterations
+and the Stop Hook continuation. No credential or request message content is
+printed.
+
 ## Prefix and cache invariant
 
 The stable cache identity is the tuple:
@@ -68,21 +81,35 @@ same_tools=true
 reasoning={effort: medium, summary: auto}
 ```
 
-A live two-turn same-agent proof used a deliberately cacheable stable prefix:
+A live integrated proof on 2026-08-25 produced:
 
 ```text
-primary_final=HERMES_PRIMARY_OK
-primary_usage={input_tokens: 2473, output_tokens: 9, cache_read_tokens: 0, cache_write_tokens: 0}
+primary_final=THI3_41_INTEGRATED_OK
+primary_prompt_cache_key=pck_2787d5876c32f84756267dc1 (4/4 requests)
+stop_hook_prompt_cache_key=pck_2787d5876c32f84756267dc1 (1/1 request)
+primary_tool_schema_sha256=3e32730565a23785beac6bf3f1842c876376d17555af7e5244abc1f830f24ae4 (4/4)
+stop_hook_tool_schema_sha256=3e32730565a23785beac6bf3f1842c876376d17555af7e5244abc1f830f24ae4
+wire_tools=[tool_search,tool_describe,tool_call]
+same_prompt_cache_key=true
+same_wire_tool_array=true
+primary_usage={input_tokens: 3933, output_tokens: 90, cache_read_tokens: 6144, cache_write_tokens: 0}
 stop_hook_outcome=unchanged
-stop_hook_usage={input_tokens: 3235, output_tokens: 25, cache_read_tokens: 1792, cache_write_tokens: 0}
-same_cache_identity=true
-prompt_cache_key=pck_5b5f1a202382b09edef5f306
+stop_hook_usage_delta={input_tokens: 175, output_tokens: 31, cache_read_tokens: 2560, cache_write_tokens: 0}
+deferred_result_sequence=[tool_search,tool_describe,thine_transcripts_probe_lookup]
+helper_calls=[{sequence:41}]
+helper_calls_during_stop_hook=0
 memory_commits=0
 unchanged_markers=1
 ```
 
-This shows an actual provider cache read on the Stop Hook continuation and no
-new memory version when nothing worth remembering changed.
+The helper's full schema is absent from all wire arrays; Hermes unwraps
+`tool_call` to the helper's real name before appending the canonical tool
+result. This proves live search, description, and bridge execution rather than
+an eager direct helper call. The same run shows an actual provider cache read
+on the Stop Hook continuation, an identical cache envelope, no handler
+execution during the hook, and no new memory version when nothing worth
+remembering changed. Cache-read counts are evidence, not an acceptance
+precondition; a cold primary with zero cache read remains valid.
 
 ## Deferred namespaced helper result
 
@@ -97,10 +124,16 @@ namespaces are `working_memory`, `communications`, `permissions`, `schedules`,
 
 ## Working Memory and Stop Hook result
 
-- Working Memory has a hard 16,000-token ceiling. Core Hermes does not ship the
-  configured GPT tokenizer, so the production default uses UTF-8 bytes as a
-  conservative upper bound for its byte-level BPE tokens. A configured exact
-  tokenizer may be injected, but a rough estimator is never the hard guard.
+- The intended Working Memory contract remains a hard 16,000 configured-model
+  token ceiling, but Hermes does not ship an exact tokenizer for
+  `openai-codex/gpt-5.6-sol`. This is frozen as an unresolved tokenizer
+  limitation: changed memory writes fail closed unless an exact
+  configured-model counter is supplied, and `token_count` is nullable for an
+  unmeasured existing snapshot. UTF-8 bytes are never stored or reported as
+  tokens.
+- A 16,000-byte ceiling remains only as a fail-closed auxiliary guard. It can
+  request compaction early, but it does not satisfy or impersonate the token
+  contract.
 - An oversized proposal receives exactly one same-context, agent-directed
   correction and the corrected document must be at most 14,000 guarded tokens.
   Failure preserves the previous version.
@@ -135,8 +168,10 @@ normal architecture target remains the earlier of 8,000 transcript tokens or
 ## Progress and cancellation trace
 
 Foreground lifecycle is `accepted -> started -> zero or more ephemeral
-progress -> one non-ephemeral final`. Session adapters may emit only progress;
-the runtime owns terminal events.
+progress -> one non-ephemeral final|failed|interrupted`. Session adapters may
+emit only progress; the runtime owns terminal events. Hermes' raw `completed`
+and `failed` flags are mapped directly. A failed or incomplete turn never emits
+`final`, even if Hermes includes failure prose in `final_response`.
 
 The public cancellation and resume test trace is:
 
@@ -153,7 +188,9 @@ P0 accepted -> P0 final -> resume(checkpoint) -> same Logical Run final
 Background admission requires both a durable `resume_token` and a
 `BackgroundCheckpointStorePort` before the provider is called. Background
 progress deltas are consumed quietly; only P0 chat emits ephemeral progress.
-Cancellation is unbound at turn completion. During an active tool call it is
+Cancellation delivery is serialized with unbind at turn completion. A
+completed turn clears any cancellation that won the final snapshot race, so a
+late cancel cannot poison the next invocation on the reused agent. During an active tool call it is
 deferred until Hermes clears its tool-execution fence, which happens after the
 canonical result is appended and persisted; only then may the model loop be
 interrupted. The runtime records every durable tool result, but promotes only
@@ -178,7 +215,7 @@ THI3-43 should consume these immutable v1 inputs:
   `deferred_tools.py` as the source behavior for neutral DTO/golden fixtures.
 
 The language-neutral invocation schema must preserve `logical_run_id`, kind,
-prompt, durable resume token, accepted/started/progress/final/interrupted event
+prompt, durable resume token, accepted/started/progress/final/failed/interrupted event
 kinds, ephemeral flag, context messages, usage telemetry, and the stable model
 diagnostics. Its checkpoint schema must preserve `resume_token`,
 `logical_run_id`, `input_prompt`, `remaining_work`, `context_messages`,
@@ -187,7 +224,9 @@ diagnostics. Its checkpoint schema must preserve `resume_token`,
 persistence and H9 owns the AIAgent mapping. The finalizer schema must preserve
 the cache-identity tuple,
 memory version, outcome (`committed`, `unchanged`, or `skipped_interrupted`),
-token count, 16K/14K limits, and hook-only recovery. Tool contracts must keep
+nullable exact-model token count, unresolved-tokenizer status, intended
+16K/14K limits, and hook-only recovery. THI3-43 must not treat UTF-8 bytes as a
+token count. Tool contracts must keep
 flat OpenAI-safe names on the wire and carry logical namespace as metadata.
 
 Do not reuse Hermes cron or its existing memory plugin as the stage-one

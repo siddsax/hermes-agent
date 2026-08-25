@@ -31,11 +31,26 @@ class InvocationEventKind(str, Enum):
     STARTED = "started"
     PROGRESS = "progress"
     FINAL = "final"
+    FAILED = "failed"
     INTERRUPTED = "interrupted"
 
 
 class RuntimeSelectionError(RuntimeError):
     """The live Hermes session drifted from the required fail-closed model."""
+
+
+def runtime_selection_fingerprint(agent: Any) -> tuple[str, str, str, str]:
+    """Return provider, model, API mode, and reasoning effort from one agent."""
+    reasoning = getattr(agent, "reasoning_config", None)
+    effort = ""
+    if isinstance(reasoning, dict) and reasoning.get("enabled") is not False:
+        effort = str(reasoning.get("effort") or "")
+    return (
+        str(getattr(agent, "provider", "") or ""),
+        str(getattr(agent, "model", "") or ""),
+        str(getattr(agent, "api_mode", "") or ""),
+        effort,
+    )
 
 
 @dataclass(frozen=True)
@@ -105,6 +120,9 @@ class AgentTurnResult:
     final_output: str | None = None
     context_messages: list[dict[str, Any]] = field(default_factory=list)
     interrupted: bool = False
+    completed: bool = True
+    failed: bool = False
+    failure_reason: str | None = None
     resume_token: str | None = None
     usage: dict[str, int] = field(default_factory=dict)
     remaining_work: str | None = None
@@ -142,7 +160,7 @@ class InvocationControl:
         self._safe_boundary_deferred = threading.Event()
         self._lock = threading.Lock()
         self._reason: str | None = None
-        self._callbacks: list[Callable[[str], None]] = []
+        self._callbacks: list[_CancelBinding] = []
 
     @property
     def cancelled(self) -> bool:
@@ -161,7 +179,7 @@ class InvocationControl:
         return self._safe_boundary_deferred.wait(timeout)
 
     def cancel(self, reason: str) -> None:
-        callbacks: list[Callable[[str], None]]
+        callbacks: list[_CancelBinding]
         with self._lock:
             if self._cancelled.is_set():
                 return
@@ -169,26 +187,74 @@ class InvocationControl:
             self._cancelled.set()
             callbacks = list(self._callbacks)
         for callback in callbacks:
-            callback(reason)
+            callback.deliver(reason)
 
     def bind_cancel(self, callback: Callable[[str], None]) -> Callable[[], None]:
+        binding = _CancelBinding(callback)
         reason: str | None = None
         with self._lock:
             if self._cancelled.is_set():
                 reason = self._reason
             else:
-                self._callbacks.append(callback)
+                self._callbacks.append(binding)
         if reason is not None:
-            callback(reason)
+            binding.deliver(reason)
 
         def unbind() -> None:
             with self._lock:
                 try:
-                    self._callbacks.remove(callback)
+                    self._callbacks.remove(binding)
                 except ValueError:
                     pass
+            binding.unbind()
 
         return unbind
+
+
+class _CancelBinding:
+    """Serialize callback delivery with unbind after a cancellation snapshot."""
+
+    def __init__(self, callback: Callable[[str], None]) -> None:
+        self._callback = callback
+        self._active = True
+        self._lock = threading.Lock()
+
+    def deliver(self, reason: str) -> None:
+        with self._lock:
+            if self._active:
+                self._callback(reason)
+
+    def unbind(self) -> None:
+        with self._lock:
+            self._active = False
+
+
+class _InvocationCancellationState:
+    """Serialize provider return with cancellation owned by one binding."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._provider_returned = threading.Event()
+        self._delivery_attempted = False
+
+    def deliver(self, callback: Callable[[], Any]) -> Any | None:
+        with self._lock:
+            if self._provider_returned.is_set():
+                return None
+            self._delivery_attempted = True
+            return callback()
+
+    def publish_provider_returned(self) -> None:
+        with self._lock:
+            self._provider_returned.set()
+
+    @property
+    def provider_returned(self) -> bool:
+        return self._provider_returned.is_set()
+
+    def must_retire_interrupt(self, *, interrupted: bool) -> bool:
+        with self._lock:
+            return self._delivery_attempted and not interrupted
 
 
 class AgentSessionPort(Protocol):
@@ -220,11 +286,20 @@ class HermesAIAgentSession:
     def __init__(self, *, agent: Any, expected: RuntimeModelConfig):
         self._agent = agent
         self._expected = expected
+        self.validate_runtime()
+
+    def validate_runtime(self) -> None:
+        """Revalidate the actual provider envelope and no-fallback policy."""
+        agent = self._agent
+        expected = self._expected
+        provider, model, api_mode, reasoning_effort = runtime_selection_fingerprint(
+            agent
+        )
         actual = {
-            "provider": str(getattr(agent, "provider", "") or ""),
-            "model": str(getattr(agent, "model", "") or ""),
-            "api_mode": str(getattr(agent, "api_mode", "") or ""),
-            "reasoning_effort": self._reasoning_effort(agent),
+            "provider": provider,
+            "model": model,
+            "api_mode": api_mode,
+            "reasoning_effort": reasoning_effort,
             "context_window_tokens": int(
                 getattr(getattr(agent, "context_compressor", None), "context_length", 0)
                 or 0
@@ -236,19 +311,15 @@ class HermesAIAgentSession:
             for key in wanted
             if actual[key] != wanted[key]
         ]
+        fallback_chain = list(getattr(agent, "_fallback_chain", None) or [])
+        if fallback_chain or getattr(agent, "_fallback_model", None):
+            drift.append("fallback chain must be empty")
         if not bool(getattr(agent, "skip_memory", False)):
             drift.append("Hermes memory plugin must be disabled for Harness turns")
         if not bool(getattr(agent, "skip_background_review", False)):
             drift.append("Hermes background review must be disabled for Harness turns")
         if drift:
             raise RuntimeSelectionError("runtime selection drift: " + "; ".join(drift))
-
-    @staticmethod
-    def _reasoning_effort(agent: Any) -> str:
-        config = getattr(agent, "reasoning_config", None)
-        if not isinstance(config, dict) or config.get("enabled") is False:
-            return ""
-        return str(config.get("effort") or "")
 
     def invoke(
         self,
@@ -258,6 +329,7 @@ class HermesAIAgentSession:
         control: InvocationControl,
     ) -> AgentTurnResult:
         invocation_done = threading.Event()
+        cancellation_state = _InvocationCancellationState()
         cancellation_workers: list[threading.Thread] = []
 
         def interrupt_at_safe_boundary(reason: str) -> None:
@@ -267,7 +339,10 @@ class HermesAIAgentSession:
                 None,
             )
             if callable(request_at_boundary):
-                if bool(request_at_boundary(reason)):
+                queued = cancellation_state.deliver(
+                    lambda: request_at_boundary(reason)
+                )
+                if queued is True:
                     control._safe_boundary_deferred.set()
                 return
 
@@ -280,8 +355,10 @@ class HermesAIAgentSession:
                     control._safe_boundary_deferred.set()
                     if invocation_done.wait(0.01):
                         return
-                if not invocation_done.is_set():
-                    self._agent.interrupt(reason)
+                if not invocation_done.is_set() and not cancellation_state.provider_returned:
+                    cancellation_state.deliver(
+                        lambda: self._agent.interrupt(reason)
+                    )
 
             worker = threading.Thread(
                 target=deliver,
@@ -306,11 +383,20 @@ class HermesAIAgentSession:
                 conversation_history=request.context_messages or None,
                 stream_callback=on_delta,
             )
+            cancellation_state.publish_provider_returned()
         finally:
             invocation_done.set()
             unbind_cancel()
             for worker in cancellation_workers:
                 worker.join(timeout=0.1)
+        self.validate_runtime()
+        completed = bool(raw.get("completed"))
+        failed = bool(raw.get("failed"))
+        interrupted = bool(raw.get("interrupted"))
+        if cancellation_state.must_retire_interrupt(interrupted=interrupted):
+            clear_interrupt = getattr(self._agent, "clear_interrupt", None)
+            if callable(clear_interrupt):
+                clear_interrupt()
         usage = {
             key: int(raw.get(key) or 0)
             for key in self._USAGE_KEYS
@@ -340,7 +426,12 @@ class HermesAIAgentSession:
         return AgentTurnResult(
             final_output=raw.get("final_response"),
             context_messages=messages,
-            interrupted=bool(raw.get("interrupted")),
+            interrupted=interrupted,
+            completed=completed,
+            failed=failed,
+            failure_reason=(
+                str(raw.get("failure_reason") or raw.get("error") or "") or None
+            ),
             resume_token=request.resume_token if raw.get("interrupted") else None,
             usage=usage,
             remaining_work=(
@@ -457,6 +548,19 @@ class HermesInvocationRuntime:
             )
             return result
 
+        if result.failed or not result.completed:
+            emit(
+                InvocationEvent(
+                    InvocationEventKind.FAILED,
+                    "runtime",
+                    result.failure_reason
+                    or result.final_output
+                    or "Hermes invocation did not complete",
+                    ephemeral=False,
+                )
+            )
+            return result
+
         if result.final_output is None:
             raise RuntimeError("completed invocation did not produce a final output")
         emit(
@@ -531,4 +635,5 @@ __all__ = [
     "RuntimeModelConfig",
     "RuntimeSelectionError",
     "SAFE_BOUNDARY_RESUME_PROMPT",
+    "runtime_selection_fingerprint",
 ]
