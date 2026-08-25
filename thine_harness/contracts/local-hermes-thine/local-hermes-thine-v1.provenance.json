@@ -1,0 +1,36 @@
+{
+  "contract_pack": "local-hermes-thine",
+  "contract_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "controller_commit": "2479efa6059ae2b0185cfdf575c53c74eb64ce59",
+  "source_path": "contracts/local-hermes-thine/v1",
+  "file_sha256": {
+    "README.md": "2c814137db343250ada89f9f9c7bd30a163226736d6ee71b40805d2dcce4a57c",
+    "fixtures/invalid/dataplane.json": "ac906087d42244d6bc5c0d0609efd739679b80cd064edf896a8d4069bf1d6269",
+    "fixtures/invalid/mobile.json": "9c2973d2344a347a9f8aa93b673d6143801e32cdbc30510cda6b27ef50c35898",
+    "fixtures/invalid/policy.json": "b350973cdeac02498a2f4c75a230fac8f21dce599bdf617789cc66baac21ce4b",
+    "fixtures/invalid/runtime.json": "16ef362ed2425cb7747dfb671fc9f0920f987673e8a96c1fee20585a1cd996fe",
+    "fixtures/valid/dataplane.json": "a501e9e5bf866950986c9adf9eba9b17e1e3950afee0bb472e8c5388f337d3e4",
+    "fixtures/valid/mobile.json": "7d6e03e8aa6eb679f8bf83462cf4a1bace97e60df902b3986ebd25c257571b4a",
+    "fixtures/valid/policy.json": "eca9a294dbe97df0908b647327d9c177c99230269678f8b062262eb3fdb56227",
+    "fixtures/valid/runtime.json": "d541681e5bd8c0b86bae9c9f15aa4f1dc2625fa96fb398a2114c52bc7a532ca2",
+    "manifest.json": "06cc475f014fd436251580c82083072f3bf483792948d81748935c1ac1270c9a",
+    "metadata/compatibility.json": "4e90bc5e04e3ba609baae0e9bee4cafaa505dd0e0caeba91f6d4f22d05fa6420",
+    "metadata/endpoint-routing.json": "d4adaa90e29df49650d713a5c74b1ea4d04ecfef0c15bb3eded5fdcccc2fe2e0",
+    "metadata/home-registry.json": "24a7797a635df6d00ccf5f6cde8ec64b65b0c4f0d1188d4f92f2c6650683d4ed",
+    "metadata/interaction-allowlist.json": "0e238ec49dc118c3e1fccff3929878a14bfc6d78971dfd95b0475a6c2733069a",
+    "metadata/owners.json": "cb8058238296b1d1ffc25505e7bfbb752a8cbb22ce499736b2f003bfabfddbfd",
+    "metadata/privacy-and-limits.json": "85f1c9ca33b7089ab999019bba4dfecb37d1c938eb8ea051671c2b9041c85273",
+    "metadata/runtime-profile.json": "efe25c5ebb8f4e57dc1aab7a3d8a5f420a50bb591c253d9941ba167108e29cd5",
+    "metadata/serialization-map.json": "78528ad1f53167ea36512279663ab6169f78f0bebc5846dba7fb9022df90184a",
+    "metadata/source-locks.json": "d53f97a1d8d02ca321f5655f42c0203f11cc344c0fbb8806860f3d9b69bd7765",
+    "metadata/state-machines.json": "5fc070a449a0bcb99286bfea04c70f0a0fb9923aae692c557fb6825a50f3102d",
+    "metadata/topology.json": "62fa98e09ee9092ec2bebe0375dfce8d97263f43d2d0701fe90193a4f6367eda",
+    "schemas/dataplane.schema.json": "a0a8b81b845f5de128845db02ec822b48c2a926a5bfc56acee1742142677fb9f",
+    "schemas/mobile.schema.json": "2efadf47fe95ceb77a47f87cc716fd80f1f962240c7d9b3a4b2aa8fcdbe66fdb",
+    "schemas/policy.schema.json": "05d9766d8f206899e85742ac41587944eae202ddc5e3018bf8dd860be332df0b",
+    "schemas/runtime.schema.json": "2339d916957cfd51c7d1c25dcb663add622a210af7c8f52d60b3826da2e1c1ff"
+  }
+}

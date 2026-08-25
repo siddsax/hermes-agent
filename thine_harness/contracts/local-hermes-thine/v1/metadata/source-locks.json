@@ -1,0 +1,65 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "accepted_inputs": {
+    "planning": "1651b810e3e0115a20e21f43f68169346d53381c",
+    "backend": "d0d623dac5588237a20f141d5806668e6b979675",
+    "hermes": "d6eca2c432d3517d1a38edeaeaaae56c4d398d8d",
+    "mobile": "041ca7b2f442d3e0f1b700182ac93a68e9bf702c"
+  },
+  "original_source_pins": {
+    "backend": "d21a4fa5e36749f5558f08d043c05de1c43c6a7e",
+    "hermes": "41447a6d7063b2772b0c2f26a5b22d9bd444fb43",
+    "mobile": "9c193e95da2680ca854dcb2ce6ef53f7e04b4657"
+  },
+  "input_artifacts": {
+    "planning": [
+      "CONTEXT.md",
+      "docs/plans/local-hermes-thine/architecture-plan-v8-final.md",
+      "docs/plans/local-hermes-thine/execution-workstreams-v8-final.md",
+      "docs/plans/local-hermes-thine/decision-amendment-v7-to-v8.md",
+      "docs/plans/local-hermes-thine/decision-amendment-v8-w0-ah.md",
+      "docs/adr/0001-use-the-hermes-fork-as-the-harness.md",
+      "docs/adr/0002-run-the-thine-runtime-locally-behind-one-tunnel.md",
+      "docs/adr/0003-claim-transcripts-through-the-dataplane-owner.md",
+      "docs/adr/0004-coordinate-work-as-single-flight-durable-ticks.md",
+      "docs/adr/0005-use-one-bounded-working-memory-document.md",
+      "docs/adr/0006-let-hermes-author-home-without-owning-navigation.md",
+      "docs/adr/0007-recover-cross-store-work-with-receipts.md"
+    ],
+    "backend": [
+      "apps/dataplane/src/hermes/transcript-inbox.ts",
+      "apps/dataplane/src/hermes/transcript-inbox.test.ts",
+      "apps/dataplane/src/migrations.ts",
+      "docs/architecture/hermes-dataplane-claim-seam.md"
+    ],
+    "hermes": [
+      "thine_harness/contracts/runtime-model-v1.json",
+      "thine_harness/contracts/runtime-envelope-v1.json",
+      "thine_harness/contracts/hermes-ownership-v1.json",
+      "thine_harness/runtime.py",
+      "thine_harness/working_memory.py",
+      "docs/thine_harness/THI3-41-runtime-proof.md"
+    ],
+    "mobile": [
+      "docs/local-hermes/mobile-surface-inventory.v1.json",
+      "docs/local-hermes/mobile-surface-inventory.md"
+    ]
+  },
+  "planning_artifact_sha256": {
+    "CONTEXT.md": "7e8340db14cf15917a88a8734dacf9f288ed53c675242e9b1ac24f91e8b7e39d",
+    "docs/plans/local-hermes-thine/architecture-plan-v8-final.md": "2856b7a2cb927a3eaaa87a4a91c86a6e883d00e1404f3c533b78f8b2cc405730",
+    "docs/plans/local-hermes-thine/execution-workstreams-v8-final.md": "fb20aa6db02fef9c878b6ae3eae979e7eeb9096d790ff996e85b649edebe671f",
+    "docs/plans/local-hermes-thine/decision-amendment-v7-to-v8.md": "8cb42347ba3124ba77467d0c0b5e2f572f0bef8ed204f33cd28720ce2eec627a",
+    "docs/plans/local-hermes-thine/decision-amendment-v8-w0-ah.md": "eee9de37bb1c7774aa4bb02d4a753822389a315052f35d8295ad27a50411eb78",
+    "docs/adr/0001-use-the-hermes-fork-as-the-harness.md": "1333bcd41498e89d011164c217c08df7f5a311d908562c7174b5fd1ebcfbe21c",
+    "docs/adr/0002-run-the-thine-runtime-locally-behind-one-tunnel.md": "9b5cec155d68125a8d3add17f36ef1a01587ce4ebd754f35383ca0b2c9fb13cc",
+    "docs/adr/0003-claim-transcripts-through-the-dataplane-owner.md": "90ae74299559422028fdfc5284e0c10d45239a42c7c4101362dc154dbe027d7f",
+    "docs/adr/0004-coordinate-work-as-single-flight-durable-ticks.md": "d2971571b86588c1c26f72eb815e95b86cb82491f18223b14c8b66d3dc0c718f",
+    "docs/adr/0005-use-one-bounded-working-memory-document.md": "99d718a4e69a7271f37fb6e779f294732fdd6e8a163bfd3fb4782ea9953111e9",
+    "docs/adr/0006-let-hermes-author-home-without-owning-navigation.md": "0543cf9bfb7eaa61fa13730de0d665f6c230691b2867f54708d379d29e208dbb",
+    "docs/adr/0007-recover-cross-store-work-with-receipts.md": "ff3ff45cfcd87666e6d362b2117253131a5462d3f4fcc5ab6028e7fd445271b5"
+  }
+}

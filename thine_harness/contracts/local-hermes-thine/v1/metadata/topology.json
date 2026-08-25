@@ -1,0 +1,37 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "phone": {
+    "thine_origins": [
+      "local_backend_tunnel"
+    ],
+    "direct_hermes_access": false
+  },
+  "local_services": [
+    "thine_backend_worker",
+    "thine_dataplane",
+    "thine_control_plane",
+    "thine_chat",
+    "thine_user_data",
+    "thine_auth_validation",
+    "hermes_fork",
+    "hermes_private_adapters"
+  ],
+  "remote_thine_exceptions": [
+    "deployed_modal"
+  ],
+  "external_provider_dependencies": [
+    "openai",
+    "fcm_apns"
+  ],
+  "fail_closed_no_production_thine_fallback": true,
+  "hermes_backend_transport": "authenticated_loopback_only",
+  "operator_dashboard_exposure": "mac_loopback_only",
+  "forbidden_architectures": [
+    "harnessd",
+    "hermes_plugin",
+    "production_thine_backend_fallback"
+  ]
+}

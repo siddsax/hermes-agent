@@ -1,0 +1,439 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "wire": {
+    "encoding": "utf-8-json",
+    "field_case": "snake_case",
+    "time_unit": "epoch_ms",
+    "nulls": "explicit",
+    "enums": "closed"
+  },
+  "types": {
+    "action_intent": {
+      "owner": "H5",
+      "python": "thine_harness.contracts.action",
+      "typescript": "contracts/hermes/action.ts",
+      "swift": "not_applicable"
+    },
+    "action_receipt": {
+      "owner": "H5",
+      "python": "thine_harness.contracts.action",
+      "typescript": "contracts/hermes/action.ts",
+      "swift": "not_applicable"
+    },
+    "attempt": {
+      "owner": "H3",
+      "python": "thine_harness.contracts.runtime",
+      "typescript": "contracts/hermes/runtime.ts",
+      "swift": "not_applicable"
+    },
+    "chat_current_status": {
+      "owner": "H9",
+      "python": "thine_harness.contracts.chat",
+      "typescript": "contracts/hermes/chat.ts",
+      "swift": "Ele/Data/Contracts/Hermes/ChatContracts.swift"
+    },
+    "chat_event": {
+      "owner": "H9",
+      "python": "thine_harness.contracts.chat",
+      "typescript": "contracts/hermes/chat.ts",
+      "swift": "Ele/Data/Contracts/Hermes/ChatContracts.swift"
+    },
+    "chat_reconnect": {
+      "owner": "B6",
+      "python": "thine_harness.contracts.chat",
+      "typescript": "contracts/hermes/chat.ts",
+      "swift": "Ele/Data/Contracts/Hermes/ChatContracts.swift"
+    },
+    "checkpoint": {
+      "owner": "H3",
+      "python": "thine_harness.contracts.runtime",
+      "typescript": "contracts/hermes/runtime.ts",
+      "swift": "not_applicable"
+    },
+    "dashboard_read_model": {
+      "owner": "H10",
+      "python": "thine_harness.contracts.dashboard",
+      "typescript": "contracts/hermes/dashboard.ts",
+      "swift": "not_applicable"
+    },
+    "dashboard_snapshot": {
+      "owner": "H10",
+      "python": "thine_harness.contracts.dashboard",
+      "typescript": "contracts/hermes/dashboard.ts",
+      "swift": "not_applicable"
+    },
+    "explicit_retry": {
+      "owner": "H10",
+      "python": "thine_harness.contracts.recovery",
+      "typescript": "contracts/hermes/recovery.ts",
+      "swift": "not_applicable"
+    },
+    "final_reply_outbox": {
+      "owner": "H9",
+      "python": "thine_harness.contracts.chat",
+      "typescript": "contracts/hermes/chat.ts",
+      "swift": "not_applicable"
+    },
+    "final_reply_receipt": {
+      "owner": "B6",
+      "python": "thine_harness.contracts.chat",
+      "typescript": "contracts/hermes/chat.ts",
+      "swift": "Ele/Data/Contracts/Hermes/ChatContracts.swift"
+    },
+    "home_activation": {
+      "owner": "H6",
+      "python": "thine_harness.contracts.home",
+      "typescript": "contracts/hermes/home.ts",
+      "swift": "Ele/Data/Contracts/Hermes/HomeContracts.swift"
+    },
+    "home_history": {
+      "owner": "H6",
+      "python": "thine_harness.contracts.home",
+      "typescript": "contracts/hermes/home.ts",
+      "swift": "Ele/Data/Contracts/Hermes/HomeContracts.swift"
+    },
+    "home_revision": {
+      "owner": "H6",
+      "python": "thine_harness.contracts.home",
+      "typescript": "contracts/hermes/home.ts",
+      "swift": "Ele/Data/Contracts/Hermes/HomeContracts.swift"
+    },
+    "home_state": {
+      "owner": "H6",
+      "python": "thine_harness.contracts.home",
+      "typescript": "contracts/hermes/home.ts",
+      "swift": "Ele/Data/Contracts/Hermes/HomeContracts.swift"
+    },
+    "hermes_control_request": {
+      "owner": "B6",
+      "python": "thine_harness.contracts.control",
+      "typescript": "contracts/hermes/control.ts",
+      "swift": "not_applicable"
+    },
+    "hermes_control_response": {
+      "owner": "H9",
+      "python": "thine_harness.contracts.control",
+      "typescript": "contracts/hermes/control.ts",
+      "swift": "not_applicable"
+    },
+    "input_receipt": {
+      "owner": "H3",
+      "python": "thine_harness.contracts.runtime",
+      "typescript": "contracts/hermes/runtime.ts",
+      "swift": "not_applicable"
+    },
+    "input_gap": {
+      "owner": "H8",
+      "python": "thine_harness.contracts.recovery",
+      "typescript": "contracts/hermes/recovery.ts",
+      "swift": "not_applicable"
+    },
+    "invocation_event": {
+      "owner": "H9",
+      "python": "thine_harness.contracts.runtime",
+      "typescript": "contracts/hermes/runtime.ts",
+      "swift": "not_applicable"
+    },
+    "invocation_request": {
+      "owner": "H9",
+      "python": "thine_harness.contracts.runtime",
+      "typescript": "contracts/hermes/runtime.ts",
+      "swift": "not_applicable"
+    },
+    "interaction_batch": {
+      "owner": "M4",
+      "python": "thine_harness.contracts.interactions",
+      "typescript": "contracts/hermes/interactions.ts",
+      "swift": "Ele/Data/Contracts/Hermes/InteractionContracts.swift"
+    },
+    "interaction_cursor_consumption_receipt": {
+      "owner": "H8",
+      "python": "thine_harness.contracts.interactions",
+      "typescript": "contracts/hermes/interactions.ts",
+      "swift": "not_applicable"
+    },
+    "interaction_delivery_ack": {
+      "owner": "H8",
+      "python": "thine_harness.contracts.interactions",
+      "typescript": "contracts/hermes/interactions.ts",
+      "swift": "Ele/Data/Contracts/Hermes/InteractionContracts.swift"
+    },
+    "interaction_event": {
+      "owner": "M4",
+      "python": "thine_harness.contracts.interactions",
+      "typescript": "contracts/hermes/interactions.ts",
+      "swift": "Ele/Data/Contracts/Hermes/InteractionContracts.swift"
+    },
+    "mobile_chat_outbox": {
+      "owner": "M3",
+      "python": "thine_harness.contracts.chat",
+      "typescript": "contracts/hermes/chat.ts",
+      "swift": "Ele/Data/Contracts/Hermes/ChatContracts.swift"
+    },
+    "navigation_intent": {
+      "owner": "M1",
+      "python": "thine_harness.contracts.home",
+      "typescript": "contracts/hermes/home.ts",
+      "swift": "Ele/Data/Contracts/Hermes/NavigationContracts.swift"
+    },
+    "notification_intent": {
+      "owner": "H5",
+      "python": "thine_harness.contracts.notifications",
+      "typescript": "contracts/hermes/notifications.ts",
+      "swift": "Ele/Data/Contracts/Hermes/NotificationContracts.swift"
+    },
+    "notification_outcome": {
+      "owner": "B4",
+      "python": "thine_harness.contracts.notifications",
+      "typescript": "contracts/hermes/notifications.ts",
+      "swift": "Ele/Data/Contracts/Hermes/NotificationContracts.swift"
+    },
+    "notification_permission": {
+      "owner": "M5",
+      "python": "thine_harness.contracts.notifications",
+      "typescript": "contracts/hermes/notifications.ts",
+      "swift": "Ele/Data/Contracts/Hermes/NotificationContracts.swift"
+    },
+    "p0_submission_outbox": {
+      "owner": "B6",
+      "python": "thine_harness.contracts.chat",
+      "typescript": "contracts/hermes/chat.ts",
+      "swift": "Ele/Data/Contracts/Hermes/ChatContracts.swift"
+    },
+    "preferences": {
+      "owner": "H10",
+      "python": "thine_harness.contracts.preferences",
+      "typescript": "contracts/hermes/preferences.ts",
+      "swift": "Ele/Data/Contracts/Hermes/PreferenceContracts.swift"
+    },
+    "quarantine_record": {
+      "owner": "H3",
+      "python": "thine_harness.contracts.recovery",
+      "typescript": "contracts/hermes/recovery.ts",
+      "swift": "not_applicable"
+    },
+    "queue_receipt": {
+      "owner": "H3",
+      "python": "thine_harness.contracts.chat",
+      "typescript": "contracts/hermes/chat.ts",
+      "swift": "Ele/Data/Contracts/Hermes/ChatContracts.swift"
+    },
+    "reset_command": {
+      "owner": "H10",
+      "python": "thine_harness.contracts.reset",
+      "typescript": "contracts/hermes/reset.ts",
+      "swift": "not_applicable"
+    },
+    "reset_result": {
+      "owner": "H10",
+      "python": "thine_harness.contracts.reset",
+      "typescript": "contracts/hermes/reset.ts",
+      "swift": "not_applicable"
+    },
+    "run_finalization": {
+      "owner": "H4",
+      "python": "thine_harness.contracts.runtime",
+      "typescript": "contracts/hermes/runtime.ts",
+      "swift": "not_applicable"
+    },
+    "run_receipt": {
+      "owner": "H3",
+      "python": "thine_harness.contracts.runtime",
+      "typescript": "contracts/hermes/runtime.ts",
+      "swift": "not_applicable"
+    },
+    "schedule": {
+      "owner": "H7",
+      "python": "thine_harness.contracts.schedule",
+      "typescript": "contracts/hermes/schedule.ts",
+      "swift": "not_applicable"
+    },
+    "speaker_cursor_outcome": {
+      "owner": "B3",
+      "python": "thine_harness.contracts.speakers",
+      "typescript": "contracts/hermes/speakers.ts",
+      "swift": "not_applicable"
+    },
+    "speaker_mapping_event": {
+      "owner": "B3",
+      "python": "thine_harness.contracts.speakers",
+      "typescript": "contracts/hermes/speakers.ts",
+      "swift": "Ele/Data/Contracts/Hermes/SpeakerContracts.swift"
+    },
+    "stop_hook_decision": {
+      "owner": "H4",
+      "python": "thine_harness.contracts.working_memory",
+      "typescript": "contracts/hermes/working-memory.ts",
+      "swift": "not_applicable"
+    },
+    "tick": {
+      "owner": "H3",
+      "python": "thine_harness.contracts.runtime",
+      "typescript": "contracts/hermes/runtime.ts",
+      "swift": "not_applicable"
+    },
+    "tool_result": {
+      "owner": "H3",
+      "python": "thine_harness.contracts.runtime",
+      "typescript": "contracts/hermes/runtime.ts",
+      "swift": "not_applicable"
+    },
+    "topic_lifecycle": {
+      "owner": "H10",
+      "python": "thine_harness.contracts.topics",
+      "typescript": "contracts/hermes/topics.ts",
+      "swift": "not_applicable"
+    },
+    "transcript_ack": {
+      "owner": "B1",
+      "python": "thine_harness.contracts.transcripts",
+      "typescript": "contracts/hermes/transcripts.ts",
+      "swift": "not_applicable"
+    },
+    "transcript_canonical_lookup": {
+      "owner": "B1",
+      "python": "thine_harness.contracts.transcripts",
+      "typescript": "contracts/hermes/transcripts.ts",
+      "swift": "not_applicable"
+    },
+    "transcript_claim": {
+      "owner": "B1",
+      "python": "thine_harness.contracts.transcripts",
+      "typescript": "contracts/hermes/transcripts.ts",
+      "swift": "not_applicable"
+    },
+    "transcript_claim_lookup": {
+      "owner": "B1",
+      "python": "thine_harness.contracts.transcripts",
+      "typescript": "contracts/hermes/transcripts.ts",
+      "swift": "not_applicable"
+    },
+    "transcript_claim_request": {
+      "owner": "H8",
+      "python": "thine_harness.contracts.transcripts",
+      "typescript": "contracts/hermes/transcripts.ts",
+      "swift": "not_applicable"
+    },
+    "transcript_lease_renew_request": {
+      "owner": "H8",
+      "python": "thine_harness.contracts.transcripts",
+      "typescript": "contracts/hermes/transcripts.ts",
+      "swift": "not_applicable"
+    },
+    "transcript_lease_renew_result": {
+      "owner": "B1",
+      "python": "thine_harness.contracts.transcripts",
+      "typescript": "contracts/hermes/transcripts.ts",
+      "swift": "not_applicable"
+    },
+    "transcript_reclaim_request": {
+      "owner": "H8",
+      "python": "thine_harness.contracts.transcripts",
+      "typescript": "contracts/hermes/transcripts.ts",
+      "swift": "not_applicable"
+    },
+    "transcript_reclaim_result": {
+      "owner": "B1",
+      "python": "thine_harness.contracts.transcripts",
+      "typescript": "contracts/hermes/transcripts.ts",
+      "swift": "not_applicable"
+    },
+    "transcript_release": {
+      "owner": "B1",
+      "python": "thine_harness.contracts.transcripts",
+      "typescript": "contracts/hermes/transcripts.ts",
+      "swift": "not_applicable"
+    },
+    "working_memory_snapshot": {
+      "owner": "H4",
+      "python": "thine_harness.contracts.working_memory",
+      "typescript": "contracts/hermes/working-memory.ts",
+      "swift": "not_applicable"
+    }
+  },
+  "hermes_module_ownership": {
+    "H3": [
+      "thine_harness/run_coordinator.py",
+      "thine_harness/run_state.py"
+    ],
+    "H4": [
+      "thine_harness/working_memory.py",
+      "thine_harness/run_finalizer.py"
+    ],
+    "H5": [
+      "thine_harness/action_dispatcher.py",
+      "thine_harness/communications.py"
+    ],
+    "H6": [
+      "thine_harness/home_state.py",
+      "thine_harness/interactions.py"
+    ],
+    "H7": [
+      "thine_harness/scheduler.py"
+    ],
+    "H8": [
+      "thine_harness/input_pump.py"
+    ],
+    "H9": [
+      "thine_harness/progress_adapter.py"
+    ],
+    "H10": [
+      "thine_harness/topics.py",
+      "thine_harness/preferences.py",
+      "thine_harness/retention.py",
+      "thine_harness/reset.py",
+      "thine_harness/dashboard_read_models.py"
+    ]
+  },
+  "shared_integration_touchpoints": [
+    {
+      "repository": "hermes",
+      "paths": [
+        "agent/codex_runtime.py",
+        "agent/outbound_request_scope.py"
+      ],
+      "purpose": "outbound_observation",
+      "exclusive": false
+    },
+    {
+      "repository": "hermes",
+      "paths": [
+        "agent/agent_init.py",
+        "run_agent.py"
+      ],
+      "purpose": "safe_boundary_cancellation",
+      "exclusive": false
+    },
+    {
+      "repository": "hermes",
+      "paths": [
+        "agent/tool_execution_scope.py",
+        "model_tools.py",
+        "tools/registry.py"
+      ],
+      "purpose": "stop_hook_tool_denial",
+      "exclusive": false
+    },
+    {
+      "repository": "backend",
+      "paths": [
+        "apps/dataplane/src/index.ts",
+        "apps/dataplane/src/exports/types.ts"
+      ],
+      "purpose": "dataplane_rpc_exports",
+      "exclusive": false
+    },
+    {
+      "repository": "mobile",
+      "paths": [
+        "Ele/App/Core/Navigation/AppRouter.swift",
+        "Ele/Core/Managers/NotificationManager.swift"
+      ],
+      "purpose": "user_owned_navigation_and_push",
+      "exclusive": false
+    }
+  ]
+}

@@ -1,0 +1,773 @@
+{
+  "suite_id": "runtime.invalid.v1",
+  "cases": [
+    {
+      "case_id": "attempt.fourth-rejected",
+      "target": "attempt",
+      "expected_error": "number above maximum",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "attempt_id": "attempt-4",
+        "logical_run_id": "run-1",
+        "ordinal": 4,
+        "cause": "fault_retry",
+        "status": "running",
+        "started_at_ms": 1787644800000,
+        "finished_at_ms": null,
+        "failure_code": null,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "tick.unknown-priority-rejected",
+      "target": "tick",
+      "expected_error": "unknown enum value",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "tick_id": "tick-1",
+        "user_id": "user-local",
+        "logical_run_id": "run-1",
+        "kind": "p0_user_chat",
+        "priority": "urgent",
+        "occurred_at_ms": 1,
+        "received_at_ms": 1,
+        "queued_at_ms": 1,
+        "source_ref": {
+          "kind": "user_message",
+          "id": "message-1"
+        },
+        "causation_id": null,
+        "correlation_id": "correlation-1",
+        "attempt_ordinal": 1,
+        "lease": null,
+        "communication_allowance_snapshot": null,
+        "payload": {
+          "payload_kind": "user_message",
+          "reference_id": "message-1"
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "working-memory.restore-rejected",
+      "target": "working_memory_snapshot",
+      "expected_error": "expected constant False",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "user_id": "user-local",
+        "version": 7,
+        "markdown": "memory",
+        "configured_model_token_count": 100,
+        "tokenizer_status": "exact",
+        "max_tokens": 16000,
+        "debug_retention_versions": 50,
+        "restorable": true,
+        "committed_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "retry.cursor-rewind-rejected",
+      "target": "explicit_retry",
+      "expected_error": "expected constant False",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "retry_run_id": "run-retry",
+        "quarantine_id": "q-1",
+        "source_identity": "speaker:1",
+        "preserved_receipt_ids": [],
+        "created_at_ms": 1,
+        "rewinds_normal_cursor": true,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "action.unknown-major-rejected",
+      "target": "action_receipt",
+      "expected_error": "expected constant 1",
+      "payload": {
+        "schema_version": {
+          "major": 2,
+          "minor": 0
+        },
+        "receipt_id": "receipt-1",
+        "action_id": "action-1",
+        "intent_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "succeeded",
+        "provider_correlation_id": null,
+        "accepted_at_ms": 1,
+        "reconciliation_state": "not_needed",
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "tick.kind-source-mismatch-rejected",
+      "target": "tick",
+      "expected_error": "tick kind source mismatch",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "tick_id": "tick-bad-source",
+        "user_id": "u",
+        "logical_run_id": "r",
+        "kind": "p1_interaction",
+        "priority": "p1",
+        "occurred_at_ms": 1,
+        "received_at_ms": 1,
+        "queued_at_ms": 1,
+        "source_ref": {
+          "kind": "transcript_availability",
+          "id": "source-1"
+        },
+        "causation_id": null,
+        "correlation_id": "c",
+        "attempt_ordinal": 1,
+        "lease": null,
+        "communication_allowance_snapshot": {},
+        "payload": {
+          "payload_kind": "transcript_availability",
+          "reference_id": "source-1"
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "quarantine.ordered-cursor-not-advanced-rejected",
+      "target": "quarantine_record",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "quarantine_id": "q",
+        "source_kind": "interaction",
+        "source_identity": "interaction-range:1-2",
+        "immutable_range": {
+          "range_kind": "interaction_cursors",
+          "first_cursor": 1,
+          "last_cursor": 2
+        },
+        "logical_run_id": "r",
+        "fault_attempts_total": 3,
+        "normal_cursor_advanced": false,
+        "created_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "reset.scoped-preference-delete-rejected",
+      "target": "reset_command",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reset_id": "reset-scoped",
+        "scope": "home_state",
+        "confirmed": true,
+        "explicit_preferences_to_delete": [
+          "notifications_enabled"
+        ],
+        "execute": false,
+        "harness_stopped": false,
+        "live_work_count": 1,
+        "requested_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "reset.execute-with-live-work-rejected",
+      "target": "reset_command",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reset_id": "reset-live",
+        "scope": "all_hermes_state",
+        "confirmed": true,
+        "explicit_preferences_to_delete": [],
+        "execute": true,
+        "harness_stopped": false,
+        "live_work_count": 1,
+        "requested_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "reset.completed-without-preconditions-rejected",
+      "target": "reset_result",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reset_id": "reset-live",
+        "status": "completed",
+        "execution_requested": true,
+        "preconditions_satisfied": false,
+        "preserved_authorities": [
+          "canonical_transcripts",
+          "speaker_mappings",
+          "aggregation_buffer",
+          "quarantine"
+        ],
+        "default_home_recreated": false,
+        "completed_at_ms": 2,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "tool.timeout-without-reconciliation-rejected",
+      "target": "tool_result",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "tool_result_id": "tr",
+        "logical_run_id": "r",
+        "attempt_id": "a",
+        "tool_call_id": "tc",
+        "wire_name": "thine_communications_send",
+        "logical_namespace": "communications",
+        "status": "queued_for_reconciliation",
+        "effect_disposition": "unknown",
+        "safe_summary": "Timed out",
+        "payload_ref": null,
+        "deadline_at_ms": 2,
+        "timeout_ms": 1,
+        "timed_out": true,
+        "reconciliation": "not_needed",
+        "started_at_ms": 1,
+        "finished_at_ms": 2,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "action.open-safe-payload-rejected",
+      "target": "action_intent",
+      "expected_error": "undeclared additive property 'command'",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "identity": {
+          "action_id": "a",
+          "logical_run_id": "r",
+          "effect_ordinal": 1,
+          "intent_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "kind": "background_message",
+        "status": "pending",
+        "created_at_ms": 1,
+        "safe_payload": {
+          "payload_kind": "background_message",
+          "reference_id": "m",
+          "command": "run"
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "p0-outbox.enqueued-without-receipt-rejected",
+      "target": "p0_submission_outbox",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "submission_id": "s",
+        "user_message_id": "m",
+        "idempotency_key": "user-message:m",
+        "status": "enqueued",
+        "queue_receipt_id": null,
+        "cancellable": false,
+        "created_at_ms": 1,
+        "updated_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "final-reply.persisted-without-receipt-rejected",
+      "target": "final_reply_outbox",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "outbox_id": "o",
+        "assistant_message_id": "am",
+        "user_message_id": "um",
+        "logical_run_id": "r",
+        "content_ref": "content:am",
+        "status": "persisted",
+        "backend_receipt_id": null,
+        "created_at_ms": 1,
+        "updated_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "finalization.chat-without-reply-receipt-rejected",
+      "target": "run_finalization",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "logical_run_id": "r",
+        "tick_kind": "p0_user_chat",
+        "phase": "completed",
+        "source_ack_id": null,
+        "final_reply_receipt_id": null,
+        "recovery_mode": "normal",
+        "inference_allowed": false,
+        "restream_allowed": false,
+        "working_memory_outcome": "written",
+        "finalized_at_ms": 2,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "control.deadline-before-creation-rejected",
+      "target": "hermes_control_request",
+      "expected_error": "HermesControlPort deadline must follow request creation",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "request_id": "req",
+        "operation": "health",
+        "user_id": "u",
+        "deadline_at_ms": 1,
+        "timeout_ms": 1000,
+        "idempotency_key": "health:1",
+        "payload_ref": null,
+        "created_at_ms": 2,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "extensions.executable-command-rejected",
+      "target": "attempt",
+      "expected_error": "extensions must be inert and non-executable",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "attempt_id": "a",
+        "logical_run_id": "r",
+        "ordinal": 1,
+        "cause": "initial",
+        "status": "running",
+        "started_at_ms": 1,
+        "finished_at_ms": null,
+        "failure_code": null,
+        "extensions": {
+          "command": "run"
+        }
+      }
+    },
+    {
+      "case_id": "attempt.initial-second-ordinal-rejected",
+      "target": "attempt",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "attempt_id": "a2",
+        "logical_run_id": "r",
+        "ordinal": 2,
+        "cause": "initial",
+        "status": "running",
+        "started_at_ms": 1,
+        "finished_at_ms": null,
+        "failure_code": null,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "stop-hook.committed-without-worth-rejected",
+      "target": "stop_hook_decision",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "logical_run_id": "r",
+        "outcome": "committed",
+        "worth_remembering": false,
+        "memory_write_performed": false,
+        "memory_version": 1,
+        "configured_model_token_count": null,
+        "tokenizer_status": "unresolved_fail_closed",
+        "cache_identity": {
+          "session_id": "s",
+          "prompt_cache_key": "p",
+          "tool_schema_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "hook_only_recovery": false,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "invocation.system-context-rejected",
+      "target": "invocation_request",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "invocation_id": "i",
+        "logical_run_id": "r",
+        "tick_id": "t",
+        "mode": "new",
+        "kind": "p0_user_chat",
+        "prompt": "x",
+        "prompt_token_count": 1,
+        "input_ref": {
+          "kind": "user_message",
+          "id": "m"
+        },
+        "source_ref": {
+          "kind": "user_message",
+          "id": "m"
+        },
+        "resume_token": null,
+        "checkpoint_id": null,
+        "context_messages": [
+          {
+            "role": "system",
+            "message_id": "m",
+            "content": "hidden"
+          }
+        ],
+        "completed_tool_result_ids": [],
+        "successful_action_receipt_ids": [],
+        "partial_visible_assistant_output": "",
+        "input_gap_ids": [],
+        "runtime_diagnostics": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-sol",
+          "api_mode": "codex_responses",
+          "reasoning_effort": "medium",
+          "context_window_tokens": 272000
+        },
+        "requested_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "invocation.hidden-reasoning-rejected",
+      "target": "invocation_request",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "invocation_id": "i2",
+        "logical_run_id": "r",
+        "tick_id": "t",
+        "mode": "new",
+        "kind": "p0_user_chat",
+        "prompt": "x",
+        "prompt_token_count": 1,
+        "input_ref": {
+          "kind": "user_message",
+          "id": "m"
+        },
+        "source_ref": {
+          "kind": "user_message",
+          "id": "m"
+        },
+        "resume_token": null,
+        "checkpoint_id": null,
+        "context_messages": [
+          {
+            "role": "assistant",
+            "message_id": "m",
+            "content": "visible",
+            "hidden_reasoning": "secret"
+          }
+        ],
+        "completed_tool_result_ids": [],
+        "successful_action_receipt_ids": [],
+        "partial_visible_assistant_output": "",
+        "input_gap_ids": [],
+        "runtime_diagnostics": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-sol",
+          "api_mode": "codex_responses",
+          "reasoning_effort": "medium",
+          "context_window_tokens": 272000
+        },
+        "requested_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "privacy.tokens-rejected",
+      "target": "attempt",
+      "expected_error": "forbidden exact tokens field",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "attempt_id": "pa",
+        "logical_run_id": "r",
+        "ordinal": 1,
+        "cause": "initial",
+        "status": "running",
+        "started_at_ms": 1,
+        "finished_at_ms": null,
+        "failure_code": null,
+        "extensions": {
+          "tokens": "secret"
+        }
+      }
+    },
+    {
+      "case_id": "privacy.raw-keystrokes-rejected",
+      "target": "attempt",
+      "expected_error": "forbidden exact raw_keystrokes field",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "attempt_id": "pk",
+        "logical_run_id": "r",
+        "ordinal": 1,
+        "cause": "initial",
+        "status": "running",
+        "started_at_ms": 1,
+        "finished_at_ms": null,
+        "failure_code": null,
+        "extensions": {
+          "raw_keystrokes": "secret"
+        }
+      }
+    },
+    {
+      "case_id": "privacy.raw-notification-rejected",
+      "target": "attempt",
+      "expected_error": "forbidden exact raw_notification_payload field",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "attempt_id": "pn",
+        "logical_run_id": "r",
+        "ordinal": 1,
+        "cause": "initial",
+        "status": "running",
+        "started_at_ms": 1,
+        "finished_at_ms": null,
+        "failure_code": null,
+        "extensions": {
+          "raw_notification_payload": "secret"
+        }
+      }
+    },
+    {
+      "case_id": "reset.stale-preference-confirmation-rejected",
+      "target": "reset_command",
+      "expected_error": "reset preference confirmation revision is stale",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reset_id": "stale",
+        "scope": "all_hermes_state",
+        "confirmed": true,
+        "confirmed_preferences_revision": 1,
+        "current_preferences_revision": 2,
+        "explicit_preferences_to_delete": [
+          {
+            "key": "notifications_enabled",
+            "current_value": false
+          }
+        ],
+        "execute": true,
+        "harness_stopped": true,
+        "live_work_count": 0,
+        "requested_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "reset.duplicate-preference-key-rejected",
+      "target": "reset_command",
+      "expected_error": "reset preference snapshot contains duplicate keys",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reset_id": "dup",
+        "scope": "all_hermes_state",
+        "confirmed": true,
+        "confirmed_preferences_revision": 1,
+        "current_preferences_revision": 1,
+        "explicit_preferences_to_delete": [
+          {
+            "key": "notifications_enabled",
+            "current_value": false
+          },
+          {
+            "key": "notifications_enabled",
+            "current_value": true
+          }
+        ],
+        "execute": true,
+        "harness_stopped": true,
+        "live_work_count": 0,
+        "requested_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "final-reply-outbox.user-message-key-rejected",
+      "target": "final_reply_outbox",
+      "expected_error": "final reply outbox is not keyed by assistant_message_id",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "outbox_id": "o",
+        "assistant_message_id": "a",
+        "user_message_id": "u",
+        "idempotency_key": "user-message:u",
+        "logical_run_id": "r",
+        "content_ref": "content:a",
+        "status": "pending_backend_persistence",
+        "backend_receipt_id": null,
+        "created_at_ms": 1,
+        "updated_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "run-finalization.missing-finalization-id-rejected",
+      "target": "run_finalization",
+      "expected_error": "missing required property 'finalization_id'",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "logical_run_id": "r",
+        "tick_id": "t",
+        "tick_kind": "p0_user_chat",
+        "phase": "completed",
+        "source_ack_id": null,
+        "final_reply_receipt_id": "receipt",
+        "recovery_mode": "normal",
+        "inference_allowed": false,
+        "restream_allowed": false,
+        "working_memory_outcome": "written",
+        "finalized_at_ms": 2,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "privacy.credentials-plural-rejected",
+      "target": "attempt",
+      "expected_error": "fixture contains forbidden sensitive field: credentials",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "attempt_id": "pc",
+        "logical_run_id": "r",
+        "ordinal": 1,
+        "cause": "initial",
+        "status": "running",
+        "started_at_ms": 1,
+        "finished_at_ms": null,
+        "failure_code": null,
+        "extensions": {
+          "credentials": "secret"
+        }
+      }
+    },
+    {
+      "case_id": "privacy.passwords-suffix-rejected",
+      "target": "attempt",
+      "expected_error": "fixture contains forbidden sensitive field: passwords",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "attempt_id": "pp",
+        "logical_run_id": "r",
+        "ordinal": 1,
+        "cause": "initial",
+        "status": "running",
+        "started_at_ms": 1,
+        "finished_at_ms": null,
+        "failure_code": null,
+        "extensions": {
+          "database_passwords": "secret"
+        }
+      }
+    },
+    {
+      "case_id": "interaction-consumption.zero-cursor-rejected",
+      "target": "interaction_cursor_consumption_receipt",
+      "expected_error": "number below minimum",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "consumption_receipt_id": "consumption-invalid",
+        "batch_id": "batch-invalid",
+        "first_cursor": 1,
+        "last_cursor": 1,
+        "logical_run_id": "run-invalid",
+        "finalization_id": "finalization-invalid",
+        "consumed_cursor": 0,
+        "consumed_at_ms": 1,
+        "extensions": {}
+      }
+    }
+  ]
+}

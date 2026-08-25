@@ -1,0 +1,68 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "current": {
+    "major": 1,
+    "minor": 0
+  },
+  "rules": {
+    "unknown_major": "reject",
+    "same_major_newer_minor": "accept_only_declared_extensions_container",
+    "unknown_authoritative_enum": "reject",
+    "unknown_top_level_field": "reject",
+    "field_removal_or_meaning_change": "major_bump",
+    "required_field_addition": "major_bump",
+    "optional_extension_addition": "minor_bump",
+    "new_closed_enum_value": "major_bump_unless_negotiated_capability",
+    "extensions_semantics": "open_storage_only_inert_non_executable"
+  },
+  "examples": [
+    {
+      "case_id": "current_exact",
+      "producer": {
+        "major": 1,
+        "minor": 0
+      },
+      "shape": "declared",
+      "expected": "accept"
+    },
+    {
+      "case_id": "future_minor_declared_extension",
+      "producer": {
+        "major": 1,
+        "minor": 1
+      },
+      "shape": "extensions_only",
+      "expected": "accept"
+    },
+    {
+      "case_id": "future_minor_unknown_top_level",
+      "producer": {
+        "major": 1,
+        "minor": 1
+      },
+      "shape": "unknown_top_level",
+      "expected": "reject"
+    },
+    {
+      "case_id": "future_major",
+      "producer": {
+        "major": 2,
+        "minor": 0
+      },
+      "shape": "declared",
+      "expected": "reject"
+    },
+    {
+      "case_id": "unknown_command_enum",
+      "producer": {
+        "major": 1,
+        "minor": 0
+      },
+      "shape": "unknown_authoritative_enum",
+      "expected": "reject"
+    }
+  ]
+}

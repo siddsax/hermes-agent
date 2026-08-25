@@ -1,0 +1,247 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "queue": {
+    "priority_order": [
+      "p0",
+      "p1",
+      "p2"
+    ],
+    "fifo_within_priority": true,
+    "p1_kinds_fifo_together": [
+      "p1_transcript",
+      "p1_speaker",
+      "p1_interaction"
+    ],
+    "interaction_queued_behind_existing_transcript": true,
+    "max_active_logical_runs_per_user": 1
+  },
+  "attempts": {
+    "max_total_attempts": 3,
+    "first_inference_is_attempt": 1,
+    "counted_causes": [
+      "initial",
+      "provider_fault",
+      "runtime_fault",
+      "failed_finalization",
+      "crash_discarded_uncheckpointed_inference"
+    ],
+    "not_counted": [
+      "p0_preemption",
+      "bounded_continuation"
+    ]
+  },
+  "preemption": {
+    "trigger": "p0_user_chat",
+    "provider_only_action": "cancel_incomplete_request",
+    "active_tool_action": "wait_for_result_persistence_then_yield",
+    "safe_boundary_required": true,
+    "interrupted_run_runs_stop_hook": false,
+    "resume_same_logical_run": true,
+    "resume_position": "before_lower_priority_work"
+  },
+  "run_states": [
+    "queued",
+    "leased",
+    "running",
+    "checkpointed",
+    "memory_finalizing",
+    "reply_delivery_pending",
+    "reply_persisted",
+    "memory_finalization_pending",
+    "awaiting_audio_ack",
+    "awaiting_speaker_cursor_ack",
+    "completed",
+    "failed_retryable",
+    "failed_terminal",
+    "quarantined"
+  ],
+  "transitions": [
+    [
+      "queued",
+      "leased"
+    ],
+    [
+      "leased",
+      "running"
+    ],
+    [
+      "leased",
+      "queued"
+    ],
+    [
+      "running",
+      "queued"
+    ],
+    [
+      "running",
+      "checkpointed"
+    ],
+    [
+      "checkpointed",
+      "queued"
+    ],
+    [
+      "running",
+      "memory_finalizing"
+    ],
+    [
+      "running",
+      "reply_delivery_pending"
+    ],
+    [
+      "reply_delivery_pending",
+      "reply_persisted"
+    ],
+    [
+      "reply_persisted",
+      "memory_finalization_pending"
+    ],
+    [
+      "memory_finalization_pending",
+      "completed"
+    ],
+    [
+      "memory_finalizing",
+      "awaiting_audio_ack"
+    ],
+    [
+      "memory_finalizing",
+      "awaiting_speaker_cursor_ack"
+    ],
+    [
+      "memory_finalizing",
+      "completed"
+    ],
+    [
+      "awaiting_audio_ack",
+      "completed"
+    ],
+    [
+      "awaiting_speaker_cursor_ack",
+      "completed"
+    ],
+    [
+      "running",
+      "failed_retryable"
+    ],
+    [
+      "failed_retryable",
+      "queued"
+    ],
+    [
+      "running",
+      "failed_terminal"
+    ],
+    [
+      "running",
+      "quarantined"
+    ]
+  ],
+  "lease_expiry": {
+    "leased_to_queued": true,
+    "running_to_queued_only_at_safe_boundary": true,
+    "preserve_logical_run_and_receipts": true
+  },
+  "kind_specific_finalization": {
+    "p0_user_chat": [
+      "reply_delivery_pending",
+      "reply_persisted",
+      "memory_finalization_pending",
+      "completed"
+    ],
+    "p1_transcript": [
+      "memory_finalizing",
+      "awaiting_audio_ack",
+      "completed"
+    ],
+    "p1_speaker": [
+      "memory_finalizing",
+      "awaiting_speaker_cursor_ack",
+      "completed"
+    ],
+    "p1_interaction": [
+      "memory_finalizing",
+      "consume_claimed_cursor",
+      "completed"
+    ],
+    "p2_scheduled": [
+      "memory_finalizing",
+      "completed"
+    ]
+  },
+  "post_reply_hook_recovery": {
+    "entry_state": "memory_finalization_pending",
+    "mode": "hook_only",
+    "inference_allowed": false,
+    "restream_allowed": false,
+    "reuse_persisted_invocation_and_tool_transcript": true
+  },
+  "invocation_lifecycle": {
+    "nonterminal_event_kinds": [
+      "accepted",
+      "started",
+      "progress"
+    ],
+    "terminal_event_kinds": [
+      "final",
+      "failed",
+      "interrupted"
+    ],
+    "nonterminal_events_are_ephemeral": true,
+    "terminal_events_are_durable": true,
+    "one_terminal_event_per_invocation": true,
+    "event_identity_matches_request": [
+      "invocation_id",
+      "logical_run_id"
+    ],
+    "sequence_monotonic_per_invocation": true,
+    "runtime_diagnostics_stable_per_invocation": true,
+    "interrupted_requires_resume_token": true,
+    "resumed_invocation_gets_new_invocation_id": true,
+    "resumed_invocation_preserves_logical_run_id": true
+  },
+  "quarantine": {
+    "after_attempt_ordinal": 3,
+    "immutable_source_and_range": true,
+    "normal_cursor_advances_once": true,
+    "later_inputs_continue": true,
+    "explicit_retry_creates_fresh_logical_run": true,
+    "explicit_retry_preserves_source_identity_and_receipts": true,
+    "explicit_retry_rewinds_cursor": false
+  },
+  "interaction_clock": {
+    "timezone_source": "daily_driver_profile_iana_timezone",
+    "minute_boundaries": [
+      0,
+      30
+    ],
+    "stored_boundary_unit": "utc_epoch_ms",
+    "tick_input_policy": "interaction_only",
+    "empty_tick_policy": "do_not_enqueue",
+    "catch_up_policy": "one_tick_through_latest_passed_boundary",
+    "dst_overlap_policy": "distinct_utc_boundary_instants_in_monotonic_order",
+    "dst_gap_policy": "first_valid_instant_after_skipped_local_boundary",
+    "clock_rollback_policy": "never_enqueue_a_boundary_utc_instant_at_or_before_last_recorded_boundary",
+    "events_received_after_boundary_policy": "next_boundary_even_if_occurred_at_is_older"
+  },
+  "schedule_queue": {
+    "kind": "one_shot_only",
+    "count_limit": null,
+    "reason_max_characters": 1000,
+    "idempotency_key": [
+      "user_id",
+      "originating_action_id"
+    ],
+    "initial_priority": "p2",
+    "age_to_p1_after_ms": 600000,
+    "promotion_policy": "single_oldest_overdue_to_p1_tail",
+    "next_promotion_waits_for_prior": [
+      "completed",
+      "failed_terminal",
+      "checkpointed"
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "model": {
+    "provider": "openai-codex",
+    "model": "gpt-5.6-sol",
+    "api_mode": "codex_responses",
+    "reasoning_effort": "medium",
+    "context_window_tokens": 272000
+  },
+  "selection_policy": "fail_closed_no_provider_or_model_fallback",
+  "tool_discovery": {
+    "eager_wire_tools": [
+      "tool_search",
+      "tool_describe",
+      "tool_call"
+    ],
+    "deferred_catalog_listing": "off",
+    "logical_namespaces": [
+      "transcripts",
+      "speakers",
+      "communications",
+      "ui.state",
+      "schedules",
+      "working_memory",
+      "topics",
+      "permissions",
+      "run"
+    ],
+    "wire_name_pattern": "thine_<namespace>_<verb>",
+    "arbitrary_sql_or_rpc": false
+  },
+  "cache_identity_fields": [
+    "session_id",
+    "prompt_cache_key",
+    "tool_schema_sha256"
+  ],
+  "stop_hook": {
+    "same_agent_and_context": true,
+    "same_system_prompt": true,
+    "same_eager_tool_array": true,
+    "working_memory_is_user_side_suffix": true
+  }
+}

@@ -1,0 +1,199 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "contract_owners": {
+    "action_intent": "hermes.action_dispatcher",
+    "action_receipt": "hermes.action_dispatcher",
+    "attempt": "hermes.run_coordinator",
+    "chat_current_status": "hermes.chat_control",
+    "chat_event": "hermes.progress_adapter",
+    "chat_reconnect": "backend.chat_control_bridge",
+    "checkpoint": "hermes.run_coordinator",
+    "dashboard_read_model": "hermes.dashboard_read_models",
+    "dashboard_snapshot": "hermes.dashboard_read_models",
+    "explicit_retry": "hermes.run_coordinator",
+    "final_reply_outbox": "hermes.chat_control",
+    "final_reply_receipt": "backend.chat_transport",
+    "home_activation": "hermes.home_state_projector",
+    "home_history": "hermes.home_state_projector",
+    "home_revision": "hermes.home_state_projector",
+    "home_state": "hermes.home_state_projector",
+    "hermes_control_request": "backend.chat_control_bridge",
+    "hermes_control_response": "hermes.control_port",
+    "input_receipt": "hermes.run_coordinator",
+    "input_gap": "hermes.input_pump",
+    "invocation_event": "hermes.runtime_adapter",
+    "invocation_request": "hermes.runtime_adapter",
+    "interaction_batch": "mobile.interaction_journal",
+    "interaction_cursor_consumption_receipt": "hermes.interaction_inbox",
+    "interaction_delivery_ack": "hermes.interaction_inbox",
+    "interaction_event": "mobile.interaction_journal",
+    "mobile_chat_outbox": "mobile.chat_transport",
+    "navigation_intent": "mobile.navigation",
+    "notification_intent": "hermes.action_dispatcher",
+    "notification_outcome": "backend.push_transport",
+    "notification_permission": "mobile.notification_permission",
+    "p0_submission_outbox": "backend.chat_control_bridge",
+    "preferences": "hermes.preference_store",
+    "quarantine_record": "hermes.run_coordinator",
+    "queue_receipt": "hermes.run_coordinator",
+    "reset_command": "hermes.reset_service",
+    "reset_result": "hermes.reset_service",
+    "run_finalization": "hermes.working_memory_finalizer",
+    "run_receipt": "hermes.run_coordinator",
+    "schedule": "hermes.one_shot_scheduler",
+    "speaker_cursor_outcome": "backend.dataplane_speaker_inbox",
+    "speaker_mapping_event": "backend.dataplane_speaker_inbox",
+    "stop_hook_decision": "hermes.working_memory_finalizer",
+    "tick": "hermes.run_coordinator",
+    "tool_result": "hermes.run_coordinator",
+    "topic_lifecycle": "hermes.preference_store",
+    "transcript_ack": "backend.dataplane_transcript_inbox",
+    "transcript_canonical_lookup": "backend.dataplane_transcript_inbox",
+    "transcript_claim": "backend.dataplane_transcript_inbox",
+    "transcript_claim_lookup": "backend.dataplane_transcript_inbox",
+    "transcript_claim_request": "hermes.input_pump",
+    "transcript_lease_renew_request": "hermes.input_pump",
+    "transcript_lease_renew_result": "backend.dataplane_transcript_inbox",
+    "transcript_reclaim_request": "hermes.input_pump",
+    "transcript_reclaim_result": "backend.dataplane_transcript_inbox",
+    "transcript_release": "backend.dataplane_transcript_inbox",
+    "working_memory_snapshot": "hermes.working_memory_finalizer"
+  },
+  "field_authority_policy": "contract_owner_owns_every_declared_field_no_overrides",
+  "authoritative_state": [
+    {
+      "state_path": "hermes.queue_ticks",
+      "owner": "hermes.run_coordinator"
+    },
+    {
+      "state_path": "hermes.logical_runs_attempts",
+      "owner": "hermes.run_coordinator"
+    },
+    {
+      "state_path": "hermes.checkpoints",
+      "owner": "hermes.run_coordinator"
+    },
+    {
+      "state_path": "hermes.run_input_queue_receipts",
+      "owner": "hermes.run_coordinator"
+    },
+    {
+      "state_path": "hermes.quarantine_retry_identity",
+      "owner": "hermes.run_coordinator"
+    },
+    {
+      "state_path": "hermes.action_intents_receipts",
+      "owner": "hermes.action_dispatcher"
+    },
+    {
+      "state_path": "hermes.final_reply_outbox",
+      "owner": "hermes.chat_control"
+    },
+    {
+      "state_path": "hermes.working_memory_versions",
+      "owner": "hermes.working_memory_finalizer"
+    },
+    {
+      "state_path": "hermes.home_revisions",
+      "owner": "hermes.home_state_projector"
+    },
+    {
+      "state_path": "hermes.interaction_processing_cursor",
+      "owner": "hermes.interaction_inbox"
+    },
+    {
+      "state_path": "hermes.schedules",
+      "owner": "hermes.one_shot_scheduler"
+    },
+    {
+      "state_path": "hermes.preferences_topics",
+      "owner": "hermes.preference_store"
+    },
+    {
+      "state_path": "backend.canonical_transcripts_segments",
+      "owner": "backend.dataplane_transcript_inbox"
+    },
+    {
+      "state_path": "backend.aggregation_buffer_claims_ack_receipts",
+      "owner": "backend.dataplane_transcript_inbox"
+    },
+    {
+      "state_path": "backend.speakers_mapping_cursor",
+      "owner": "backend.dataplane_speaker_inbox"
+    },
+    {
+      "state_path": "backend.chat_messages_delivery_receipts",
+      "owner": "backend.chat_transport"
+    },
+    {
+      "state_path": "backend.p0_submission_outbox",
+      "owner": "backend.chat_control_bridge"
+    },
+    {
+      "state_path": "mobile.interaction_delivery_outbox",
+      "owner": "mobile.interaction_journal"
+    },
+    {
+      "state_path": "mobile.user_chat_outbox",
+      "owner": "mobile.chat_transport"
+    },
+    {
+      "state_path": "mobile.notification_permission_observation",
+      "owner": "mobile.notification_permission"
+    },
+    {
+      "state_path": "mobile.current_screen_navigation",
+      "owner": "mobile.navigation"
+    }
+  ],
+  "derived_read_models": [
+    {
+      "projection": "operator_dashboard.queue",
+      "authoritative": false,
+      "source_state_paths": [
+        "hermes.queue_ticks",
+        "hermes.logical_runs_attempts"
+      ]
+    },
+    {
+      "projection": "operator_dashboard.transcripts",
+      "authoritative": false,
+      "source_state_paths": [
+        "backend.aggregation_buffer_claims_ack_receipts",
+        "backend.canonical_transcripts_segments"
+      ]
+    },
+    {
+      "projection": "operator_dashboard.home",
+      "authoritative": false,
+      "source_state_paths": [
+        "hermes.home_revisions"
+      ]
+    },
+    {
+      "projection": "operator_dashboard.memory",
+      "authoritative": false,
+      "source_state_paths": [
+        "hermes.working_memory_versions"
+      ]
+    },
+    {
+      "projection": "mobile.home_snapshot",
+      "authoritative": false,
+      "source_state_paths": [
+        "hermes.home_revisions"
+      ]
+    },
+    {
+      "projection": "mobile.chat_current_status",
+      "authoritative": false,
+      "source_state_paths": [
+        "hermes.logical_runs_attempts",
+        "backend.chat_messages_delivery_receipts"
+      ]
+    }
+  ]
+}

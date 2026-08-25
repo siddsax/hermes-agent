@@ -1,0 +1,1797 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.thine.test/contracts/local-hermes-thine/v1/mobile.schema.json",
+  "$defs": {
+    "version": {
+      "type": "object",
+      "required": [
+        "major",
+        "minor"
+      ],
+      "properties": {
+        "major": {
+          "const": 1
+        },
+        "minor": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "extensions": {
+      "type": "object"
+    },
+    "chat_event": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "event_id",
+        "stream_id",
+        "step_id",
+        "user_message_id",
+        "assistant_message_id",
+        "final_reply_receipt_id",
+        "kind",
+        "phase",
+        "safe_display_text",
+        "ephemeral",
+        "origin",
+        "emitted_at_ms",
+        "heartbeat_max_silence_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "stream_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "step_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "user_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "assistant_message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "final_reply_receipt_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "kind": {
+          "enum": [
+            "accepted",
+            "started",
+            "assistant_delta",
+            "safe_status",
+            "tool_started",
+            "tool_progress",
+            "tool_succeeded",
+            "tool_failed",
+            "heartbeat",
+            "final",
+            "interrupted",
+            "recovering",
+            "failed"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "safe_display_text": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "ephemeral": {
+          "type": "boolean"
+        },
+        "origin": {
+          "const": "user_initiated_chat"
+        },
+        "emitted_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "heartbeat_max_silence_ms": {
+          "const": 5000
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "final"
+            },
+            "assistant_message_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "final_reply_receipt_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ephemeral": {
+              "const": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "accepted",
+                "started",
+                "assistant_delta",
+                "safe_status",
+                "tool_started",
+                "tool_progress",
+                "tool_succeeded",
+                "tool_failed",
+                "heartbeat",
+                "recovering"
+              ]
+            },
+            "assistant_message_id": {
+              "type": "null"
+            },
+            "final_reply_receipt_id": {
+              "type": "null"
+            },
+            "ephemeral": {
+              "const": true
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "interrupted",
+                "failed"
+              ]
+            },
+            "assistant_message_id": {
+              "type": "null"
+            },
+            "final_reply_receipt_id": {
+              "type": "null"
+            },
+            "ephemeral": {
+              "const": false
+            }
+          }
+        }
+      ]
+    },
+    "chat_current_status": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "user_message_id",
+        "stream_id",
+        "state",
+        "safe_display_text",
+        "updated_at_ms",
+        "replay_transient_progress",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "user_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "stream_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "state": {
+          "enum": [
+            "accepted",
+            "running",
+            "interrupted",
+            "recovering",
+            "completed",
+            "failed"
+          ]
+        },
+        "safe_display_text": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "replay_transient_progress": {
+          "const": false
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "chat_reconnect": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "canonical_message_ids",
+        "current_status",
+        "future_events_only",
+        "outbox_pending_message_ids",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "canonical_message_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "current_status": {
+          "$ref": "#/$defs/chat_current_status"
+        },
+        "future_events_only": {
+          "const": true
+        },
+        "outbox_pending_message_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mobile_chat_outbox": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "local_outbox_id",
+        "user_id",
+        "user_message_id",
+        "idempotency_key",
+        "submission_order",
+        "status",
+        "backend_submission_id",
+        "queue_receipt_id",
+        "cancellable",
+        "created_at_ms",
+        "updated_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "local_outbox_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "submission_order": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "waiting_for_connection",
+            "submitting",
+            "submitted",
+            "cancelled"
+          ]
+        },
+        "backend_submission_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "queue_receipt_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "cancellable": {
+          "type": "boolean"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "waiting_for_connection",
+                "submitting"
+              ]
+            },
+            "backend_submission_id": {
+              "type": "null"
+            },
+            "queue_receipt_id": {
+              "type": "null"
+            },
+            "cancellable": {
+              "const": true
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "submitted"
+            },
+            "backend_submission_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "queue_receipt_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cancellable": {
+              "const": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "cancelled"
+            },
+            "backend_submission_id": {
+              "type": "null"
+            },
+            "queue_receipt_id": {
+              "type": "null"
+            },
+            "cancellable": {
+              "const": false
+            }
+          }
+        }
+      ]
+    },
+    "navigation_intent": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "intent_id",
+        "destination_id",
+        "parameters",
+        "activation_source",
+        "user_action_id",
+        "created_at_ms",
+        "force_current_screen",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "intent_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "destination_id": {
+          "enum": [
+            "route.home",
+            "route.chat",
+            "route.connectors",
+            "route.speakers-list",
+            "route.notification-settings",
+            "route.permission-other",
+            "route.live-transcript",
+            "route.profile"
+          ]
+        },
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "message_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 128
+            },
+            "open_add_sheet": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "activation_source": {
+          "enum": [
+            "home_tap",
+            "os_notification_tap"
+          ]
+        },
+        "user_action_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "force_current_screen": {
+          "const": false
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "home_node": {
+      "type": "object",
+      "required": [
+        "node_id",
+        "component_id",
+        "visible",
+        "order",
+        "content",
+        "navigation_template"
+      ],
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "component_id": {
+          "enum": [
+            "home.hero.greeting",
+            "home.action.what-did-i-miss",
+            "home.card.connectors",
+            "home.card.people"
+          ]
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "order": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "content": {
+          "type": "object",
+          "required": [
+            "title",
+            "body",
+            "count",
+            "action_key"
+          ],
+          "properties": {
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 120
+            },
+            "body": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 500
+            },
+            "count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "action_key": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64
+            }
+          },
+          "additionalProperties": false
+        },
+        "navigation_template": {
+          "enum": [
+            "route.chat",
+            "route.connectors",
+            "route.speakers-list",
+            null
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "component_id": {
+              "const": "home.hero.greeting"
+            },
+            "navigation_template": {
+              "type": "null"
+            },
+            "content": {
+              "properties": {
+                "count": {
+                  "type": "null"
+                },
+                "action_key": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "component_id": {
+              "const": "home.action.what-did-i-miss"
+            },
+            "navigation_template": {
+              "const": "route.chat"
+            },
+            "content": {
+              "properties": {
+                "count": {
+                  "type": "null"
+                },
+                "action_key": {
+                  "const": "open_chat"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "component_id": {
+              "const": "home.card.connectors"
+            },
+            "navigation_template": {
+              "const": "route.connectors"
+            },
+            "content": {
+              "properties": {
+                "count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "action_key": {
+                  "const": "open_connectors"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "component_id": {
+              "const": "home.card.people"
+            },
+            "navigation_template": {
+              "const": "route.speakers-list"
+            },
+            "content": {
+              "properties": {
+                "count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "action_key": {
+                  "const": "open_speakers"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "home_state": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "user_id",
+        "revision",
+        "updated_at_ms",
+        "nodes",
+        "app_owned_chrome",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nodes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/home_node"
+          }
+        },
+        "app_owned_chrome": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "home.chrome.header",
+              "home.banner.google-reconnect",
+              "home.card.listening",
+              "home.chrome.footer"
+            ]
+          }
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "home_revision": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "revision",
+        "parent_revision",
+        "originating_run_id",
+        "action_id",
+        "reason",
+        "created_at_ms",
+        "state",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "parent_revision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "originating_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "action_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state": {
+          "$ref": "#/$defs/home_state"
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "home_history": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "current_revision",
+        "retention_limit",
+        "revisions",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "current_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "retention_limit": {
+          "const": 50
+        },
+        "revisions": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/home_revision"
+          }
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "home_activation": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "action_id",
+        "source_revision",
+        "expected_current_revision",
+        "new_revision",
+        "revalidated",
+        "navigation_changed",
+        "created_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "action_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "source_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "expected_current_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "new_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "revalidated": {
+          "const": true
+        },
+        "navigation_changed": {
+          "const": false
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "primary_correlation": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "primary_kind",
+        "primary_id",
+        "previously_delivered"
+      ],
+      "properties": {
+        "primary_kind": {
+          "enum": [
+            "p0_user_chat",
+            "speaker_mapping"
+          ]
+        },
+        "primary_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "previously_delivered": {
+          "const": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "interaction_event": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "event_id",
+        "user_id",
+        "device_id",
+        "occurred_at_ms",
+        "received_at_ms",
+        "screen_id",
+        "surface_id",
+        "kind",
+        "object_ref",
+        "outcome",
+        "home_revision",
+        "home_node_id",
+        "primary_correlation",
+        "safe_payload",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "device_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "occurred_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "received_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "screen_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "surface_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "kind": {
+          "enum": [
+            "navigation_selection",
+            "home_activation",
+            "chat_submission",
+            "speaker_action",
+            "integration_change",
+            "recording_control",
+            "notification_action",
+            "settings_change",
+            "permission_action",
+            "notes_action",
+            "task_action",
+            "gift_action",
+            "transcript_action",
+            "voice_fingerprint_action",
+            "account_action"
+          ]
+        },
+        "object_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "outcome": {
+          "enum": [
+            "requested",
+            "accepted",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "unknown"
+          ]
+        },
+        "home_revision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "home_node_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "primary_correlation": {
+          "$ref": "#/$defs/primary_correlation"
+        },
+        "safe_payload": {
+          "type": "object",
+          "required": [
+            "action",
+            "closed_value"
+          ],
+          "properties": {
+            "action": {
+              "enum": [
+                "route_select",
+                "tab_select",
+                "widget_open",
+                "shortcut_open",
+                "live_activity_open",
+                "universal_link_open",
+                "component_tap",
+                "last_good_fallback",
+                "invalid_state_diagnostic",
+                "send_accepted",
+                "offline_retry",
+                "pre_submit_cancel",
+                "report_message",
+                "tag",
+                "rename",
+                "merge",
+                "unlink",
+                "archive",
+                "discard_sample",
+                "sample_play",
+                "sample_pause",
+                "connector_add",
+                "connector_remove",
+                "connector_status",
+                "ambient_start",
+                "ambient_pause",
+                "ambient_resume",
+                "ambient_stop",
+                "open",
+                "dismiss",
+                "closed_key_toggle",
+                "show",
+                "request",
+                "continue",
+                "open_settings",
+                "outcome",
+                "share_request",
+                "copy_request",
+                "edit_request",
+                "calendar_open",
+                "date_select",
+                "retry",
+                "return_today",
+                "transcript_open",
+                "prepare",
+                "finish",
+                "undo",
+                "flush",
+                "error",
+                "impression",
+                "open_page",
+                "save_request",
+                "refresh",
+                "open_speaker",
+                "start",
+                "skip",
+                "logout_request",
+                "logout_confirm",
+                "delete_request",
+                "delete_confirm"
+              ]
+            },
+            "closed_value": {
+              "type": [
+                "string",
+                "boolean",
+                "integer",
+                "null"
+              ],
+              "maxLength": 128
+            }
+          },
+          "additionalProperties": false
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "navigation_selection"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "route_select",
+                    "tab_select",
+                    "widget_open",
+                    "shortcut_open",
+                    "live_activity_open",
+                    "universal_link_open"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "home_activation"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "component_tap",
+                    "last_good_fallback",
+                    "invalid_state_diagnostic"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "chat_submission"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "send_accepted",
+                    "offline_retry",
+                    "pre_submit_cancel",
+                    "report_message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "speaker_action"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "tag",
+                    "rename",
+                    "merge",
+                    "unlink",
+                    "archive",
+                    "discard_sample",
+                    "sample_play",
+                    "sample_pause"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "integration_change"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "connector_add",
+                    "connector_remove",
+                    "connector_status"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "recording_control"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "ambient_start",
+                    "ambient_pause",
+                    "ambient_resume",
+                    "ambient_stop"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "notification_action"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "open",
+                    "dismiss"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "settings_change"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "const": "closed_key_toggle"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "permission_action"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "show",
+                    "request",
+                    "continue",
+                    "open_settings",
+                    "outcome"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "notes_action"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "open",
+                    "share_request",
+                    "copy_request",
+                    "edit_request",
+                    "calendar_open",
+                    "date_select",
+                    "retry",
+                    "return_today",
+                    "transcript_open"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "task_action"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "prepare",
+                    "finish",
+                    "undo",
+                    "flush",
+                    "retry",
+                    "error",
+                    "dismiss"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "gift_action"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "impression",
+                    "open_page",
+                    "share_request",
+                    "save_request",
+                    "dismiss"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "transcript_action"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "refresh",
+                    "retry",
+                    "open_speaker",
+                    "share_request"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "voice_fingerprint_action"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "show",
+                    "start",
+                    "retry",
+                    "skip",
+                    "continue"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "account_action"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "logout_request",
+                    "logout_confirm",
+                    "delete_request",
+                    "delete_confirm"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "interaction_batch": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "batch_id",
+        "user_id",
+        "first_cursor",
+        "last_cursor",
+        "window_start_ms",
+        "window_end_ms",
+        "events",
+        "delivery_attempt",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "batch_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "first_cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "last_cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "window_start_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_end_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/interaction_event"
+          }
+        },
+        "delivery_attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "interaction_delivery_ack": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "ack_id",
+        "batch_id",
+        "ack_cursor",
+        "durably_stored_event_ids",
+        "model_processed",
+        "acknowledged_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "ack_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "batch_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ack_cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "durably_stored_event_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "model_processed": {
+          "const": false
+        },
+        "acknowledged_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "notification_permission": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "user_preference",
+        "os_permission",
+        "last_permission_ask_at_ms",
+        "last_permission_ask_topic_id",
+        "observed_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "user_preference": {
+          "enum": [
+            "enabled",
+            "disabled"
+          ]
+        },
+        "os_permission": {
+          "enum": [
+            "authorized",
+            "denied",
+            "not_determined",
+            "provisional",
+            "unknown"
+          ]
+        },
+        "last_permission_ask_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "last_permission_ask_topic_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "observed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "notification_intent": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "action_id",
+        "kind",
+        "title",
+        "body",
+        "persisted_message_id",
+        "navigation_template",
+        "push_required_for_background_message",
+        "created_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "action_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "kind": {
+          "enum": [
+            "background_message_push",
+            "standalone_notification"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "persisted_message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "navigation_template": {
+          "enum": [
+            "route.chat",
+            "route.connectors",
+            "route.speakers-list",
+            "route.notification-settings",
+            "route.permission-other",
+            "route.live-transcript",
+            "route.profile",
+            null
+          ]
+        },
+        "push_required_for_background_message": {
+          "const": true
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "background_message_push"
+            },
+            "persisted_message_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "navigation_template": {
+              "const": "route.chat"
+            },
+            "push_required_for_background_message": {
+              "const": true
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "standalone_notification"
+            },
+            "persisted_message_id": {
+              "type": "null"
+            },
+            "push_required_for_background_message": {
+              "const": true
+            }
+          }
+        }
+      ]
+    },
+    "notification_outcome": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "action_id",
+        "communication_kind",
+        "outcome",
+        "provider_correlation_id",
+        "persisted_message_id",
+        "permission_state",
+        "allowance_consumed",
+        "completed_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "action_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "communication_kind": {
+          "enum": [
+            "background_message",
+            "standalone_notification"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "accepted",
+            "skipped_permission_disabled",
+            "permission_required",
+            "capability_disabled",
+            "failed_terminal"
+          ]
+        },
+        "provider_correlation_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "persisted_message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "permission_state": {
+          "enum": [
+            "authorized",
+            "denied",
+            "not_determined",
+            "provisional",
+            "unknown"
+          ]
+        },
+        "allowance_consumed": {
+          "type": "boolean"
+        },
+        "completed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "communication_kind": {
+              "const": "background_message"
+            },
+            "outcome": {
+              "enum": [
+                "accepted",
+                "skipped_permission_disabled",
+                "failed_terminal"
+              ]
+            },
+            "persisted_message_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "allowance_consumed": {
+              "const": true
+            }
+          }
+        },
+        {
+          "properties": {
+            "communication_kind": {
+              "const": "standalone_notification"
+            },
+            "outcome": {
+              "const": "accepted"
+            },
+            "persisted_message_id": {
+              "type": "null"
+            },
+            "allowance_consumed": {
+              "const": true
+            }
+          }
+        },
+        {
+          "properties": {
+            "communication_kind": {
+              "const": "standalone_notification"
+            },
+            "outcome": {
+              "enum": [
+                "permission_required",
+                "capability_disabled",
+                "failed_terminal"
+              ]
+            },
+            "persisted_message_id": {
+              "type": "null"
+            },
+            "allowance_consumed": {
+              "const": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}

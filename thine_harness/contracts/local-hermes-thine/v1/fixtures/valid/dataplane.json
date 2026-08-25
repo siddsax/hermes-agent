@@ -1,0 +1,541 @@
+{
+  "suite_id": "dataplane.valid.v1",
+  "cases": [
+    {
+      "case_id": "transcript-claim.request-all-status-audio",
+      "target": "transcript_claim_request",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_request_id": "claim-request-1",
+        "lease_owner": "run-1",
+        "now_ms": 1787644800000,
+        "lease_duration_ms": 600000,
+        "caps": {
+          "target_source_duration_ms": 600000,
+          "target_transcript_tokens": 8000,
+          "absolute_window_tokens": 200000,
+          "max_entries": null,
+          "continuation_cursor": null
+        },
+        "eligibility": {
+          "source_type": "audio",
+          "status_filter": null,
+          "unknown_speaker_eligible": true,
+          "excluded_source_types": [
+            "audio_fast",
+            "non_audio"
+          ]
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-claim.mixed-linkage-legacy",
+      "target": "transcript_claim",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_id": "audio-claim:claim-request-1",
+        "claim_request_id": "claim-request-1",
+        "lease_owner": "run-1",
+        "claimed_at_ms": 1787644800000,
+        "lease_expires_at_ms": 1787645400000,
+        "claim_state": "claimed",
+        "acknowledged_at_ms": null,
+        "released_at_ms": null,
+        "release_reason": null,
+        "window_token_count": 9,
+        "window_source_duration_ms": 10000,
+        "input_continuation_cursor": null,
+        "next_continuation_cursor": {
+          "aggregation_buffer_id": 41,
+          "provenance": "legacy_buffer:41",
+          "next_segment_ordinal": 1
+        },
+        "window_complete": false,
+        "entries": [
+          {
+            "aggregation_buffer_id": 41,
+            "buffer_status": "aggregating",
+            "created_at_ms": 1787644700000,
+            "updated_at_ms": 1787644750000,
+            "source_start_ms": 1787644600000,
+            "source_end_ms": 1787644700000,
+            "sequence_number": null,
+            "provenance": "legacy_buffer:41",
+            "transcript": "A short local fixture transcript.",
+            "segments": [
+              {
+                "segment_id": "segment-1",
+                "type": "speech",
+                "start_ms": 0,
+                "end_ms": 1500,
+                "occurred_at_ms": 1787644600000,
+                "text": "A short local fixture transcript.",
+                "speaker": {
+                  "source_speaker_id": "SPEAKER_UNKNOWN_1",
+                  "canonical_speaker_id": null,
+                  "canonical_display_name": null,
+                  "canonical_is_user": null,
+                  "attribution": "unknown"
+                },
+                "audio_ref": "gs://redacted/audio",
+                "chunk_ref": null
+              }
+            ]
+          }
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-claim.request-audio-event",
+      "target": "transcript_claim_request",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_request_id": "claim-request-event",
+        "lease_owner": "run-event",
+        "now_ms": 1787644800000,
+        "lease_duration_ms": 600000,
+        "caps": {
+          "target_source_duration_ms": 600000,
+          "target_transcript_tokens": 8000,
+          "absolute_window_tokens": 200000,
+          "max_entries": null,
+          "continuation_cursor": null
+        },
+        "eligibility": {
+          "source_type": "audio",
+          "status_filter": null,
+          "unknown_speaker_eligible": true,
+          "excluded_source_types": [
+            "audio_fast",
+            "non_audio"
+          ]
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-claim.audio-event-speaker-null",
+      "target": "transcript_claim",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_id": "audio-claim:claim-request-event",
+        "claim_request_id": "claim-request-event",
+        "lease_owner": "run-event",
+        "claimed_at_ms": 1787644800000,
+        "lease_expires_at_ms": 1787645400000,
+        "claim_state": "acknowledged",
+        "acknowledged_at_ms": 1787644900000,
+        "released_at_ms": null,
+        "release_reason": null,
+        "window_token_count": 2,
+        "window_source_duration_ms": 1000,
+        "input_continuation_cursor": {
+          "aggregation_buffer_id": 42,
+          "provenance": "legacy_buffer:42",
+          "next_segment_ordinal": 0
+        },
+        "next_continuation_cursor": null,
+        "window_complete": true,
+        "entries": [
+          {
+            "aggregation_buffer_id": 42,
+            "buffer_status": "unknown_legacy",
+            "created_at_ms": 1787644700000,
+            "updated_at_ms": 1787644750000,
+            "source_start_ms": 1787644600000,
+            "source_end_ms": 1787644601000,
+            "sequence_number": null,
+            "provenance": "legacy_buffer:42",
+            "transcript": "[door closes]",
+            "segments": [
+              {
+                "segment_id": "segment-event-1",
+                "type": "audio_event",
+                "start_ms": 0,
+                "end_ms": 1000,
+                "occurred_at_ms": 1787644600000,
+                "text": "[door closes]",
+                "speaker": null,
+                "audio_ref": "gs://redacted/audio-event",
+                "chunk_ref": null
+              }
+            ]
+          }
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-claim.lookup-released",
+      "target": "transcript_claim_lookup",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_id": "audio-claim:claim-request-2",
+        "claim_request_id": "claim-request-2",
+        "lease_owner": "run-2",
+        "claimed_at_ms": 1787644800000,
+        "lease_expires_at_ms": 1787645400000,
+        "claim_state": "released",
+        "acknowledged_at_ms": null,
+        "released_at_ms": 1787645400000,
+        "release_reason": "lease_expired",
+        "window_token_count": 0,
+        "window_source_duration_ms": 0,
+        "input_continuation_cursor": null,
+        "next_continuation_cursor": null,
+        "window_complete": true,
+        "entries": [],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-claim.request-released",
+      "target": "transcript_claim_request",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_request_id": "claim-request-2",
+        "lease_owner": "run-2",
+        "now_ms": 1787644800000,
+        "lease_duration_ms": 600000,
+        "caps": {
+          "target_source_duration_ms": 600000,
+          "target_transcript_tokens": 8000,
+          "absolute_window_tokens": 200000,
+          "max_entries": null,
+          "continuation_cursor": null
+        },
+        "eligibility": {
+          "source_type": "audio",
+          "status_filter": null,
+          "unknown_speaker_eligible": true,
+          "excluded_source_types": [
+            "audio_fast",
+            "non_audio"
+          ]
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-reclaim.empty",
+      "target": "transcript_reclaim_request",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reclaim_request_id": "reclaim-request-empty",
+        "now_ms": 1787645500000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-reclaim.result-empty",
+      "target": "transcript_reclaim_result",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reclaim_request_id": "reclaim-request-empty",
+        "outcome": "empty",
+        "reclaimed_at_ms": 1787645500000,
+        "released_claim_ids": [],
+        "released_entry_count": 0,
+        "expiry_inclusive": true,
+        "input_retained": true,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-reclaim.result-expired",
+      "target": "transcript_reclaim_result",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reclaim_request_id": "reclaim-request-expired",
+        "outcome": "reclaimed_expired",
+        "reclaimed_at_ms": 1787645500000,
+        "released_claim_ids": [
+          "audio-claim:claim-request-2"
+        ],
+        "released_entry_count": 1,
+        "expiry_inclusive": true,
+        "input_retained": true,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-reclaim.expired-request",
+      "target": "transcript_reclaim_request",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reclaim_request_id": "reclaim-request-expired",
+        "now_ms": 1787645500000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "input-gap.quarantined-transcript",
+      "target": "input_gap",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "gap_id": "gap-transcript-1",
+        "source_kind": "transcript",
+        "source_identity": "legacy_buffer:99",
+        "quarantine_id": "quarantine-transcript-99",
+        "normal_cursor_advanced": true,
+        "reason": "attempts_exhausted",
+        "recorded_at_ms": 1787645500000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript.release-retains-input",
+      "target": "transcript_release",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_id": "audio-claim:claim-request-2",
+        "reason": "lease_expired",
+        "released_at_ms": 1787645400000,
+        "input_retained": true,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-lease-renew.request",
+      "target": "transcript_lease_renew_request",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "renewal_request_id": "lease-renewal-1",
+        "claim_id": "audio-claim:claim-request-1",
+        "lease_owner": "run-1",
+        "prior_lease_expires_at_ms": 1787645400000,
+        "new_lease_expires_at_ms": 1787646000000,
+        "idempotency_key": "transcript-lease-renewal:audio-claim:claim-request-1:1787645400000:1787646000000",
+        "requested_at_ms": 1787645300000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-lease-renew.result",
+      "target": "transcript_lease_renew_result",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "renewal_request_id": "lease-renewal-1",
+        "claim_id": "audio-claim:claim-request-1",
+        "lease_owner": "run-1",
+        "prior_lease_expires_at_ms": 1787645400000,
+        "new_lease_expires_at_ms": 1787646000000,
+        "idempotency_key": "transcript-lease-renewal:audio-claim:claim-request-1:1787645400000:1787646000000",
+        "outcome": "renewed",
+        "renewed_at_ms": 1787645300100,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript.ack-after-durable-receipt",
+      "target": "transcript_ack",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "ack_id": "transcript-ack-1",
+        "claim_id": "audio-claim:claim-request-event",
+        "run_id": "run-event",
+        "memory_version": "7",
+        "acknowledged_at_ms": 1787644900000,
+        "deleted_buffer_entry_ids": [
+          42
+        ],
+        "durable_receipt_written": true,
+        "canonical_transcript_retained": true,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript.canonical-survives",
+      "target": "transcript_canonical_lookup",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "sequence_number": 901,
+        "transcript": "Canonical transcript remains.",
+        "segments": [
+          {
+            "segment_id": "segment-901",
+            "type": "speech",
+            "start_ms": 0,
+            "end_ms": 1000,
+            "occurred_at_ms": 1787644600000,
+            "text": "Canonical transcript remains.",
+            "speaker": {
+              "source_speaker_id": "speaker-source",
+              "canonical_speaker_id": "speaker-canonical",
+              "canonical_display_name": "Local User",
+              "canonical_is_user": true,
+              "attribution": "you"
+            },
+            "audio_ref": "gs://redacted/audio-901",
+            "chunk_ref": "gs://redacted/chunk-901"
+          }
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript.canonical-others",
+      "target": "transcript_canonical_lookup",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "sequence_number": 902,
+        "transcript": "Another speaker remains distinct.",
+        "segments": [
+          {
+            "segment_id": "segment-902",
+            "type": "speech",
+            "start_ms": 0,
+            "end_ms": 1000,
+            "occurred_at_ms": 1787644601000,
+            "text": "Another speaker remains distinct.",
+            "speaker": {
+              "source_speaker_id": "speaker-source-2",
+              "canonical_speaker_id": "speaker-canonical-2",
+              "canonical_display_name": "Other Person",
+              "canonical_is_user": false,
+              "attribution": "others"
+            },
+            "audio_ref": "gs://redacted/audio-902",
+            "chunk_ref": null
+          }
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "speaker.rename-unknown-eligible",
+      "target": "speaker_mapping_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "speaker-event-1",
+        "user_id": "user-local",
+        "cursor": 1,
+        "kind": "rename",
+        "source_speaker_ids": [
+          "SPEAKER_UNKNOWN_1"
+        ],
+        "canonical_speaker_id": "speaker-1",
+        "old_name": null,
+        "new_name": "Taylor",
+        "changed_at_ms": 1787644800000,
+        "transcript_text_included": false,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "speaker.cursor-quarantine-advances",
+      "target": "speaker_cursor_outcome",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "ack_id": "speaker-ack-1",
+        "event_id": "speaker-event-1",
+        "cursor": 1,
+        "outcome": "quarantined_and_advanced",
+        "quarantine_id": "quarantine-speaker-1",
+        "normal_cursor": 1,
+        "acknowledged_at_ms": 1787644900000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "speaker.rename-acknowledged-event",
+      "target": "speaker_mapping_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "speaker-event-2",
+        "user_id": "user-local",
+        "cursor": 2,
+        "kind": "rename",
+        "source_speaker_ids": [
+          "SPEAKER_2"
+        ],
+        "canonical_speaker_id": "speaker-2",
+        "old_name": null,
+        "new_name": "Morgan",
+        "changed_at_ms": 1787645000000,
+        "transcript_text_included": false,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "speaker.cursor-acknowledged",
+      "target": "speaker_cursor_outcome",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "ack_id": "speaker-ack-2",
+        "event_id": "speaker-event-2",
+        "cursor": 2,
+        "outcome": "acknowledged",
+        "quarantine_id": null,
+        "normal_cursor": 2,
+        "acknowledged_at_ms": 1787645001000,
+        "extensions": {}
+      }
+    }
+  ]
+}

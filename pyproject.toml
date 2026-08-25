@@ -442,7 +442,7 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "thine_harness", "thine_harness.*"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["observability/schemas/*.json", "data/*.json"]
@@ -456,6 +456,9 @@ gateway = ["assets/**/*"]
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.
 plugins = ["**/plugin.yaml", "**/plugin.yml"]
+# Local-Hermes consumers resolve the accepted language-neutral JSON pack at
+# runtime. Keep its schemas, fixtures, metadata, and provenance in wheels.
+thine_harness = ["contracts/**/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

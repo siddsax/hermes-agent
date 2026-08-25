@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.thine.test/contracts/local-hermes-thine/v1/policy.schema.json",
+  "$defs": {
+    "version": {
+      "type": "object",
+      "required": [
+        "major",
+        "minor"
+      ],
+      "properties": {
+        "major": {
+          "const": 1
+        },
+        "minor": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "extensions": {
+      "type": "object"
+    },
+    "schedule": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "schedule_id",
+        "user_id",
+        "due_at_ms",
+        "created_at_ms",
+        "status",
+        "reason",
+        "originating_run_id",
+        "originating_action_id",
+        "attempt_ordinal",
+        "promoted_to_p1_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "schedule_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "due_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "enum": [
+            "active",
+            "enqueued",
+            "cancelled",
+            "completed",
+            "failed_terminal"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "originating_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "originating_action_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "attempt_ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "promoted_to_p1_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "preference": {
+      "type": "object",
+      "required": [
+        "key",
+        "value",
+        "switchable_by_agent_on_explicit_user_request",
+        "authorizing_message_id",
+        "updated_at_ms"
+      ],
+      "properties": {
+        "key": {
+          "enum": [
+            "notifications_enabled",
+            "speaker_tag_nudges_enabled"
+          ]
+        },
+        "value": {
+          "type": "boolean"
+        },
+        "switchable_by_agent_on_explicit_user_request": {
+          "const": true
+        },
+        "authorizing_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "preferences": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "user_id",
+        "revision",
+        "narrow_preferences",
+        "non_disableable_capabilities",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "narrow_preferences": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/preference"
+          }
+        },
+        "non_disableable_capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "enum": [
+              "background_inference",
+              "home_mutation",
+              "schedule_creation",
+              "proactive_chat"
+            ]
+          }
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

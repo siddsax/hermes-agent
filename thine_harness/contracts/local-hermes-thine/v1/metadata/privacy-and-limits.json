@@ -1,0 +1,59 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "wire_format": {
+    "json_primitives_only": true,
+    "field_case": "snake_case",
+    "time_representation": "integer_epoch_ms",
+    "nullable_fields_are_explicit": true,
+    "language_specific_sentinels": false,
+    "max_interoperable_integer": 9007199254740991,
+    "out_of_range_exact_integer": "canonical_decimal_string",
+    "canonical_decimal_string_pattern": "^-?(0|[1-9][0-9]*)$",
+    "non_finite_numbers": "reject"
+  },
+  "redacted_fields": [
+    "credential",
+    "credentials",
+    "tokens",
+    "password",
+    "passwords",
+    "clipboard",
+    "raw_keystrokes",
+    "raw_audio",
+    "raw_notification_payload",
+    "hidden_reasoning",
+    "system_prompt",
+    "stack_trace"
+  ],
+  "interaction_forbidden_content": [
+    "free_form_input",
+    "composer_text",
+    "chat_message_content",
+    "transcript_content",
+    "note_content",
+    "speaker_name",
+    "raw_contact_pii",
+    "touch_coordinates",
+    "scroll_telemetry"
+  ],
+  "limits": {
+    "working_memory_tokens": 16000,
+    "working_memory_correction_target_tokens": 14000,
+    "fixed_prefix_reserve_tokens": 4096,
+    "output_reasoning_reserve_tokens": 32768,
+    "absolute_transcript_tokens": 200000,
+    "target_transcript_tokens": 8000,
+    "target_source_duration_ms": 600000,
+    "context_safety_tokens": 19136,
+    "schedule_reason_characters": 1000,
+    "home_revisions": 50,
+    "debug_invocations": 50,
+    "heartbeat_silence_ms": 5000
+  },
+  "context_limits_are_product_budget": false,
+  "current_action_limit": null,
+  "current_schedule_count_limit": null
+}

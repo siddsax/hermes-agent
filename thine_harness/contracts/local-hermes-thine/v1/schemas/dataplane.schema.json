@@ -1,0 +1,1153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.thine.test/contracts/local-hermes-thine/v1/dataplane.schema.json",
+  "$defs": {
+    "version": {
+      "type": "object",
+      "required": [
+        "major",
+        "minor"
+      ],
+      "properties": {
+        "major": {
+          "const": 1
+        },
+        "minor": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "extensions": {
+      "type": "object"
+    },
+    "speaker": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "source_speaker_id",
+            "canonical_speaker_id",
+            "canonical_display_name",
+            "canonical_is_user",
+            "attribution"
+          ],
+          "properties": {
+            "source_speaker_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 128
+            },
+            "canonical_speaker_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 128
+            },
+            "canonical_display_name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 200
+            },
+            "canonical_is_user": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "attribution": {
+              "enum": [
+                "you",
+                "others",
+                "unknown"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "oneOf": [
+            {
+              "properties": {
+                "canonical_is_user": {
+                  "const": true
+                },
+                "attribution": {
+                  "const": "you"
+                }
+              }
+            },
+            {
+              "properties": {
+                "canonical_is_user": {
+                  "const": false
+                },
+                "attribution": {
+                  "const": "others"
+                }
+              }
+            },
+            {
+              "properties": {
+                "canonical_is_user": {
+                  "type": "null"
+                },
+                "attribution": {
+                  "const": "unknown"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "segment": {
+      "type": "object",
+      "required": [
+        "segment_id",
+        "type",
+        "start_ms",
+        "end_ms",
+        "occurred_at_ms",
+        "text",
+        "speaker",
+        "audio_ref",
+        "chunk_ref"
+      ],
+      "properties": {
+        "segment_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "type": {
+          "enum": [
+            "speech",
+            "audio_event"
+          ]
+        },
+        "start_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "occurred_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 200000
+        },
+        "speaker": {
+          "$ref": "#/$defs/speaker"
+        },
+        "audio_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "chunk_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1024
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "speech"
+            },
+            "speaker": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "audio_event"
+            },
+            "speaker": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "transcript_continuation_cursor": {
+      "type": "object",
+      "required": [
+        "aggregation_buffer_id",
+        "provenance",
+        "next_segment_ordinal"
+      ],
+      "properties": {
+        "aggregation_buffer_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "provenance": {
+          "type": "string",
+          "pattern": "^(transcription_sequence:[1-9][0-9]*|legacy_buffer:[1-9][0-9]*)$"
+        },
+        "next_segment_ordinal": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "transcript_claim_caps": {
+      "type": "object",
+      "required": [
+        "target_source_duration_ms",
+        "target_transcript_tokens",
+        "absolute_window_tokens",
+        "max_entries",
+        "continuation_cursor"
+      ],
+      "properties": {
+        "target_source_duration_ms": {
+          "const": 600000
+        },
+        "target_transcript_tokens": {
+          "const": 8000
+        },
+        "absolute_window_tokens": {
+          "const": 200000
+        },
+        "max_entries": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "continuation_cursor": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/transcript_continuation_cursor"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "claim_entry": {
+      "type": "object",
+      "required": [
+        "aggregation_buffer_id",
+        "buffer_status",
+        "created_at_ms",
+        "updated_at_ms",
+        "source_start_ms",
+        "source_end_ms",
+        "sequence_number",
+        "provenance",
+        "transcript",
+        "segments"
+      ],
+      "properties": {
+        "aggregation_buffer_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "buffer_status": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_start_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "source_end_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "sequence_number": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "provenance": {
+          "type": "string",
+          "pattern": "^(transcription_sequence:[1-9][0-9]*|legacy_buffer:[1-9][0-9]*)$"
+        },
+        "transcript": {
+          "type": "string",
+          "maxLength": 200000
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/segment"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "transcript_claim_request": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "claim_request_id",
+        "lease_owner",
+        "now_ms",
+        "lease_duration_ms",
+        "caps",
+        "eligibility",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "claim_request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "lease_owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "now_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lease_duration_ms": {
+          "const": 600000
+        },
+        "caps": {
+          "$ref": "#/$defs/transcript_claim_caps"
+        },
+        "eligibility": {
+          "type": "object",
+          "required": [
+            "source_type",
+            "status_filter",
+            "unknown_speaker_eligible",
+            "excluded_source_types"
+          ],
+          "properties": {
+            "source_type": {
+              "const": "audio"
+            },
+            "status_filter": {
+              "const": null
+            },
+            "unknown_speaker_eligible": {
+              "const": true
+            },
+            "excluded_source_types": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "audio_fast",
+                  "non_audio"
+                ]
+              },
+              "uniqueItems": true,
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "additionalProperties": false
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "transcript_claim": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "claim_id",
+        "claim_request_id",
+        "lease_owner",
+        "claimed_at_ms",
+        "lease_expires_at_ms",
+        "claim_state",
+        "acknowledged_at_ms",
+        "released_at_ms",
+        "release_reason",
+        "window_token_count",
+        "window_source_duration_ms",
+        "input_continuation_cursor",
+        "next_continuation_cursor",
+        "window_complete",
+        "entries",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "claim_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "claim_request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "lease_owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "claimed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lease_expires_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "claim_state": {
+          "enum": [
+            "claimed",
+            "acknowledged",
+            "released"
+          ]
+        },
+        "acknowledged_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "released_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "release_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "window_token_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200000
+        },
+        "window_source_duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input_continuation_cursor": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/transcript_continuation_cursor"
+            }
+          ]
+        },
+        "next_continuation_cursor": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/transcript_continuation_cursor"
+            }
+          ]
+        },
+        "window_complete": {
+          "type": "boolean"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/claim_entry"
+          }
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "claim_state": {
+              "const": "claimed"
+            },
+            "acknowledged_at_ms": {
+              "type": "null"
+            },
+            "released_at_ms": {
+              "type": "null"
+            },
+            "release_reason": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "claim_state": {
+              "const": "acknowledged"
+            },
+            "acknowledged_at_ms": {
+              "type": "integer"
+            },
+            "released_at_ms": {
+              "type": "null"
+            },
+            "release_reason": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "claim_state": {
+              "const": "released"
+            },
+            "acknowledged_at_ms": {
+              "type": "null"
+            },
+            "released_at_ms": {
+              "type": "integer"
+            },
+            "release_reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "transcript_claim_lookup": {
+      "$ref": "#/$defs/transcript_claim"
+    },
+    "transcript_reclaim_request": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "reclaim_request_id",
+        "now_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "reclaim_request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "now_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "transcript_reclaim_result": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "reclaim_request_id",
+        "outcome",
+        "reclaimed_at_ms",
+        "released_claim_ids",
+        "released_entry_count",
+        "expiry_inclusive",
+        "input_retained",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "reclaim_request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "outcome": {
+          "enum": [
+            "empty",
+            "reclaimed_expired"
+          ]
+        },
+        "reclaimed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "released_claim_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "uniqueItems": true
+        },
+        "released_entry_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expiry_inclusive": {
+          "const": true
+        },
+        "input_retained": {
+          "const": true
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "outcome": {
+              "const": "empty"
+            },
+            "released_claim_ids": {
+              "maxItems": 0
+            },
+            "released_entry_count": {
+              "const": 0
+            }
+          }
+        },
+        {
+          "properties": {
+            "outcome": {
+              "const": "reclaimed_expired"
+            },
+            "released_claim_ids": {
+              "minItems": 1
+            },
+            "released_entry_count": {
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "input_gap": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "gap_id",
+        "source_kind",
+        "source_identity",
+        "quarantine_id",
+        "normal_cursor_advanced",
+        "reason",
+        "recorded_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "gap_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "source_kind": {
+          "enum": [
+            "transcript",
+            "speaker_mapping",
+            "interaction"
+          ]
+        },
+        "source_identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "quarantine_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "normal_cursor_advanced": {
+          "const": true
+        },
+        "reason": {
+          "const": "attempts_exhausted"
+        },
+        "recorded_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "transcript_release": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "claim_id",
+        "reason",
+        "released_at_ms",
+        "input_retained",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "claim_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "released_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input_retained": {
+          "const": true
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "transcript_lease_renew_request": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "renewal_request_id",
+        "claim_id",
+        "lease_owner",
+        "prior_lease_expires_at_ms",
+        "new_lease_expires_at_ms",
+        "idempotency_key",
+        "requested_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "renewal_request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "claim_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "lease_owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "prior_lease_expires_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "new_lease_expires_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "requested_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "transcript_lease_renew_result": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "renewal_request_id",
+        "claim_id",
+        "lease_owner",
+        "prior_lease_expires_at_ms",
+        "new_lease_expires_at_ms",
+        "idempotency_key",
+        "outcome",
+        "renewed_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "renewal_request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "claim_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "lease_owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "prior_lease_expires_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "new_lease_expires_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "outcome": {
+          "enum": [
+            "renewed",
+            "already_renewed"
+          ]
+        },
+        "renewed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "transcript_ack": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "ack_id",
+        "claim_id",
+        "run_id",
+        "memory_version",
+        "acknowledged_at_ms",
+        "deleted_buffer_entry_ids",
+        "durable_receipt_written",
+        "canonical_transcript_retained",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "ack_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "claim_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "memory_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "acknowledged_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deleted_buffer_entry_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "durable_receipt_written": {
+          "const": true
+        },
+        "canonical_transcript_retained": {
+          "const": true
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "transcript_canonical_lookup": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "sequence_number",
+        "transcript",
+        "segments",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "sequence_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transcript": {
+          "type": "string",
+          "maxLength": 200000
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/segment"
+          }
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "speaker_mapping_event": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "event_id",
+        "user_id",
+        "cursor",
+        "kind",
+        "source_speaker_ids",
+        "canonical_speaker_id",
+        "old_name",
+        "new_name",
+        "changed_at_ms",
+        "transcript_text_included",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "rename",
+            "merge"
+          ]
+        },
+        "source_speaker_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "canonical_speaker_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "old_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "new_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "changed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "transcript_text_included": {
+          "const": false
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "speaker_cursor_outcome": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "ack_id",
+        "event_id",
+        "cursor",
+        "outcome",
+        "quarantine_id",
+        "normal_cursor",
+        "acknowledged_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "ack_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "outcome": {
+          "enum": [
+            "acknowledged",
+            "quarantined_and_advanced"
+          ]
+        },
+        "quarantine_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "normal_cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "acknowledged_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "outcome": {
+              "const": "acknowledged"
+            },
+            "quarantine_id": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "outcome": {
+              "const": "quarantined_and_advanced"
+            },
+            "quarantine_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}

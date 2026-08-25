@@ -1,0 +1,360 @@
+{
+  "suite_id": "dataplane.invalid.v1",
+  "cases": [
+    {
+      "case_id": "claim.audio-fast-rejected",
+      "target": "transcript_claim_request",
+      "expected_error": "expected constant 'audio'",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_request_id": "claim-request-1",
+        "lease_owner": "run-1",
+        "now_ms": 1,
+        "lease_duration_ms": 1,
+        "max_entries": null,
+        "eligibility": {
+          "source_type": "audio_fast",
+          "status_filter": null,
+          "unknown_speaker_eligible": true,
+          "excluded_source_types": [
+            "audio_fast",
+            "non_audio"
+          ]
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "claim.status-filter-rejected",
+      "target": "transcript_claim_request",
+      "expected_error": "expected constant None",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_request_id": "claim-request-2",
+        "lease_owner": "run-1",
+        "now_ms": 1,
+        "lease_duration_ms": 1,
+        "max_entries": null,
+        "eligibility": {
+          "source_type": "audio",
+          "status_filter": "aggregating",
+          "unknown_speaker_eligible": true,
+          "excluded_source_types": [
+            "audio_fast",
+            "non_audio"
+          ]
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "speaker.remote-attribution-rejected",
+      "target": "transcript_canonical_lookup",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "sequence_number": 1,
+        "transcript": "x",
+        "segments": [
+          {
+            "segment_id": "s",
+            "type": "speech",
+            "start_ms": 0,
+            "end_ms": 1,
+            "occurred_at_ms": 1,
+            "text": "x",
+            "speaker": {
+              "source_speaker_id": null,
+              "canonical_speaker_id": null,
+              "canonical_display_name": null,
+              "canonical_is_user": null,
+              "attribution": "remote"
+            },
+            "audio_ref": "a",
+            "chunk_ref": null
+          }
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "ack.delete-before-receipt-rejected",
+      "target": "transcript_ack",
+      "expected_error": "expected constant True",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_id": "claim-1",
+        "run_id": "run-1",
+        "memory_version": "1",
+        "acknowledged_at_ms": 1,
+        "deleted_buffer_entry_ids": [
+          1
+        ],
+        "durable_receipt_written": false,
+        "canonical_transcript_retained": true,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "speaker.boolean-attribution-mismatch-rejected",
+      "target": "transcript_canonical_lookup",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "sequence_number": 2,
+        "transcript": "x",
+        "segments": [
+          {
+            "segment_id": "s2",
+            "type": "speech",
+            "start_ms": 0,
+            "end_ms": 1,
+            "occurred_at_ms": 1,
+            "text": "x",
+            "speaker": {
+              "source_speaker_id": "source-1",
+              "canonical_speaker_id": "canonical-1",
+              "canonical_display_name": "User",
+              "canonical_is_user": true,
+              "attribution": "others"
+            },
+            "audio_ref": "a",
+            "chunk_ref": null
+          }
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "claim.incorrect-target-cap-rejected",
+      "target": "transcript_claim_request",
+      "expected_error": "expected constant 8000",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_request_id": "cr-cap",
+        "lease_owner": "run",
+        "now_ms": 1,
+        "lease_duration_ms": 600000,
+        "caps": {
+          "target_source_duration_ms": 600000,
+          "target_transcript_tokens": 9000,
+          "absolute_window_tokens": 200000,
+          "max_entries": null,
+          "continuation_cursor": null
+        },
+        "eligibility": {
+          "source_type": "audio",
+          "status_filter": null,
+          "unknown_speaker_eligible": true,
+          "excluded_source_types": [
+            "audio_fast",
+            "non_audio"
+          ]
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "segment.speech-without-speaker-rejected",
+      "target": "transcript_canonical_lookup",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "sequence_number": 4,
+        "transcript": "x",
+        "segments": [
+          {
+            "segment_id": "s4",
+            "type": "speech",
+            "start_ms": 0,
+            "end_ms": 1,
+            "occurred_at_ms": 1,
+            "text": "x",
+            "speaker": null,
+            "audio_ref": "a",
+            "chunk_ref": null
+          }
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "claim.claimed-with-terminal-timestamp-rejected",
+      "target": "transcript_claim",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "claim_id": "c",
+        "claim_request_id": "cr",
+        "lease_owner": "r",
+        "claimed_at_ms": 1,
+        "lease_expires_at_ms": 2,
+        "claim_state": "claimed",
+        "acknowledged_at_ms": 2,
+        "released_at_ms": null,
+        "release_reason": null,
+        "window_token_count": 0,
+        "window_source_duration_ms": 0,
+        "input_continuation_cursor": null,
+        "next_continuation_cursor": null,
+        "window_complete": true,
+        "entries": [],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "segment.audio-event-with-speaker-rejected",
+      "target": "transcript_canonical_lookup",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "sequence_number": 5,
+        "transcript": "[sound]",
+        "segments": [
+          {
+            "segment_id": "s5",
+            "type": "audio_event",
+            "start_ms": 0,
+            "end_ms": 1,
+            "occurred_at_ms": 1,
+            "text": "[sound]",
+            "speaker": {
+              "source_speaker_id": null,
+              "canonical_speaker_id": null,
+              "canonical_display_name": null,
+              "canonical_is_user": null,
+              "attribution": "unknown"
+            },
+            "audio_ref": "a",
+            "chunk_ref": null
+          }
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "reclaim.empty-with-released-claim-rejected",
+      "target": "transcript_reclaim_result",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reclaim_request_id": "rr",
+        "outcome": "empty",
+        "reclaimed_at_ms": 1,
+        "released_claim_ids": [
+          "c"
+        ],
+        "released_entry_count": 1,
+        "expiry_inclusive": true,
+        "input_retained": true,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "speaker.acknowledged-with-quarantine-rejected",
+      "target": "speaker_cursor_outcome",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "ack_id": "sa",
+        "event_id": "e",
+        "cursor": 1,
+        "outcome": "acknowledged",
+        "quarantine_id": "q",
+        "normal_cursor": 1,
+        "acknowledged_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "speaker.quarantined-without-id-rejected",
+      "target": "speaker_cursor_outcome",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "ack_id": "sq",
+        "event_id": "e",
+        "cursor": 1,
+        "outcome": "quarantined_and_advanced",
+        "quarantine_id": null,
+        "normal_cursor": 1,
+        "acknowledged_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-lease-renew.request-missing-idempotency-rejected",
+      "target": "transcript_lease_renew_request",
+      "expected_error": "missing required property 'idempotency_key'",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "renewal_request_id": "lease-renew-invalid",
+        "claim_id": "claim-invalid",
+        "lease_owner": "run-invalid",
+        "prior_lease_expires_at_ms": 10,
+        "new_lease_expires_at_ms": 20,
+        "requested_at_ms": 5,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "transcript-lease-renew.result-unknown-outcome-rejected",
+      "target": "transcript_lease_renew_result",
+      "expected_error": "unknown enum value",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "renewal_request_id": "lease-renew-invalid",
+        "claim_id": "claim-invalid",
+        "lease_owner": "run-invalid",
+        "prior_lease_expires_at_ms": 10,
+        "new_lease_expires_at_ms": 20,
+        "idempotency_key": "transcript-lease-renewal:claim-invalid:10:20",
+        "outcome": "extended",
+        "renewed_at_ms": 6,
+        "extensions": {}
+      }
+    }
+  ]
+}
