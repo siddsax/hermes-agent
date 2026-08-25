@@ -3427,6 +3427,37 @@ class AIAgent:
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
 
+    def request_interrupt_at_tool_safe_boundary(
+        self,
+        message: Optional[str] = None,
+    ) -> bool:
+        """Interrupt now, or defer until the active tool result is durable.
+
+        Returns ``True`` when the request was queued behind an active tool.
+        The tool executor drains it only after canonical result append and the
+        incremental SessionDB flush complete.
+        """
+        lock = self._tool_safe_boundary_lock
+        with lock:
+            if self._executing_tools:
+                self._tool_safe_boundary_interrupts.append(message)
+                return True
+            # Keep tool admission serialized until the interrupt flag is
+            # published. Otherwise _execute_tool_calls() can set the active
+            # fence between this check and interrupt(), turning a boundary
+            # cancellation into an active-tool abort.
+            self.interrupt(message)
+            return False
+
+    def _complete_tool_safe_boundary(self) -> None:
+        """Publish tool completion and deliver deferred interrupts."""
+        with self._tool_safe_boundary_lock:
+            self._executing_tools = False
+            pending = list(self._tool_safe_boundary_interrupts)
+            self._tool_safe_boundary_interrupts.clear()
+        for message in pending:
+            self.interrupt(message)
+
     def hard_interrupt(
         self,
         message: Optional[str] = None,
@@ -8390,7 +8421,8 @@ class AIAgent:
         tool_calls = assistant_message.tool_calls
 
         # Allow _vprint during tool execution even with stream consumers
-        self._executing_tools = True
+        with self._tool_safe_boundary_lock:
+            self._executing_tools = True
         try:
             if len(tool_calls) <= 1:
                 return self._execute_tool_calls_sequential(
@@ -8418,7 +8450,7 @@ class AIAgent:
                 segments=segments,
             )
         finally:
-            self._executing_tools = False
+            self._complete_tool_safe_boundary()
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch.

@@ -1,0 +1,46 @@
+{
+  "contract_version": 1,
+  "binding_after": "THI3-41",
+  "module_owners": {
+    "H3_run_coordinator": [
+      "thine_harness/run_coordinator.py",
+      "thine_harness/run_state.py"
+    ],
+    "H4_working_memory_finalizer": [
+      "thine_harness/working_memory.py",
+      "thine_harness/run_finalizer.py"
+    ],
+    "H5_action_dispatcher_communications": [
+      "thine_harness/action_dispatcher.py",
+      "thine_harness/communications.py"
+    ],
+    "H6_home_interactions": [
+      "thine_harness/home_state.py",
+      "thine_harness/interactions.py"
+    ],
+    "H7_one_shot_scheduler": [
+      "thine_harness/scheduler.py"
+    ],
+    "H8_input_pump": [
+      "thine_harness/input_pump.py"
+    ],
+    "H9_production_runtime_progress": [
+      "thine_harness/runtime.py",
+      "thine_harness/progress_adapter.py"
+    ],
+    "H10_topics_preferences_retention_dashboard": [
+      "thine_harness/topics.py",
+      "thine_harness/preferences.py",
+      "thine_harness/retention.py",
+      "thine_harness/reset.py",
+      "thine_harness/dashboard_read_models.py"
+    ]
+  },
+  "serialization_owners": {
+    "invocation_lifecycle": "THI3-43 freezes language-neutral invocation and BackgroundCheckpoint DTOs; H3 owns checkpoint/coordinator persistence; H9 owns AIAgent mapping and safe-boundary cancellation",
+    "working_memory_stop_hook": "THI3-43 freezes language-neutral DTOs; H4 owns persistence/finalization and extends thine_harness/working_memory.py; H9 supplies the captured primary request CacheIdentity",
+    "deferred_helper_names": "H2 owns helper implementations; H9 owns runtime catalog projection; wire names remain flat thine_<namespace>_<verb>",
+    "model_and_envelope": "runtime-model-v1.json and runtime-envelope-v1.json are immutable v1 inputs to THI3-43"
+  },
+  "existing_hermes_core_policy": "Adapters may call existing Hermes internals; later tickets must not fork a second agent loop, tool registry, cron engine, or plugin implementation."
+}

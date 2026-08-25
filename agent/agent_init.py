@@ -675,6 +675,11 @@ def init_agent(
     # provide no value (no human in the loop, no skill-creation pressure).
     # skip_memory=True already disables the memory-review trigger; this
     # flag is the explicit single-switch off for both review paths.
+    # Retain the two Harness-owned isolation gates as inspectable runtime
+    # configuration. The maintained-fork adapter fails closed unless both are
+    # enabled, preventing Hermes memory or review forks from creating an
+    # unrelated invocation around the same-context Stop Hook.
+    agent.skip_memory = bool(skip_memory)
     agent.skip_background_review = bool(skip_background_review)
     agent.pass_session_id = pass_session_id
     agent.log_prefix_chars = log_prefix_chars
@@ -862,6 +867,8 @@ def init_agent(
     # Tool execution state — allows _vprint during tool execution
     # even when stream consumers are registered (no tokens streaming then)
     agent._executing_tools = False
+    agent._tool_safe_boundary_lock = threading.Lock()
+    agent._tool_safe_boundary_interrupts: list[str | None] = []
     agent._tool_guardrails = ToolCallGuardrailController()
     agent._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
 
