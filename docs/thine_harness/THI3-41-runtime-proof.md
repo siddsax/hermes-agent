@@ -85,16 +85,21 @@ A live integrated proof on 2026-08-25 produced:
 
 ```text
 primary_final=THI3_41_INTEGRATED_OK
-primary_prompt_cache_key=pck_2787d5876c32f84756267dc1 (4/4 requests)
-stop_hook_prompt_cache_key=pck_2787d5876c32f84756267dc1 (1/1 request)
-primary_tool_schema_sha256=3e32730565a23785beac6bf3f1842c876376d17555af7e5244abc1f830f24ae4 (4/4)
-stop_hook_tool_schema_sha256=3e32730565a23785beac6bf3f1842c876376d17555af7e5244abc1f830f24ae4
+deferred_catalog_listing=off
+primary_prompt_cache_key=pck_d6a541396e6d173bc208d573 (4/4 requests)
+stop_hook_prompt_cache_key=pck_d6a541396e6d173bc208d573 (1/1 request)
+primary_tool_schema_sha256=4707333416dce208c950c0cccf929e4da3691a6cc68e3c29c6f141e1192f0268 (4/4)
+stop_hook_tool_schema_sha256=4707333416dce208c950c0cccf929e4da3691a6cc68e3c29c6f141e1192f0268
 wire_tools=[tool_search,tool_describe,tool_call]
+system_prompt_chars=9160
+system_prompt_sha256=cce42e5fa3b10b93448e9903c27f65054f0d44a9923a951f4d6974d6fc614d5a (5/5)
+fixed_prefix_estimated_tokens=2613 (5/5, fixture match)
 same_prompt_cache_key=true
+same_system_prompt=true
 same_wire_tool_array=true
-primary_usage={input_tokens: 3933, output_tokens: 90, cache_read_tokens: 6144, cache_write_tokens: 0}
+primary_usage={input_tokens: 3561, output_tokens: 90, cache_read_tokens: 6144, cache_write_tokens: 0}
 stop_hook_outcome=unchanged
-stop_hook_usage_delta={input_tokens: 175, output_tokens: 31, cache_read_tokens: 2560, cache_write_tokens: 0}
+stop_hook_usage_delta={input_tokens: 1106, output_tokens: 16, cache_read_tokens: 1536, cache_write_tokens: 0}
 deferred_result_sequence=[tool_search,tool_describe,thine_transcripts_probe_lookup]
 helper_calls=[{sequence:41}]
 helper_calls_during_stop_hook=0
@@ -141,25 +146,27 @@ namespaces are `working_memory`, `communications`, `permissions`, `schedules`,
   proposal. Otherwise it records `mark_unchanged`.
 - Interrupted work skips the Stop Hook and performs neither commit nor
   unchanged-marker write.
-- The Stop Hook accepts only the exact structured decision shape and never
-  creates a separate model/provider session.
+- The Stop Hook accepts only the exact keys `worth_remembering` and `markdown`.
+  `true` requires a string; `false` requires null. It never creates a separate
+  model/provider session.
 
 The frozen envelope is:
 
 ```text
 provider context                         272000
-measured stable system + 3 bridge tools    791
+measured final system + 3 bridge tools    2613
 Working Memory reserve                    16000
 output + reasoning reserve                 32768
-measured residual                         222441
-unallocated safety margin                  22441
+measured residual                         220619
+unallocated safety margin                  20619
 absolute transcript ceiling               200000
 routine transcript batch target             8000
 ```
 
-The 791-token prefix is Hermes'
-`estimate_request_tokens_rough` measurement for the stable proof system prompt
-and the three eager bridge schemas. Full helper schemas are deferred. The
+The 2,613-token prefix is Hermes'
+`estimate_request_tokens_rough` measurement over the actual final outbound
+proof system prompt and the exact three eager bridge schemas with deferred
+catalog listing pinned off. Full helper schemas are deferred. The
 200,000-token absolute limit is intentionally below the measured residual; the
 normal architecture target remains the earlier of 8,000 transcript tokens or
 10 minutes of audio. The binding fixture is

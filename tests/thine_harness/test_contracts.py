@@ -13,9 +13,9 @@ CONTRACTS = Path(__file__).parents[2] / "thine_harness" / "contracts"
 def test_frozen_transcript_envelope_keeps_every_reserved_bucket_below_context():
     budget = RuntimeEnvelopeBudget.pinned()
 
-    assert budget.measured_residual_tokens == 222_441
+    assert budget.measured_residual_tokens == 220_619
     assert budget.absolute_transcript_tokens == 200_000
-    assert budget.unallocated_safety_tokens == 22_441
+    assert budget.unallocated_safety_tokens == 20_619
     assert budget.routine_batch_target_tokens == 8_000
     assert budget.total_reserved_tokens == 272_000
 

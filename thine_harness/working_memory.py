@@ -237,13 +237,18 @@ class HermesCachedStopHookContext:
             decision = json.loads(str(raw.get("final_response") or ""))
         except (TypeError, ValueError) as exc:
             raise StopHookResponseError("Stop Hook did not return valid JSON") from exc
-        if not isinstance(decision, dict) or not isinstance(
-            decision.get("worth_remembering"), bool
-        ):
+        if not isinstance(decision, dict) or set(decision) != {
+            "worth_remembering",
+            "markdown",
+        }:
+            raise StopHookResponseError(
+                "Stop Hook response requires exactly worth_remembering and markdown"
+            )
+        if not isinstance(decision["worth_remembering"], bool):
             raise StopHookResponseError(
                 "Stop Hook response requires boolean worth_remembering"
             )
-        markdown = decision.get("markdown")
+        markdown = decision["markdown"]
         if markdown is not None and not isinstance(markdown, str):
             raise StopHookResponseError(
                 "Stop Hook response markdown must be a string or null"
@@ -254,6 +259,10 @@ class HermesCachedStopHookContext:
                     "Stop Hook changed decision requires markdown"
                 )
             return WorkingMemoryProposal.changed(markdown)
+        if markdown is not None:
+            raise StopHookResponseError(
+                "Stop Hook unchanged decision requires null markdown"
+            )
         return WorkingMemoryProposal.unchanged()
 
 

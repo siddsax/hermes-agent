@@ -19,11 +19,11 @@ class RuntimeEnvelopeBudget:
     def pinned(cls) -> "RuntimeEnvelopeBudget":
         return cls(
             context_window_tokens=272_000,
-            fixed_system_and_bridge_tokens=791,
+            fixed_system_and_bridge_tokens=2_613,
             working_memory_tokens=16_000,
             output_and_reasoning_tokens=32_768,
             absolute_transcript_tokens=200_000,
-            unallocated_safety_tokens=22_441,
+            unallocated_safety_tokens=20_619,
             routine_batch_target_tokens=8_000,
         )
 

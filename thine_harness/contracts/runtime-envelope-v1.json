@@ -2,11 +2,11 @@
   "contract_version": 1,
   "budget": {
     "context_window_tokens": 272000,
-    "fixed_system_and_bridge_tokens": 791,
+    "fixed_system_and_bridge_tokens": 2613,
     "working_memory_tokens": 16000,
     "output_and_reasoning_tokens": 32768,
     "absolute_transcript_tokens": 200000,
-    "unallocated_safety_tokens": 22441,
+    "unallocated_safety_tokens": 20619,
     "routine_batch_target_tokens": 8000
   },
   "measurement": {

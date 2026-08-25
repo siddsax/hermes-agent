@@ -9,6 +9,7 @@ from thine_harness.working_memory import (
     StopHookContextChanged,
     StopHookOutcomeKind,
     StopHookRequest,
+    StopHookResponseError,
     StopHookRunner,
     WorkingMemoryLimitError,
     WorkingMemoryProposal,
@@ -145,6 +146,38 @@ def test_aiagent_stop_hook_continues_on_same_agent_history_and_cache_identity():
         "cache_read_tokens": 1024,
         "cache_write_tokens": 0,
     }
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        '{"worth_remembering":false}',
+        '{"worth_remembering":false,"markdown":null,"extra":true}',
+        '{"worth_remembering":false,"markdown":"must be null"}',
+    ],
+)
+def test_aiagent_stop_hook_rejects_non_exact_decision_json(response):
+    class _InvalidDecisionAgent(_CachedAIAgent):
+        def run_conversation(self, prompt, **kwargs):
+            raw = super().run_conversation(prompt, **kwargs)
+            raw["final_response"] = response
+            return raw
+
+    agent = _InvalidDecisionAgent()
+    context = HermesCachedStopHookContext(
+        agent=agent,
+        conversation_history=[],
+        cache_identity=CacheIdentity.from_request(
+            session_id=agent.session_id,
+            prompt_cache_key="pck-invalid-decision",
+            tools=agent.tools,
+        ),
+    )
+
+    with pytest.raises(StopHookResponseError):
+        context.continue_stop_hook(
+            StopHookRequest(current_markdown="prior", target_tokens=16_000)
+        )
 
 
 class _CompactingContext:

@@ -5,9 +5,11 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 import copy
+import hashlib
 import json
 import logging
 import os
+from pathlib import Path
 import re
 import tempfile
 from typing import Any, Callable, Iterator
@@ -15,6 +17,7 @@ from typing import Any, Callable, Iterator
 from httpx import HTTPError
 from openai import APIError
 
+from agent.model_metadata import estimate_request_tokens_rough
 from agent.outbound_request_scope import observe_outbound_requests
 from thine_harness.probe import (
     CODEX_BASE_URL,
@@ -67,6 +70,7 @@ class OutboundTransportRecorder:
         if isinstance(extra_body, dict) and "tools" in extra_body:
             wire_tools = extra_body["tools"]
         tools = copy.deepcopy(list(wire_tools or []))
+        system_prompt = str(kwargs.get("instructions") or "")
         self.records.append(
             {
                 "phase": self._phase.get(),
@@ -75,6 +79,15 @@ class OutboundTransportRecorder:
                 "prompt_cache_key": str(kwargs.get("prompt_cache_key") or ""),
                 "tools": tools,
                 "tool_schema_sha256": tool_schema_sha256(tools),
+                "system_prompt_sha256": hashlib.sha256(
+                    system_prompt.encode("utf-8")
+                ).hexdigest(),
+                "system_prompt_chars": len(system_prompt),
+                "fixed_prefix_estimated_tokens": estimate_request_tokens_rough(
+                    [],
+                    system_prompt=system_prompt,
+                    tools=tools,
+                ),
             }
         )
 
@@ -146,6 +159,25 @@ def _phase_records(
     return [record for record in records if record["phase"] == phase]
 
 
+def _pin_tool_search_listing_off() -> None:
+    """Bind the integrated proof to its checked-in deferred-search fixture."""
+    from hermes_cli.config import save_config
+
+    save_config(
+        {"tools": {"tool_search": {"enabled": "on", "listing": "off"}}},
+        strip_defaults=False,
+        merge_existing=True,
+    )
+
+
+def _expected_fixed_prefix_tokens() -> int:
+    contract_path = (
+        Path(__file__).with_name("contracts") / "runtime-envelope-v1.json"
+    )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    return int(contract["budget"]["fixed_system_and_bridge_tokens"])
+
+
 def run_integrated_live_probe(
     *,
     token_loader: Callable[[], dict[str, Any] | None] = _load_codex_cli_token,
@@ -160,6 +192,8 @@ def run_integrated_live_probe(
         raise CodexCredentialUnavailable(
             "Codex CLI credential is missing, expired, or unavailable"
         )
+
+    _pin_tool_search_listing_off()
 
     handler_calls: list[dict[str, Any]] = []
 
@@ -269,6 +303,14 @@ def run_integrated_live_probe(
         hook_keys = [record["prompt_cache_key"] for record in hook_wire]
         primary_hashes = [record["tool_schema_sha256"] for record in primary_wire]
         hook_hashes = [record["tool_schema_sha256"] for record in hook_wire]
+        all_wire = [*primary_wire, *hook_wire]
+        expected_fixed_prefix_tokens = _expected_fixed_prefix_tokens()
+        fixed_prefix_estimates = [
+            record["fixed_prefix_estimated_tokens"] for record in all_wire
+        ]
+        system_prompt_hashes = [
+            record["system_prompt_sha256"] for record in all_wire
+        ]
         hook_total_usage = stop_context.last_usage
         evidence = {
             "status": "ok",
@@ -296,8 +338,17 @@ def run_integrated_live_probe(
             "same_prompt_cache_key": len(set(primary_keys + hook_keys)) == 1,
             "same_wire_tool_array": all(
                 record["tools"] == first_wire["tools"]
-                for record in [*primary_wire, *hook_wire]
+                for record in all_wire
             ),
+            "deferred_catalog_listing": "off",
+            "fixed_prefix_expected_tokens": expected_fixed_prefix_tokens,
+            "fixed_prefix_estimated_tokens": fixed_prefix_estimates,
+            "fixed_prefix_matches_contract": all(
+                value == expected_fixed_prefix_tokens
+                for value in fixed_prefix_estimates
+            ),
+            "system_prompt_sha256": system_prompt_hashes,
+            "same_system_prompt": len(set(system_prompt_hashes)) == 1,
             "primary_wire_requests": primary_wire,
             "stop_hook_wire_requests": hook_wire,
             "stop_hook_outcome": stop_outcome.kind.value,
@@ -327,6 +378,14 @@ def run_integrated_live_probe(
             raise RuntimeError("integrated probe final marker mismatch")
         if not evidence["same_prompt_cache_key"] or not evidence["same_wire_tool_array"]:
             raise RuntimeError("Stop Hook cache envelope drifted from primary")
+        if not evidence["same_system_prompt"]:
+            raise RuntimeError("Stop Hook system prompt drifted from primary")
+        if not evidence["fixed_prefix_matches_contract"]:
+            raise RuntimeError(
+                "actual system prompt and wire tool prefix estimate does not match "
+                f"the runtime envelope: {fixed_prefix_estimates!r} != "
+                f"{expected_fixed_prefix_tokens}"
+            )
         if evidence["helper_calls_during_stop_hook"] != 0:
             raise RuntimeError("Stop Hook executed a helper handler")
         return evidence
