@@ -80,6 +80,12 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
         for path in (PROJECT_ROOT / "plugins").rglob(pattern)
     }
     assert expected, "expected bundled plugin manifests under plugins/"
+    contract_root = PROJECT_ROOT / "thine_harness" / "contracts" / "local-hermes-thine"
+    expected.update(
+        path.relative_to(PROJECT_ROOT).as_posix()
+        for path in contract_root.rglob("*")
+        if path.is_file()
+    )
 
     if kind == "wheel":
         with zipfile.ZipFile(artifacts[0]) as wheel:
@@ -93,4 +99,28 @@ def test_artifact_build_allows_explicit_nix_package_build_marker(kind, artifact_
             }
 
     missing = sorted(expected - shipped)
-    assert not missing, f"{kind} omits bundled plugin manifests: {missing}"
+    assert not missing, f"{kind} omits required package data: {missing}"
+
+    if kind == "wheel":
+        installed = tmp_path / "installed-wheel"
+        with zipfile.ZipFile(artifacts[0]) as wheel:
+            wheel.extractall(installed)
+        validation = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from thine_harness.contracts import validate_contract_pack; "
+                    "report = validate_contract_pack(); "
+                    "assert report.errors == (), report.errors; "
+                    "assert (report.valid_fixture_count, report.invalid_fixture_count) "
+                    "== (89, 62)"
+                ),
+            ],
+            cwd=tmp_path,
+            env={**os.environ, "PYTHONPATH": str(installed)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert validation.returncode == 0, validation.stderr

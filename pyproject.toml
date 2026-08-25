@@ -458,7 +458,7 @@ gateway = ["assets/**/*"]
 plugins = ["**/plugin.yaml", "**/plugin.yml"]
 # Local-Hermes consumers resolve the accepted language-neutral JSON pack at
 # runtime. Keep its schemas, fixtures, metadata, and provenance in wheels.
-thine_harness = ["contracts/**/*.json"]
+thine_harness = ["contracts/**/*.json", "contracts/**/README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

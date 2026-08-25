@@ -1,21 +1,45 @@
-"""Typed notifications contract DTOs."""
+"""Generated typed notifications contract DTOs."""
 
 from ._base import ContractDTO, contract_type
+from ._views_generated import (
+    MobileNotificationIntentVariant1View,
+    MobileNotificationIntentVariant2View,
+    MobileNotificationOutcomeVariant1View,
+    MobileNotificationOutcomeVariant2View,
+    MobileNotificationOutcomeVariant3View,
+    MobileNotificationPermissionView,
+)
 
 
 @contract_type("notification_intent")
-class NotificationIntent(ContractDTO):
-    """Validated notification_intent wire payload."""
+class NotificationIntent(
+    ContractDTO[
+        MobileNotificationIntentVariant1View | MobileNotificationIntentVariant2View
+    ]
+):
+    """Immutable typed view of a validated notification_intent payload."""
+
+    __slots__ = ()
 
 
 @contract_type("notification_outcome")
-class NotificationOutcome(ContractDTO):
-    """Validated notification_outcome wire payload."""
+class NotificationOutcome(
+    ContractDTO[
+        MobileNotificationOutcomeVariant1View
+        | MobileNotificationOutcomeVariant2View
+        | MobileNotificationOutcomeVariant3View
+    ]
+):
+    """Immutable typed view of a validated notification_outcome payload."""
+
+    __slots__ = ()
 
 
 @contract_type("notification_permission")
-class NotificationPermission(ContractDTO):
-    """Validated notification_permission wire payload."""
+class NotificationPermission(ContractDTO[MobileNotificationPermissionView]):
+    """Immutable typed view of a validated notification_permission payload."""
+
+    __slots__ = ()
 
 
 __all__ = [
@@ -23,4 +47,3 @@ __all__ = [
     "NotificationOutcome",
     "NotificationPermission",
 ]
-

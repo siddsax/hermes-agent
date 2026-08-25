@@ -56,7 +56,13 @@ def _parse_wire(wire: str | bytes | bytearray) -> JSONValue:
     return value
 
 
-def validate_payload(type_id: str, payload: dict[str, JSONValue]) -> dict[str, JSONValue]:
+def validate_payload(
+    type_id: str, payload: dict[str, JSONValue]
+) -> dict[str, JSONValue]:
+    try:
+        reject_unsafe_integral_numbers(payload)
+    except ValueError as exc:
+        raise ContractDecodeError(str(exc)) from exc
     manifest = load_manifest()
     target = manifest.get("schema_targets", {}).get(type_id)
     if not isinstance(target, str):
@@ -64,7 +70,9 @@ def validate_payload(type_id: str, payload: dict[str, JSONValue]) -> dict[str, J
     try:
         document, schema = resolve_schema(CONTRACT_PACK_ROOT, target)
     except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
-        raise ContractDecodeError(f"contract schema unavailable for {type_id!r}: {exc}") from exc
+        raise ContractDecodeError(
+            f"contract schema unavailable for {type_id!r}: {exc}"
+        ) from exc
 
     errors = SchemaValidator(document).validate(payload, schema)
     errors.extend(semantic_errors(type_id, payload, _interaction_actions()))
@@ -89,7 +97,9 @@ def _snapshot_errors() -> list[str]:
         provenance = load_json(PROVENANCE_PATH)
     except (OSError, json.JSONDecodeError) as exc:
         return [f"provenance: {exc}"]
-    if not isinstance(provenance, dict) or not isinstance(provenance.get("file_sha256"), dict):
+    if not isinstance(provenance, dict) or not isinstance(
+        provenance.get("file_sha256"), dict
+    ):
         return ["provenance: invalid file_sha256 map"]
 
     expected = provenance["file_sha256"]
@@ -130,7 +140,8 @@ def validate_contract_pack() -> ValidationReport:
                     valid_count += 1
                     covered_targets.add(case["target"])
                     errors.extend(
-                        f"fixture {case['case_id']}: {message}" for message in case_errors
+                        f"fixture {case['case_id']}: {message}"
+                        for message in case_errors
                     )
                 else:
                     invalid_count += 1
@@ -138,14 +149,19 @@ def validate_contract_pack() -> ValidationReport:
                         errors.append(
                             f"fixture {case['case_id']}: invalid fixture unexpectedly passed"
                         )
-                    elif case.get("expected_error") and case["expected_error"] not in case_errors[0]:
+                    elif (
+                        case.get("expected_error")
+                        and case["expected_error"] not in case_errors[0]
+                    ):
                         errors.append(
                             f"fixture {case['case_id']}: expected {case['expected_error']!r}; "
                             f"observed {case_errors!r}"
                         )
     for required_target in manifest["required_fixture_targets"]:
         if required_target not in covered_targets:
-            errors.append(f"manifest: required fixture target not covered: {required_target}")
+            errors.append(
+                f"manifest: required fixture target not covered: {required_target}"
+            )
     return ValidationReport(
         errors=tuple(errors),
         valid_fixture_count=valid_count,

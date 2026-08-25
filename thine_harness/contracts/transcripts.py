@@ -1,56 +1,109 @@
-"""Typed transcripts contract DTOs."""
+"""Generated typed transcripts contract DTOs."""
 
 from ._base import ContractDTO, contract_type
+from ._views_generated import (
+    DataplaneTranscriptAckView,
+    DataplaneTranscriptCanonicalLookupView,
+    DataplaneTranscriptClaimRequestView,
+    DataplaneTranscriptClaimVariant1View,
+    DataplaneTranscriptClaimVariant2View,
+    DataplaneTranscriptClaimVariant3View,
+    DataplaneTranscriptLeaseRenewRequestView,
+    DataplaneTranscriptLeaseRenewResultView,
+    DataplaneTranscriptReclaimRequestView,
+    DataplaneTranscriptReclaimResultVariant1View,
+    DataplaneTranscriptReclaimResultVariant2View,
+    DataplaneTranscriptReleaseView,
+)
 
 
 @contract_type("transcript_ack")
-class TranscriptAck(ContractDTO):
-    """Validated transcript_ack wire payload."""
+class TranscriptAck(ContractDTO[DataplaneTranscriptAckView]):
+    """Immutable typed view of a validated transcript_ack payload."""
+
+    __slots__ = ()
 
 
 @contract_type("transcript_canonical_lookup")
-class TranscriptCanonicalLookup(ContractDTO):
-    """Validated transcript_canonical_lookup wire payload."""
+class TranscriptCanonicalLookup(ContractDTO[DataplaneTranscriptCanonicalLookupView]):
+    """Immutable typed view of a validated transcript_canonical_lookup payload."""
+
+    __slots__ = ()
 
 
 @contract_type("transcript_claim")
-class TranscriptClaim(ContractDTO):
-    """Validated transcript_claim wire payload."""
+class TranscriptClaim(
+    ContractDTO[
+        DataplaneTranscriptClaimVariant1View
+        | DataplaneTranscriptClaimVariant2View
+        | DataplaneTranscriptClaimVariant3View
+    ]
+):
+    """Immutable typed view of a validated transcript_claim payload."""
+
+    __slots__ = ()
 
 
 @contract_type("transcript_claim_lookup")
-class TranscriptClaimLookup(ContractDTO):
-    """Validated transcript_claim_lookup wire payload."""
+class TranscriptClaimLookup(
+    ContractDTO[
+        DataplaneTranscriptClaimVariant1View
+        | DataplaneTranscriptClaimVariant2View
+        | DataplaneTranscriptClaimVariant3View
+    ]
+):
+    """Immutable typed view of a validated transcript_claim_lookup payload."""
+
+    __slots__ = ()
 
 
 @contract_type("transcript_claim_request")
-class TranscriptClaimRequest(ContractDTO):
-    """Validated transcript_claim_request wire payload."""
+class TranscriptClaimRequest(ContractDTO[DataplaneTranscriptClaimRequestView]):
+    """Immutable typed view of a validated transcript_claim_request payload."""
+
+    __slots__ = ()
 
 
 @contract_type("transcript_lease_renew_request")
-class TranscriptLeaseRenewRequest(ContractDTO):
-    """Validated transcript_lease_renew_request wire payload."""
+class TranscriptLeaseRenewRequest(
+    ContractDTO[DataplaneTranscriptLeaseRenewRequestView]
+):
+    """Immutable typed view of a validated transcript_lease_renew_request payload."""
+
+    __slots__ = ()
 
 
 @contract_type("transcript_lease_renew_result")
-class TranscriptLeaseRenewResult(ContractDTO):
-    """Validated transcript_lease_renew_result wire payload."""
+class TranscriptLeaseRenewResult(ContractDTO[DataplaneTranscriptLeaseRenewResultView]):
+    """Immutable typed view of a validated transcript_lease_renew_result payload."""
+
+    __slots__ = ()
 
 
 @contract_type("transcript_reclaim_request")
-class TranscriptReclaimRequest(ContractDTO):
-    """Validated transcript_reclaim_request wire payload."""
+class TranscriptReclaimRequest(ContractDTO[DataplaneTranscriptReclaimRequestView]):
+    """Immutable typed view of a validated transcript_reclaim_request payload."""
+
+    __slots__ = ()
 
 
 @contract_type("transcript_reclaim_result")
-class TranscriptReclaimResult(ContractDTO):
-    """Validated transcript_reclaim_result wire payload."""
+class TranscriptReclaimResult(
+    ContractDTO[
+        DataplaneTranscriptReclaimResultVariant1View
+        | DataplaneTranscriptReclaimResultVariant2View
+    ]
+):
+    """Immutable typed view of a validated transcript_reclaim_result payload."""
+
+    __slots__ = ()
 
 
 @contract_type("transcript_release")
-class TranscriptRelease(ContractDTO):
-    """Validated transcript_release wire payload."""
+class TranscriptRelease(ContractDTO[DataplaneTranscriptReleaseView]):
+    """Immutable typed view of a validated transcript_release payload."""
+
+    __slots__ = ()
 
 
 __all__ = [
@@ -65,4 +118,3 @@ __all__ = [
     "TranscriptReclaimResult",
     "TranscriptRelease",
 ]
-

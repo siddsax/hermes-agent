@@ -1,20 +1,39 @@
-"""Typed action contract DTOs."""
+"""Generated typed action contract DTOs."""
 
 from ._base import ContractDTO, contract_type
+from ._views_generated import (
+    RuntimeActionIntentVariant1View,
+    RuntimeActionIntentVariant2View,
+    RuntimeActionIntentVariant3View,
+    RuntimeActionIntentVariant4View,
+    RuntimeActionIntentVariant5View,
+    RuntimeActionReceiptView,
+)
 
 
 @contract_type("action_intent")
-class ActionIntent(ContractDTO):
-    """Validated action_intent wire payload."""
+class ActionIntent(
+    ContractDTO[
+        RuntimeActionIntentVariant1View
+        | RuntimeActionIntentVariant2View
+        | RuntimeActionIntentVariant3View
+        | RuntimeActionIntentVariant4View
+        | RuntimeActionIntentVariant5View
+    ]
+):
+    """Immutable typed view of a validated action_intent payload."""
+
+    __slots__ = ()
 
 
 @contract_type("action_receipt")
-class ActionReceipt(ContractDTO):
-    """Validated action_receipt wire payload."""
+class ActionReceipt(ContractDTO[RuntimeActionReceiptView]):
+    """Immutable typed view of a validated action_receipt payload."""
+
+    __slots__ = ()
 
 
 __all__ = [
     "ActionIntent",
     "ActionReceipt",
 ]
-

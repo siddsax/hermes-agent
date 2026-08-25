@@ -1,31 +1,48 @@
-"""Typed home contract DTOs."""
+"""Generated typed home contract DTOs."""
 
 from ._base import ContractDTO, contract_type
+from ._views_generated import (
+    MobileHomeActivationView,
+    MobileHomeHistoryView,
+    MobileHomeRevisionView,
+    MobileHomeStateView,
+    MobileNavigationIntentView,
+)
 
 
 @contract_type("home_activation")
-class HomeActivation(ContractDTO):
-    """Validated home_activation wire payload."""
+class HomeActivation(ContractDTO[MobileHomeActivationView]):
+    """Immutable typed view of a validated home_activation payload."""
+
+    __slots__ = ()
 
 
 @contract_type("home_history")
-class HomeHistory(ContractDTO):
-    """Validated home_history wire payload."""
+class HomeHistory(ContractDTO[MobileHomeHistoryView]):
+    """Immutable typed view of a validated home_history payload."""
+
+    __slots__ = ()
 
 
 @contract_type("home_revision")
-class HomeRevision(ContractDTO):
-    """Validated home_revision wire payload."""
+class HomeRevision(ContractDTO[MobileHomeRevisionView]):
+    """Immutable typed view of a validated home_revision payload."""
+
+    __slots__ = ()
 
 
 @contract_type("home_state")
-class HomeState(ContractDTO):
-    """Validated home_state wire payload."""
+class HomeState(ContractDTO[MobileHomeStateView]):
+    """Immutable typed view of a validated home_state payload."""
+
+    __slots__ = ()
 
 
 @contract_type("navigation_intent")
-class NavigationIntent(ContractDTO):
-    """Validated navigation_intent wire payload."""
+class NavigationIntent(ContractDTO[MobileNavigationIntentView]):
+    """Immutable typed view of a validated navigation_intent payload."""
+
+    __slots__ = ()
 
 
 __all__ = [
@@ -35,4 +52,3 @@ __all__ = [
     "HomeState",
     "NavigationIntent",
 ]
-

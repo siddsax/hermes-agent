@@ -52,7 +52,9 @@ class SchemaValidator:
         errors: list[str],
     ) -> None:
         if "$ref" in schema:
-            self._validate(instance, self._resolve_pointer(schema["$ref"]), path, errors)
+            self._validate(
+                instance, self._resolve_pointer(schema["$ref"]), path, errors
+            )
             schema = {key: value for key, value in schema.items() if key != "$ref"}
 
         if "const" in schema and not self._json_equal(instance, schema["const"]):
@@ -71,7 +73,9 @@ class SchemaValidator:
             return
 
         expected_type = schema.get("type")
-        if expected_type is not None and not self._matches_type(instance, expected_type):
+        if expected_type is not None and not self._matches_type(
+            instance, expected_type
+        ):
             errors.append(f"{path}: expected type {expected_type!r}")
             return
 
@@ -102,10 +106,9 @@ class SchemaValidator:
                 errors.append(f"{path}: too few items")
             if "maxItems" in schema and len(instance) > schema["maxItems"]:
                 errors.append(f"{path}: too many items")
-            if schema.get("uniqueItems") and any(
-                any(self._json_equal(item, prior) for prior in instance[:index])
-                for index, item in enumerate(instance)
-            ):
+            if schema.get("uniqueItems") and len({
+                _json_fingerprint(item) for item in instance
+            }) != len(instance):
                 errors.append(f"{path}: duplicate items")
             item_schema = schema.get("items")
             if isinstance(item_schema, dict):
@@ -129,7 +132,9 @@ class SchemaValidator:
         for keyword, required_matches in (("oneOf", 1), ("anyOf", None)):
             alternatives = schema.get(keyword)
             if alternatives:
-                matches = sum(not self.validate(instance, option) for option in alternatives)
+                matches = sum(
+                    not self.validate(instance, option) for option in alternatives
+                )
                 if (required_matches is not None and matches != required_matches) or (
                     required_matches is None and matches == 0
                 ):
@@ -155,11 +160,14 @@ class SchemaValidator:
         predicates = {
             "null": lambda value: value is None,
             "boolean": lambda value: isinstance(value, bool),
-            "integer": lambda value: isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and (not isinstance(value, float) or value.is_integer()),
-            "number": lambda value: isinstance(value, (int, float))
-            and not isinstance(value, bool),
+            "integer": lambda value: (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and (not isinstance(value, float) or value.is_integer())
+            ),
+            "number": lambda value: (
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+            ),
             "string": lambda value: isinstance(value, str),
             "array": lambda value: isinstance(value, list),
             "object": lambda value: isinstance(value, dict),
@@ -172,8 +180,10 @@ class SchemaValidator:
             return isinstance(left, bool) and isinstance(right, bool) and left == right
         if isinstance(left, (int, float)) and isinstance(right, (int, float)):
             return (
-                not isinstance(left, float) or math.isfinite(left)
-            ) and (not isinstance(right, float) or math.isfinite(right)) and left == right
+                (not isinstance(left, float) or math.isfinite(left))
+                and (not isinstance(right, float) or math.isfinite(right))
+                and left == right
+            )
         if type(left) is not type(right):
             return False
         if isinstance(left, list) and isinstance(right, list):
@@ -188,7 +198,9 @@ class SchemaValidator:
 
 
 def reject_non_finite_json(value: str) -> Any:
-    raise json.JSONDecodeError(f"non-finite number is not valid JSON: {value!r}", value, 0)
+    raise json.JSONDecodeError(
+        f"non-finite number is not valid JSON: {value!r}", value, 0
+    )
 
 
 def object_without_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -218,11 +230,15 @@ def reject_unsafe_integral_numbers(value: Any, path: str = "$") -> None:
     elif isinstance(value, list):
         for index, child in enumerate(value):
             reject_unsafe_integral_numbers(child, f"{path}[{index}]")
+    elif isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{path}: non-finite number is not valid JSON")
     elif _is_unsafe_integral_number(value):
         raise ValueError(f"{path}: integer exceeds interoperable JSON safe range")
 
 
-def resolve_schema(pack_root: Path, target: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def resolve_schema(
+    pack_root: Path, target: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
     relative_path, fragment = target.split("#", 1)
     path = (pack_root / relative_path).resolve()
     if not path.is_relative_to(pack_root.resolve()):
@@ -277,9 +293,9 @@ def semantic_errors(
         if action not in interaction_actions.get(kind, []):
             errors.append("interaction action is not allowlisted for kind")
 
-    if target == "hermes_control_request" and payload.get("created_at_ms", 0) >= payload.get(
-        "deadline_at_ms", 0
-    ):
+    if target == "hermes_control_request" and payload.get(
+        "created_at_ms", 0
+    ) >= payload.get("deadline_at_ms", 0):
         errors.append("HermesControlPort deadline must follow request creation")
 
     if target == "tool_result":
@@ -301,7 +317,10 @@ def semantic_errors(
             errors.append(f"final reply {label} is not keyed by assistant_message_id")
 
     if target in {"p0_submission_outbox", "mobile_chat_outbox", "queue_receipt"}:
-        if payload.get("idempotency_key") != f"user-message:{payload.get('user_message_id')}":
+        if (
+            payload.get("idempotency_key")
+            != f"user-message:{payload.get('user_message_id')}"
+        ):
             errors.append("chat submission is not keyed by user_message_id")
 
     if target == "preferences":
@@ -339,7 +358,9 @@ def semantic_errors(
             errors.append(f"forbidden exact {key} field: {path}")
         sensitive_part = _sensitive_field_part(key)
         if sensitive_part:
-            errors.append(f"fixture contains forbidden sensitive field: {sensitive_part} at {path}")
+            errors.append(
+                f"fixture contains forbidden sensitive field: {sensitive_part} at {path}"
+            )
     return errors
 
 
@@ -365,9 +386,13 @@ def _walk_keys(value: Any, path: str = "$") -> list[tuple[str, str]]:
 
 
 def _sensitive_field_part(key: str) -> str | None:
-    normalized = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+    normalized = _normalized_wire_key(key)
     return next(
-        (part for part in FORBIDDEN_SENSITIVE_PARTS if f"_{part}_" in f"_{normalized}_"),
+        (
+            part
+            for part in FORBIDDEN_SENSITIVE_PARTS
+            if f"_{part}_" in f"_{normalized}_"
+        ),
         None,
     )
 
@@ -393,8 +418,10 @@ def _inspect_extensions(value: Any, errors: list[str], path: str = "$") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             if key == "extensions" and isinstance(child, dict):
-                for extension_path, extension_key in _walk_keys(child, f"{path}.extensions"):
-                    normalized = re.sub(r"[^a-z0-9]+", "_", extension_key.lower()).strip("_")
+                for extension_path, extension_key in _walk_keys(
+                    child, f"{path}.extensions"
+                ):
+                    normalized = _normalized_wire_key(extension_key)
                     if normalized in forbidden:
                         errors.append(
                             f"extensions must be inert and non-executable: {extension_path}"
@@ -403,3 +430,35 @@ def _inspect_extensions(value: Any, errors: list[str], path: str = "$") -> None:
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _inspect_extensions(child, errors, f"{path}[{index}]")
+
+
+def _normalized_wire_key(key: str) -> str:
+    with_acronym_boundaries = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", key)
+    with_word_boundaries = re.sub(
+        r"([a-z0-9])([A-Z])", r"\1_\2", with_acronym_boundaries
+    )
+    return re.sub(r"[^a-z0-9]+", "_", with_word_boundaries.lower()).strip("_")
+
+
+def _json_fingerprint(value: Any) -> tuple[Any, ...]:
+    """Return a hashable fingerprint with the same equality as JSON Schema."""
+
+    if value is None:
+        return ("null",)
+    if isinstance(value, bool):
+        return ("boolean", value)
+    if isinstance(value, int):
+        return ("number", value, 1)
+    if isinstance(value, float):
+        numerator, denominator = value.as_integer_ratio()
+        return ("number", numerator, denominator)
+    if isinstance(value, str):
+        return ("string", value)
+    if isinstance(value, list):
+        return ("array", *(_json_fingerprint(child) for child in value))
+    if isinstance(value, dict):
+        return (
+            "object",
+            *(sorted((key, _json_fingerprint(child)) for key, child in value.items())),
+        )
+    raise TypeError(f"unsupported JSON value: {type(value).__name__}")

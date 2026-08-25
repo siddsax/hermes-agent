@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Protocol
+from typing import NewType, Protocol
 
 from .action import ActionIntent, ActionReceipt
 from .chat import (
@@ -22,7 +22,11 @@ from .interactions import (
     InteractionCursorConsumptionReceipt,
     InteractionDeliveryAck,
 )
-from .notifications import NotificationIntent, NotificationOutcome, NotificationPermission
+from .notifications import (
+    NotificationIntent,
+    NotificationOutcome,
+    NotificationPermission,
+)
 from .preferences import Preferences
 from .recovery import ExplicitRetry, InputGap, QuarantineRecord
 from .reset import ResetCommand, ResetResult
@@ -52,10 +56,17 @@ from .transcripts import (
 from .working_memory import StopHookDecision, WorkingMemorySnapshot
 
 
+ClaimId = NewType("ClaimId", str)
+SequenceNumber = NewType("SequenceNumber", int)
+UserId = NewType("UserId", str)
+
+
 class InvocationPort(Protocol):
     def invoke(self, request: InvocationRequest) -> Iterable[InvocationEvent]: ...
 
-    def cancel_or_yield(self, request: HermesControlRequest) -> HermesControlResponse: ...
+    def cancel_or_yield(
+        self, request: HermesControlRequest
+    ) -> HermesControlResponse: ...
 
     def checkpoint(self, checkpoint: Checkpoint) -> None: ...
 
@@ -73,9 +84,11 @@ class WorkingMemoryPort(Protocol):
 class TranscriptPort(Protocol):
     def claim(self, request: TranscriptClaimRequest) -> TranscriptClaim: ...
 
-    def lookup_claim(self, request: TranscriptClaimLookup) -> TranscriptClaim: ...
+    def lookup_claim(self, claim_id: ClaimId) -> TranscriptClaimLookup: ...
 
-    def renew(self, request: TranscriptLeaseRenewRequest) -> TranscriptLeaseRenewResult: ...
+    def renew(
+        self, request: TranscriptLeaseRenewRequest
+    ) -> TranscriptLeaseRenewResult: ...
 
     def reclaim(self, request: TranscriptReclaimRequest) -> TranscriptReclaimResult: ...
 
@@ -83,7 +96,9 @@ class TranscriptPort(Protocol):
 
     def acknowledge(self, request: TranscriptAck) -> TranscriptAck: ...
 
-    def canonical_lookup(self, request: TranscriptCanonicalLookup) -> TranscriptCanonicalLookup: ...
+    def canonical_lookup(
+        self, sequence_number: SequenceNumber
+    ) -> TranscriptCanonicalLookup: ...
 
 
 class ActionPort(Protocol):
@@ -99,7 +114,7 @@ class ChatPort(Protocol):
 
     def current_status(self, stream_id: str) -> ChatCurrentStatus: ...
 
-    def reconnect(self, request: ChatReconnect) -> ChatReconnect: ...
+    def reconnect(self, user_id: UserId) -> ChatReconnect: ...
 
     def persist_reply(self, reply: FinalReplyOutbox) -> FinalReplyReceipt: ...
 
@@ -164,6 +179,7 @@ class HermesControlPort(Protocol):
 
 __all__ = [
     "ActionPort",
+    "ClaimId",
     "ChatPort",
     "HermesControlPort",
     "HomeStatePort",
@@ -174,7 +190,9 @@ __all__ = [
     "PolicyPort",
     "RecoveryPort",
     "SchedulePort",
+    "SequenceNumber",
     "SpeakerMappingPort",
     "TranscriptPort",
+    "UserId",
     "WorkingMemoryPort",
 ]

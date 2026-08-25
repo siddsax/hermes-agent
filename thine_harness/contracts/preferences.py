@@ -1,14 +1,18 @@
-"""Typed preferences contract DTOs."""
+"""Generated typed preferences contract DTOs."""
 
 from ._base import ContractDTO, contract_type
+from ._views_generated import (
+    PolicyPreferencesView,
+)
 
 
 @contract_type("preferences")
-class Preferences(ContractDTO):
-    """Validated preferences wire payload."""
+class Preferences(ContractDTO[PolicyPreferencesView]):
+    """Immutable typed view of a validated preferences payload."""
+
+    __slots__ = ()
 
 
 __all__ = [
     "Preferences",
 ]
-

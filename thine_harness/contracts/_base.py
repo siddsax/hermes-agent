@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, FrozenInstanceError
 import json
-from typing import ClassVar, TypeVar
+from types import MappingProxyType
+from typing import Any, ClassVar, Generic, TypeVar, cast
 
 
 JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
@@ -12,12 +14,57 @@ JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSO
 _DTO_BY_TARGET: dict[str, type["ContractDTO"]] = {}
 
 
-@dataclass(frozen=True, init=False)
-class ContractDTO:
+@dataclass(init=False, slots=True, eq=False)
+class FrozenJSONObject(Mapping[str, Any]):
+    """Read-only object view with both mapping and typed attribute access."""
+
+    _values: Mapping[str, FrozenJSONValue]
+
+    def __init__(self, values: dict[str, FrozenJSONValue]):
+        object.__setattr__(self, "_values", MappingProxyType(values))
+
+    def __getitem__(self, key: str) -> FrozenJSONValue:
+        return self._values[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __getattr__(self, name: str) -> FrozenJSONValue:
+        try:
+            return self._values[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "_values" and not hasattr(self, "_values"):
+            object.__setattr__(self, name, value)
+            return
+        raise FrozenInstanceError(f"cannot assign to field {name!r}")
+
+
+FrozenJSONValue = (
+    None | bool | int | float | str | tuple["FrozenJSONValue", ...] | FrozenJSONObject
+)
+
+
+Payload = TypeVar("Payload")
+
+
+@dataclass(init=False, slots=True)
+class ContractDTO(Generic[Payload]):
     """One validated wire payload with a contract-specific Python type."""
 
     type_id: ClassVar[str]
     _wire_json: str
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise FrozenInstanceError(f"cannot assign to field {name!r}")
+
+    def __delattr__(self, name: str) -> None:
+        raise FrozenInstanceError(f"cannot delete field {name!r}")
 
     @classmethod
     def from_dict(cls: type[DTO], payload: dict[str, JSONValue]) -> DTO:
@@ -32,8 +79,10 @@ class ContractDTO:
 
         decoded = decode_contract(cls.type_id, wire)
         if not isinstance(decoded, cls):
-            raise TypeError(f"decoder returned {type(decoded).__name__}, expected {cls.__name__}")
-        return decoded
+            raise TypeError(
+                f"decoder returned {type(decoded).__name__}, expected {cls.__name__}"
+            )
+        return cast(DTO, decoded)
 
     @classmethod
     def _from_validated(cls: type[DTO], payload: dict[str, JSONValue]) -> DTO:
@@ -54,6 +103,11 @@ class ContractDTO:
     def to_json(self) -> str:
         return self._wire_json
 
+    @property
+    def payload(self) -> Payload:
+        value = json.loads(self._wire_json)
+        return cast(Payload, _freeze_json(value))
+
 
 DTO = TypeVar("DTO", bound=ContractDTO)
 
@@ -69,3 +123,13 @@ def contract_type(type_id: str):
         return cls
 
     return decorate
+
+
+def _freeze_json(value: JSONValue) -> FrozenJSONValue:
+    if isinstance(value, dict):
+        return FrozenJSONObject({
+            key: _freeze_json(child) for key, child in value.items()
+        })
+    if isinstance(value, list):
+        return tuple(_freeze_json(child) for child in value)
+    return value

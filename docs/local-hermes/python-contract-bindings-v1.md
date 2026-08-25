@@ -16,6 +16,12 @@ The pack remains the wire authority. The Python modules under
 one explicit immutable DTO class in the module assigned by
 `metadata/serialization-map.json`.
 
+Each DTO exposes a read-only `payload` view. Generated `Protocol` structures
+cover nested objects, arrays become tuples, and closed enum/constant fields use
+`Literal` discriminants, so ports can remain statically typed without changing
+the frozen wire. Regenerate these views with
+`python thine_harness/contracts/_codegen.py`, then run the repository formatter.
+
 ## Decoder behavior
 
 `decode_contract(type_id, wire)` performs strict JSON parsing, schema

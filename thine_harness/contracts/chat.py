@@ -1,46 +1,101 @@
-"""Typed chat contract DTOs."""
+"""Generated typed chat contract DTOs."""
 
 from ._base import ContractDTO, contract_type
+from ._views_generated import (
+    MobileChatCurrentStatusView,
+    MobileChatEventVariant1View,
+    MobileChatEventVariant2View,
+    MobileChatEventVariant3View,
+    MobileChatReconnectView,
+    MobileMobileChatOutboxVariant1View,
+    MobileMobileChatOutboxVariant2View,
+    MobileMobileChatOutboxVariant3View,
+    RuntimeFinalReplyOutboxVariant1View,
+    RuntimeFinalReplyOutboxVariant2View,
+    RuntimeFinalReplyReceiptView,
+    RuntimeP0SubmissionOutboxVariant1View,
+    RuntimeP0SubmissionOutboxVariant2View,
+    RuntimeP0SubmissionOutboxVariant3View,
+    RuntimeQueueReceiptView,
+)
 
 
 @contract_type("chat_current_status")
-class ChatCurrentStatus(ContractDTO):
-    """Validated chat_current_status wire payload."""
+class ChatCurrentStatus(ContractDTO[MobileChatCurrentStatusView]):
+    """Immutable typed view of a validated chat_current_status payload."""
+
+    __slots__ = ()
 
 
 @contract_type("chat_event")
-class ChatEvent(ContractDTO):
-    """Validated chat_event wire payload."""
+class ChatEvent(
+    ContractDTO[
+        MobileChatEventVariant1View
+        | MobileChatEventVariant2View
+        | MobileChatEventVariant3View
+    ]
+):
+    """Immutable typed view of a validated chat_event payload."""
+
+    __slots__ = ()
 
 
 @contract_type("chat_reconnect")
-class ChatReconnect(ContractDTO):
-    """Validated chat_reconnect wire payload."""
+class ChatReconnect(ContractDTO[MobileChatReconnectView]):
+    """Immutable typed view of a validated chat_reconnect payload."""
+
+    __slots__ = ()
 
 
 @contract_type("final_reply_outbox")
-class FinalReplyOutbox(ContractDTO):
-    """Validated final_reply_outbox wire payload."""
+class FinalReplyOutbox(
+    ContractDTO[
+        RuntimeFinalReplyOutboxVariant1View | RuntimeFinalReplyOutboxVariant2View
+    ]
+):
+    """Immutable typed view of a validated final_reply_outbox payload."""
+
+    __slots__ = ()
 
 
 @contract_type("final_reply_receipt")
-class FinalReplyReceipt(ContractDTO):
-    """Validated final_reply_receipt wire payload."""
+class FinalReplyReceipt(ContractDTO[RuntimeFinalReplyReceiptView]):
+    """Immutable typed view of a validated final_reply_receipt payload."""
+
+    __slots__ = ()
 
 
 @contract_type("mobile_chat_outbox")
-class MobileChatOutbox(ContractDTO):
-    """Validated mobile_chat_outbox wire payload."""
+class MobileChatOutbox(
+    ContractDTO[
+        MobileMobileChatOutboxVariant1View
+        | MobileMobileChatOutboxVariant2View
+        | MobileMobileChatOutboxVariant3View
+    ]
+):
+    """Immutable typed view of a validated mobile_chat_outbox payload."""
+
+    __slots__ = ()
 
 
 @contract_type("p0_submission_outbox")
-class P0SubmissionOutbox(ContractDTO):
-    """Validated p0_submission_outbox wire payload."""
+class P0SubmissionOutbox(
+    ContractDTO[
+        RuntimeP0SubmissionOutboxVariant1View
+        | RuntimeP0SubmissionOutboxVariant2View
+        | RuntimeP0SubmissionOutboxVariant3View
+    ]
+):
+    """Immutable typed view of a validated p0_submission_outbox payload."""
+
+    __slots__ = ()
 
 
 @contract_type("queue_receipt")
-class QueueReceipt(ContractDTO):
-    """Validated queue_receipt wire payload."""
+class QueueReceipt(ContractDTO[RuntimeQueueReceiptView]):
+    """Immutable typed view of a validated queue_receipt payload."""
+
+    __slots__ = ()
 
 
 __all__ = [
@@ -53,4 +108,3 @@ __all__ = [
     "P0SubmissionOutbox",
     "QueueReceipt",
 ]
-
