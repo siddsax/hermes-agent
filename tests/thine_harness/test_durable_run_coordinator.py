@@ -294,6 +294,52 @@ class _PreemptThenComplete:
         return InvocationOutcome.completed()
 
 
+class _LeaseBarrierState(DurableRunState):
+    """Pause after leasing so a P0 can land before active registration."""
+
+    def __init__(self, path: Path):
+        super().__init__(path)
+        self.background_leased = threading.Event()
+        self.release_lease = threading.Event()
+
+    def lease_next(self, user_id: str, *, owner: str, now_ms: int):
+        leased = super().lease_next(user_id, owner=owner, now_ms=now_ms)
+        if leased is not None and leased.tick.payload.kind != "p0_user_chat":
+            self.background_leased.set()
+            assert self.release_lease.wait(2)
+        return leased
+
+
+class _RequireEarlyPreemption:
+    def invoke(self, context, *, tools, control):
+        assert control.preemption_requested
+        return InvocationOutcome.preempted(remaining_work="resume after p0")
+
+
+def test_p0_arriving_between_lease_and_activation_still_preempts(tmp_path: Path):
+    state = _LeaseBarrierState(tmp_path / "state.sqlite3")
+    coordinator = RunCoordinator(
+        state,
+        runtime=_RequireEarlyPreemption(),
+        feature_port=_RecordingFeature(),
+        clock_ms=lambda: 100,
+    )
+    coordinator.enqueue(_tick("background"))
+    results: list[RunResult | None] = []
+    worker = threading.Thread(
+        target=lambda: results.append(coordinator.run_next("daily-user"))
+    )
+    worker.start()
+    assert state.background_leased.wait(2)
+
+    coordinator.enqueue(_tick("chat", kind="p0_user_chat", queued_at_ms=2))
+    state.release_lease.set()
+    worker.join(2)
+
+    assert results and results[0] is not None
+    assert results[0].status == "checkpointed"
+
+
 def test_p0_preemption_queues_and_resumes_without_consuming_attempt(tmp_path: Path):
     runtime = _PreemptThenComplete()
     coordinator = RunCoordinator(
@@ -428,6 +474,117 @@ def test_expired_uncheckpointed_invocation_consumes_one_durable_attempt(tmp_path
         (1, "failed_fault", "crash_discarded_uncheckpointed_inference"),
         (2, "running", None),
     ]
+
+
+def test_stale_lease_cannot_finalize_a_recovered_attempt(tmp_path: Path):
+    state = DurableRunState(tmp_path / "state.sqlite3", lease_duration_ms=10)
+    state.enqueue(_tick("stale"), now_ms=0)
+    first = state.lease_next("daily-user", owner="local-harness", now_ms=0)
+    assert first is not None
+    second = state.lease_next("daily-user", owner="local-harness", now_ms=11)
+    assert second is not None
+    assert second.attempt_ordinal == 2
+
+    with pytest.raises(DurableStateError):
+        state.complete(
+            user_id="daily-user",
+            logical_run_id="run:stale",
+            owner="local-harness",
+            attempt_id=first.attempt_id,
+            lease_token=first.lease_token,
+            now_ms=12,
+        )
+
+    attempts = state.diagnostics("daily-user").attempts
+    assert [(attempt.ordinal, attempt.status) for attempt in attempts] == [
+        (1, "failed_fault"),
+        (2, "running"),
+    ]
+
+
+def test_same_action_id_is_isolated_between_users(tmp_path: Path):
+    state = DurableRunState(tmp_path / "state.sqlite3")
+    state.enqueue(_tick("first", user_id="user-a"), now_ms=1)
+    state.enqueue(_tick("second", user_id="user-b"), now_ms=2)
+
+    first = state.record_or_get_receipt(
+        user_id="user-a",
+        logical_run_id="run:first",
+        action_id="shared-action",
+        intent_fingerprint="a" * 64,
+        provider_reference="feature:first",
+        result={"user": "a"},
+        acknowledged_at_ms=3,
+    )
+    second = state.record_or_get_receipt(
+        user_id="user-b",
+        logical_run_id="run:second",
+        action_id="shared-action",
+        intent_fingerprint="b" * 64,
+        provider_reference="feature:second",
+        result={"user": "b"},
+        acknowledged_at_ms=4,
+    )
+
+    assert first.receipt_id == second.receipt_id
+    assert (
+        state.get_receipt(
+            user_id="user-a", logical_run_id="run:first", action_id="shared-action"
+        )
+        == first
+    )
+    assert (
+        state.get_receipt(
+            user_id="user-b", logical_run_id="run:second", action_id="shared-action"
+        )
+        == second
+    )
+
+
+class _CheckpointWithUntrustedReceiptIds:
+    def invoke(self, context, *, tools, control):
+        receipt = tools.execute_once(
+            FakeFeatureCommand(
+                action_id="current-action",
+                intent_fingerprint="c" * 64,
+                payload={"value": "current"},
+            )
+        )
+        return InvocationOutcome.checkpointed(
+            remaining_work="resume safely",
+            completed_receipt_ids=(
+                receipt.receipt_id,
+                "receipt:bogus",
+                "receipt:other",
+            ),
+        )
+
+
+def test_checkpoint_receipts_are_derived_from_current_run_only(tmp_path: Path):
+    state = DurableRunState(tmp_path / "state.sqlite3")
+    state.enqueue(_tick("other", user_id="other-user"), now_ms=1)
+    state.record_or_get_receipt(
+        user_id="other-user",
+        logical_run_id="run:other",
+        action_id="other",
+        intent_fingerprint="d" * 64,
+        provider_reference="feature:other",
+        result={"value": "other"},
+        acknowledged_at_ms=2,
+    )
+    coordinator = RunCoordinator(
+        state,
+        runtime=_CheckpointWithUntrustedReceiptIds(),
+        feature_port=_RecordingFeature(),
+        clock_ms=lambda: 3,
+    )
+    coordinator.enqueue(_tick("current", queued_at_ms=2))
+
+    result = _require_result(coordinator)
+
+    assert result.tick_id == "current"
+    checkpoint = state.diagnostics("daily-user").checkpoints[0]
+    assert checkpoint.completed_receipt_ids == ("receipt:current-action",)
 
 
 def test_state_path_is_profile_scoped_and_future_schema_fails_closed(

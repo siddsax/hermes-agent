@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
+import secrets
 import sqlite3
 from typing import Any, Iterator, Literal
 
@@ -58,6 +59,7 @@ class LeasedRun:
     tick: Tick
     attempt_id: str
     attempt_ordinal: int
+    lease_token: str
     checkpoint: CheckpointRecord | None
     acknowledged_receipts: tuple[ToolReceiptRecord, ...]
 
@@ -180,6 +182,7 @@ class DurableRunState:
                     tick_json TEXT NOT NULL,
                     state TEXT NOT NULL,
                     lease_owner TEXT,
+                    lease_token TEXT,
                     lease_expires_at_ms INTEGER,
                     completed_at_ms INTEGER,
                     updated_at_ms INTEGER NOT NULL
@@ -219,7 +222,7 @@ class DurableRunState:
                     ON checkpoints(user_id, logical_run_id, updated_at_ms DESC);
 
                 CREATE TABLE tool_receipts (
-                    receipt_id TEXT PRIMARY KEY,
+                    receipt_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
                     logical_run_id TEXT NOT NULL,
                     action_id TEXT NOT NULL,
@@ -227,6 +230,7 @@ class DurableRunState:
                     provider_reference TEXT NOT NULL,
                     result_json TEXT NOT NULL,
                     acknowledged_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY(user_id, receipt_id),
                     UNIQUE(user_id, action_id),
                     FOREIGN KEY(logical_run_id) REFERENCES queue_items(logical_run_id)
                 );
@@ -350,15 +354,17 @@ class DurableRunState:
             else:
                 attempt_id = str(running_attempt["attempt_id"])
                 ordinal = int(running_attempt["ordinal"])
+            lease_token = secrets.token_hex(16)
             connection.execute(
                 """
                 UPDATE queue_items
-                SET state = 'running', lease_owner = ?, lease_expires_at_ms = ?,
-                    updated_at_ms = ?
+                SET state = 'running', lease_owner = ?, lease_token = ?,
+                    lease_expires_at_ms = ?, updated_at_ms = ?
                 WHERE logical_run_id = ? AND user_id = ? AND state = 'queued'
                 """,
                 (
                     owner,
+                    lease_token,
                     now_ms + self.lease_duration_ms,
                     now_ms,
                     item["logical_run_id"],
@@ -376,6 +382,7 @@ class DurableRunState:
                 tick=tick,
                 attempt_id=attempt_id,
                 attempt_ordinal=ordinal,
+                lease_token=lease_token,
                 checkpoint=checkpoint,
                 acknowledged_receipts=receipts,
             )
@@ -386,6 +393,8 @@ class DurableRunState:
         user_id: str,
         logical_run_id: str,
         owner: str,
+        attempt_id: str,
+        lease_token: str,
         cause: str,
         remaining_work: str,
         completed_receipt_ids: tuple[str, ...],
@@ -398,6 +407,8 @@ class DurableRunState:
                 user_id=user_id,
                 logical_run_id=logical_run_id,
                 owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
             )
             checkpoint_ordinal = (
                 int(
@@ -432,8 +443,8 @@ class DurableRunState:
             connection.execute(
                 """
                 UPDATE queue_items
-                SET state = 'queued', lease_owner = NULL, lease_expires_at_ms = NULL,
-                    updated_at_ms = ?
+                SET state = 'queued', lease_owner = NULL, lease_token = NULL,
+                    lease_expires_at_ms = NULL, updated_at_ms = ?
                 WHERE user_id = ? AND logical_run_id = ?
                 """,
                 (now_ms, user_id, logical_run_id),
@@ -453,6 +464,8 @@ class DurableRunState:
         user_id: str,
         logical_run_id: str,
         owner: str,
+        attempt_id: str,
+        lease_token: str,
         now_ms: int,
     ) -> bool:
         """Extend one still-owned live lease without changing run state."""
@@ -462,7 +475,13 @@ class DurableRunState:
                 UPDATE queue_items
                 SET lease_expires_at_ms = ?, updated_at_ms = ?
                 WHERE user_id = ? AND logical_run_id = ? AND state = 'running'
-                  AND lease_owner = ?
+                  AND lease_owner = ? AND lease_token = ?
+                  AND EXISTS (
+                    SELECT 1 FROM attempts
+                    WHERE attempts.user_id = queue_items.user_id
+                      AND attempts.logical_run_id = queue_items.logical_run_id
+                      AND attempts.attempt_id = ? AND attempts.status = 'running'
+                  )
                 """,
                 (
                     now_ms + self.lease_duration_ms,
@@ -470,6 +489,8 @@ class DurableRunState:
                     user_id,
                     logical_run_id,
                     owner,
+                    lease_token,
+                    attempt_id,
                 ),
             ).rowcount
         return changed == 1
@@ -480,6 +501,8 @@ class DurableRunState:
         user_id: str,
         logical_run_id: str,
         owner: str,
+        attempt_id: str,
+        lease_token: str,
         now_ms: int,
     ) -> None:
         with self._transaction() as connection:
@@ -488,20 +511,23 @@ class DurableRunState:
                 user_id=user_id,
                 logical_run_id=logical_run_id,
                 owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
             )
             connection.execute(
                 """
                 UPDATE attempts
                 SET status = 'succeeded', finished_at_ms = ?
-                WHERE user_id = ? AND logical_run_id = ? AND status = 'running'
+                WHERE user_id = ? AND logical_run_id = ? AND attempt_id = ?
+                  AND status = 'running'
                 """,
-                (now_ms, user_id, logical_run_id),
+                (now_ms, user_id, logical_run_id, attempt_id),
             )
             connection.execute(
                 """
                 UPDATE queue_items
                 SET state = 'completed', completed_at_ms = ?, lease_owner = NULL,
-                    lease_expires_at_ms = NULL, updated_at_ms = ?
+                    lease_token = NULL, lease_expires_at_ms = NULL, updated_at_ms = ?
                 WHERE user_id = ? AND logical_run_id = ?
                 """,
                 (now_ms, now_ms, user_id, logical_run_id),
@@ -513,6 +539,8 @@ class DurableRunState:
         user_id: str,
         logical_run_id: str,
         owner: str,
+        attempt_id: str,
+        lease_token: str,
         failure_code: str,
         now_ms: int,
     ) -> Literal["failed_retryable", "failed_terminal", "quarantined"]:
@@ -522,13 +550,16 @@ class DurableRunState:
                 user_id=user_id,
                 logical_run_id=logical_run_id,
                 owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
             )
             attempt = connection.execute(
                 """
                 SELECT * FROM attempts
-                WHERE user_id = ? AND logical_run_id = ? AND status = 'running'
+                WHERE user_id = ? AND logical_run_id = ? AND attempt_id = ?
+                  AND status = 'running'
                 """,
-                (user_id, logical_run_id),
+                (user_id, logical_run_id, attempt_id),
             ).fetchone()
             if attempt is None:
                 raise DurableStateError("active run has no running Attempt")
@@ -537,16 +568,16 @@ class DurableRunState:
                 """
                 UPDATE attempts
                 SET status = 'failed_fault', failure_code = ?, finished_at_ms = ?
-                WHERE attempt_id = ?
+                WHERE user_id = ? AND logical_run_id = ? AND attempt_id = ?
                 """,
-                (failure_code, now_ms, attempt["attempt_id"]),
+                (failure_code, now_ms, user_id, logical_run_id, attempt_id),
             )
             if ordinal < 3:
                 state = "failed_retryable"
                 connection.execute(
                     """
                     UPDATE queue_items
-                    SET state = 'queued', lease_owner = NULL,
+                    SET state = 'queued', lease_owner = NULL, lease_token = NULL,
                         lease_expires_at_ms = NULL, updated_at_ms = ?
                     WHERE user_id = ? AND logical_run_id = ?
                     """,
@@ -580,8 +611,8 @@ class DurableRunState:
             connection.execute(
                 """
                 UPDATE queue_items
-                SET state = ?, lease_owner = NULL, lease_expires_at_ms = NULL,
-                    updated_at_ms = ?
+                SET state = ?, lease_owner = NULL, lease_token = NULL,
+                    lease_expires_at_ms = NULL, updated_at_ms = ?
                 WHERE user_id = ? AND logical_run_id = ?
                 """,
                 (state, now_ms, user_id, logical_run_id),
@@ -670,7 +701,11 @@ class DurableRunState:
                 ),
             )
             row = connection.execute(
-                "SELECT * FROM tool_receipts WHERE receipt_id = ?", (receipt_id,)
+                """
+                SELECT * FROM tool_receipts
+                WHERE user_id = ? AND logical_run_id = ? AND receipt_id = ?
+                """,
+                (user_id, logical_run_id, receipt_id),
             ).fetchone()
             if row is None:
                 raise DurableStateError("receipt insert was not observable")
@@ -799,8 +834,8 @@ class DurableRunState:
                 connection.execute(
                     """
                     UPDATE queue_items
-                    SET state = 'queued', lease_owner = NULL, lease_expires_at_ms = NULL,
-                        updated_at_ms = ?
+                    SET state = 'queued', lease_owner = NULL, lease_token = NULL,
+                        lease_expires_at_ms = NULL, updated_at_ms = ?
                     WHERE logical_run_id = ? AND user_id = ?
                     """,
                     (now_ms, item["logical_run_id"], user_id),
@@ -822,16 +857,16 @@ class DurableRunState:
                 SET status = 'failed_fault',
                     failure_code = 'crash_discarded_uncheckpointed_inference',
                     finished_at_ms = ?
-                WHERE attempt_id = ?
+                WHERE user_id = ? AND logical_run_id = ? AND attempt_id = ?
                 """,
-                (now_ms, attempt["attempt_id"]),
+                (now_ms, user_id, item["logical_run_id"], attempt["attempt_id"]),
             )
             if ordinal < 3:
                 connection.execute(
                     """
                     UPDATE queue_items
-                    SET state = 'queued', lease_owner = NULL, lease_expires_at_ms = NULL,
-                        updated_at_ms = ?
+                    SET state = 'queued', lease_owner = NULL, lease_token = NULL,
+                        lease_expires_at_ms = NULL, updated_at_ms = ?
                     WHERE logical_run_id = ? AND user_id = ?
                     """,
                     (now_ms, item["logical_run_id"], user_id),
@@ -863,8 +898,8 @@ class DurableRunState:
             connection.execute(
                 """
                 UPDATE queue_items
-                SET state = ?, lease_owner = NULL, lease_expires_at_ms = NULL,
-                    updated_at_ms = ?
+                SET state = ?, lease_owner = NULL, lease_token = NULL,
+                    lease_expires_at_ms = NULL, updated_at_ms = ?
                 WHERE logical_run_id = ? AND user_id = ?
                 """,
                 (terminal, now_ms, item["logical_run_id"], user_id),
@@ -877,18 +912,38 @@ class DurableRunState:
         user_id: str,
         logical_run_id: str,
         owner: str,
+        attempt_id: str,
+        lease_token: str,
     ) -> sqlite3.Row:
         row = connection.execute(
             """
-            SELECT * FROM queue_items
-            WHERE user_id = ? AND logical_run_id = ? AND state = 'running'
-              AND lease_owner = ?
+            SELECT queue_items.* FROM queue_items
+            JOIN attempts
+              ON attempts.user_id = queue_items.user_id
+             AND attempts.logical_run_id = queue_items.logical_run_id
+            WHERE queue_items.user_id = ? AND queue_items.logical_run_id = ?
+              AND queue_items.state = 'running' AND queue_items.lease_owner = ?
+              AND queue_items.lease_token = ? AND attempts.attempt_id = ?
+              AND attempts.status = 'running'
             """,
-            (user_id, logical_run_id, owner),
+            (user_id, logical_run_id, owner, lease_token, attempt_id),
         ).fetchone()
         if row is None:
             raise DurableStateError("Logical Run is not owned by this active lease")
         return row
+
+    def has_queued_p0(self, user_id: str) -> bool:
+        """Return whether this user has an eligible user-chat Tick queued."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM queue_items
+                WHERE user_id = ? AND state = 'queued' AND priority = 'p0'
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        return row is not None
 
     def _latest_checkpoint_locked(
         self,

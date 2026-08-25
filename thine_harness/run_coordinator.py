@@ -344,6 +344,8 @@ class RunCoordinator:
             control = InvocationControl()
             with self._active_lock:
                 self._active = (user_id, str(payload.kind), control)
+            if payload.kind != "p0_user_chat" and self._state.has_queued_p0(user_id):
+                control.request_preemption("p0_user_tick")
             renewal_stop = threading.Event()
             renewal_interval = max(
                 min(self._state.lease_duration_ms / 3_000, 5.0), 0.01
@@ -355,6 +357,8 @@ class RunCoordinator:
                         user_id=user_id,
                         logical_run_id=str(payload.logical_run_id),
                         owner=self._lease_owner,
+                        attempt_id=leased.attempt_id,
+                        lease_token=leased.lease_token,
                         now_ms=self._clock_ms(),
                     ):
                         return
@@ -395,6 +399,8 @@ class RunCoordinator:
                     user_id=user_id,
                     logical_run_id=str(payload.logical_run_id),
                     owner=self._lease_owner,
+                    attempt_id=leased.attempt_id,
+                    lease_token=leased.lease_token,
                     now_ms=self._clock_ms(),
                 )
                 return RunResult(
@@ -421,14 +427,11 @@ class RunCoordinator:
                     user_id=user_id,
                     logical_run_id=str(payload.logical_run_id),
                     owner=self._lease_owner,
+                    attempt_id=leased.attempt_id,
+                    lease_token=leased.lease_token,
                     cause=outcome.status,
                     remaining_work=outcome.remaining_work,
-                    completed_receipt_ids=tuple(
-                        dict.fromkeys((
-                            *persisted_receipts,
-                            *outcome.completed_receipt_ids,
-                        ))
-                    ),
+                    completed_receipt_ids=persisted_receipts,
                     now_ms=self._clock_ms(),
                 )
                 return RunResult(
@@ -443,6 +446,8 @@ class RunCoordinator:
                     user_id=user_id,
                     logical_run_id=str(payload.logical_run_id),
                     owner=self._lease_owner,
+                    attempt_id=leased.attempt_id,
+                    lease_token=leased.lease_token,
                     failure_code=outcome.failure_code or "runtime_fault",
                     now_ms=self._clock_ms(),
                 )

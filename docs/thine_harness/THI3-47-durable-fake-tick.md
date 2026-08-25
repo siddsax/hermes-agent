@@ -12,7 +12,9 @@ profile's `HERMES_HOME` by default.
   receipts, and immutable quarantine records.
 - `RunCoordinator` leases and invokes at most one Tick, orders P0 before P1
   before P2 with FIFO inside a priority, signals a live background invocation
-  when P0 arrives, and renews its lease while the invocation is active.
+  when P0 arrives, and renews its lease while the invocation is active. Every
+  acquisition carries a unique fence token, so an expired worker cannot
+  finalize a later Attempt even when both processes use the same owner name.
 - `FakeFeaturePort` is the only feature seam in this slice. It accepts a typed
   command and returns an acknowledgement. It exposes no database or generic
   backend operation.
@@ -28,11 +30,12 @@ The third fault quarantines background work; P0 becomes terminal. Intentional
 P0 preemption, cooperative yield, and bounded continuation persist a checkpoint
 and requeue the same Logical Run with its current Attempt still open.
 
-A checkpoint includes the stable receipt IDs known for that Logical Run. On
+A checkpoint includes only stable receipt IDs read back from the repository for
+that user and Logical Run; an invocation cannot author receipt identities. On
 resume, both the checkpoint and acknowledged receipts are loaded into the next
-invocation context. Repeating the same action identity and fingerprint returns
-the stored receipt without calling the feature port. Reusing an action identity
-with a different fingerprint fails closed.
+invocation context. Repeating the same user-scoped action identity and
+fingerprint returns the stored receipt without calling the feature port.
+Reusing an action identity with a different fingerprint fails closed.
 
 ## Verification
 
