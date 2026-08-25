@@ -268,6 +268,27 @@ class _RenewalObservedState(DurableRunState):
         return renewed
 
 
+class _RenewalFailureState(DurableRunState):
+    def renew_lease(
+        self,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        owner: str,
+        attempt_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> bool:
+        raise sqlite3.OperationalError("simulated heartbeat failure")
+
+
+class _CheckpointOnRenewalFailure:
+    def invoke(self, context, *, tools, control):
+        assert control.wait_for_preemption(2)
+        assert control.reason == "lease_renewal_error"
+        return InvocationOutcome.preempted(remaining_work="resume after heartbeat")
+
+
 def test_only_one_invocation_runs_for_a_user(tmp_path: Path):
     runtime = _BlockingRuntime()
     coordinator = RunCoordinator(
@@ -325,6 +346,24 @@ def test_live_invocation_renews_its_lease_across_coordinator_instances(tmp_path:
     runtime.release.set()
     worker.join(2)
     assert not worker.is_alive()
+
+
+def test_renewal_exception_preempts_without_consuming_attempt(tmp_path: Path):
+    coordinator = RunCoordinator(
+        _RenewalFailureState(tmp_path / "state.sqlite3", lease_duration_ms=30),
+        runtime=_CheckpointOnRenewalFailure(),
+        feature_port=_RecordingFeature(),
+        clock_ms=lambda: 100,
+    )
+    coordinator.enqueue(_tick("background"))
+
+    result = _require_result(coordinator)
+
+    assert result.status == "checkpointed"
+    diagnostics = coordinator.diagnostics("daily-user")
+    assert [(attempt.ordinal, attempt.status) for attempt in diagnostics.attempts] == [
+        (1, "running")
+    ]
 
 
 class _PreemptThenComplete:

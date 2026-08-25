@@ -16,7 +16,8 @@ profile's `HERMES_HOME` by default.
   acquisition carries a unique fence token, so an expired worker cannot
   finalize a later Attempt or invoke the fake feature seam even when both
   processes use the same owner name. Lease-renewal loss requests cooperative
-  preemption at the next safe boundary.
+  preemption at the next safe boundary; a renewal storage error follows the
+  same non-fault checkpoint path rather than silently disabling the heartbeat.
 - `FakeFeaturePort` is the only feature seam in this slice. It accepts a typed
   command and returns an acknowledgement. It exposes no database or generic
   backend operation.

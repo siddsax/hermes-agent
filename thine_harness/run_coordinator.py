@@ -364,14 +364,19 @@ class RunCoordinator:
 
             def renew_live_lease() -> None:
                 while not renewal_stop.wait(renewal_interval):
-                    if not self._state.renew_lease(
-                        user_id=user_id,
-                        logical_run_id=str(payload.logical_run_id),
-                        owner=self._lease_owner,
-                        attempt_id=leased.attempt_id,
-                        lease_token=leased.lease_token,
-                        now_ms=self._clock_ms(),
-                    ):
+                    try:
+                        renewed = self._state.renew_lease(
+                            user_id=user_id,
+                            logical_run_id=str(payload.logical_run_id),
+                            owner=self._lease_owner,
+                            attempt_id=leased.attempt_id,
+                            lease_token=leased.lease_token,
+                            now_ms=self._clock_ms(),
+                        )
+                    except Exception:
+                        control.request_preemption("lease_renewal_error")
+                        return
+                    if not renewed:
                         control.request_preemption("lease_lost")
                         return
 
