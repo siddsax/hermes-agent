@@ -70,6 +70,8 @@ ticket supplies feature behavior. Active requests exceeding
 `request_timeout_seconds` return a redacted `504 request_timed_out` response.
 Other paths return `404`.
 
-The local backend uses `HERMES_CONTROL_URL=http://127.0.0.1:8789`, the same
-`HERMES_CONTROL_TOKEN`, and a finite client timeout. The phone continues to use
-only the local Thine tunnel origin; it never receives or calls this address.
+The local backend launcher probes the fixed authenticated health boundary at
+`http://127.0.0.1:8789/health` with the same `HERMES_CONTROL_TOKEN`, configured
+UID, and a request ID. Hermes enforces the finite server-side request deadline.
+The phone continues to use only the local Thine tunnel origin; it never receives
+or calls this address.
