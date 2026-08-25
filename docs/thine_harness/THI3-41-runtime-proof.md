@@ -50,9 +50,10 @@ python scripts/thi3_41_integrated_live_probe.py
 
 It prints one JSON object. The object includes every exact flat `tools` array
 observed immediately before the OpenAI SDK's `responses.create(...)`, its
-SHA-256, and the corresponding `prompt_cache_key` for all primary iterations
-and the Stop Hook continuation. No credential or request message content is
-printed.
+SHA-256, the exact system-prompt character count and SHA-256, the live rough
+prefix estimate, and the corresponding `prompt_cache_key` for all primary
+iterations and the Stop Hook continuation. No credential or request message
+content is printed.
 
 ## Prefix and cache invariant
 
@@ -86,20 +87,23 @@ A live integrated proof on 2026-08-25 produced:
 ```text
 primary_final=THI3_41_INTEGRATED_OK
 deferred_catalog_listing=off
-primary_prompt_cache_key=pck_d6a541396e6d173bc208d573 (4/4 requests)
-stop_hook_prompt_cache_key=pck_d6a541396e6d173bc208d573 (1/1 request)
+primary_prompt_cache_key=pck_f7ffff828578ffd3dd372dfe (4/4 requests)
+stop_hook_prompt_cache_key=pck_f7ffff828578ffd3dd372dfe (1/1 request)
 primary_tool_schema_sha256=4707333416dce208c950c0cccf929e4da3691a6cc68e3c29c6f141e1192f0268 (4/4)
 stop_hook_tool_schema_sha256=4707333416dce208c950c0cccf929e4da3691a6cc68e3c29c6f141e1192f0268
 wire_tools=[tool_search,tool_describe,tool_call]
-system_prompt_chars=9160
-system_prompt_sha256=cce42e5fa3b10b93448e9903c27f65054f0d44a9923a951f4d6974d6fc614d5a (5/5)
-fixed_prefix_estimated_tokens=2613 (5/5, fixture match)
+system_prompt_chars=[9214,9214,9214,9214,9214]
+system_prompt_sha256=f65ed59f95922ea3a47e1d4ca914d18eb7a327d2750cde683e7781f8a3dbfdb6 (5/5)
+fixed_prefix_estimated_tokens=[2627,2627,2627,2627,2627]
+fixed_prefix_reserve_tokens=4096
+fixed_prefix_within_reserve=true
 same_prompt_cache_key=true
-same_system_prompt=true
+same_system_prompt_sha256=true
+same_tool_schema_sha256=true
 same_wire_tool_array=true
-primary_usage={input_tokens: 3561, output_tokens: 90, cache_read_tokens: 6144, cache_write_tokens: 0}
+primary_usage={input_tokens: 3633, output_tokens: 90, cache_read_tokens: 6144, cache_write_tokens: 0}
 stop_hook_outcome=unchanged
-stop_hook_usage_delta={input_tokens: 1106, output_tokens: 16, cache_read_tokens: 1536, cache_write_tokens: 0}
+stop_hook_usage_delta={input_tokens: 1124, output_tokens: 33, cache_read_tokens: 1536, cache_write_tokens: 0}
 deferred_result_sequence=[tool_search,tool_describe,thine_transcripts_probe_lookup]
 helper_calls=[{sequence:41}]
 helper_calls_during_stop_hook=0
@@ -154,22 +158,25 @@ The frozen envelope is:
 
 ```text
 provider context                         272000
-measured final system + 3 bridge tools    2613
+system + eager bridge prefix reserve       4096
 Working Memory reserve                    16000
 output + reasoning reserve                 32768
-measured residual                         220619
-unallocated safety margin                  20619
+measured residual                         219136
+unallocated safety margin                  19136
 absolute transcript ceiling               200000
 routine transcript batch target             8000
 ```
 
-The 2,613-token prefix is Hermes'
-`estimate_request_tokens_rough` measurement over the actual final outbound
-proof system prompt and the exact three eager bridge schemas with deferred
-catalog listing pinned off. Full helper schemas are deferred. The
-200,000-token absolute limit is intentionally below the measured residual; the
-normal architecture target remains the earlier of 8,000 transcript tokens or
-10 minutes of audio. The binding fixture is
+The contract reserves 4,096 tokens for the system prompt and eager bridge
+schemas. Each integrated run records Hermes'
+`estimate_request_tokens_rough` result over its actual final outbound system
+prompt and exact three eager bridge schemas, and accepts the run only when
+every observation is at most that reserve. The observed value is evidence for
+that run, not a cross-run fixture: randomized temporary profile paths may
+legitimately change the prompt length. Full helper schemas are deferred. The
+200,000-token absolute limit is 19,136 tokens below the 219,136-token residual;
+the normal architecture target remains the earlier of 8,000 transcript tokens
+or 10 minutes of audio. The binding fixture is
 `thine_harness/contracts/runtime-envelope-v1.json`.
 
 ## Progress and cancellation trace
@@ -180,7 +187,7 @@ emit only progress; the runtime owns terminal events. Hermes' raw `completed`
 and `failed` flags are mapped directly. A failed or incomplete turn never emits
 `final`, even if Hermes includes failure prose in `final_response`.
 
-The public cancellation and resume test trace is:
+The public cancellation and resume reference-spike test trace is:
 
 ```text
 accepted -> started -> quiet background work -> cancel(p0_user_tick)
@@ -205,10 +212,15 @@ results explicitly marked `effect_disposition=applied` to successful action
 receipts. Its continuation prompt says the original input is already present
 and forbids repeating completed effects. `resume()` starts a new invocation of
 the same Logical Run. The Stop Hook skip path
-performs no memory write. H3 must back the checkpoint port durably and requeue
-the same Logical Run at the front after P0 and its finalizer complete; hidden
-reasoning is not part of the resume contract. Partial visible prose is retained
-for UI/reference continuity, but is not an action receipt or execution authority.
+performs no memory write. `thine_harness/runtime.py` is the THI3-41 executable
+reference spike and temporarily co-locates H3 coordinator behavior with H9
+adapter behavior; it is not an exclusive production assignment. H3's future
+production implementation owns the coordinator, requeue, checkpoint
+implementation, and resume lookup. H9 owns AIAgent mapping, progress,
+cancellation, and runtime selection. H3 must requeue the same Logical Run at
+the front after P0 and its finalizer complete; hidden reasoning is not part of
+the resume contract. Partial visible prose is retained for UI/reference
+continuity, but is not an action receipt or execution authority.
 
 ## Contract handoff to THI3-43
 
@@ -217,7 +229,8 @@ THI3-43 should consume these immutable v1 inputs:
 - `runtime-model-v1.json` for exact runtime diagnostics and fail-closed
   selection;
 - `runtime-envelope-v1.json` for transcript segmentation limits;
-- `hermes-ownership-v1.json` for H3-H10 module and serialization ownership;
+- `hermes-ownership-v1.json` for H3-H10 production ownership, the temporary
+  `runtime.py` reference-spike split, and non-exclusive shared core touchpoints;
 - public Python ports in `runtime.py`, `working_memory.py`, and
   `deferred_tools.py` as the source behavior for neutral DTO/golden fixtures.
 
@@ -227,8 +240,10 @@ kinds, ephemeral flag, context messages, usage telemetry, and the stable model
 diagnostics. Its checkpoint schema must preserve `resume_token`,
 `logical_run_id`, `input_prompt`, `remaining_work`, `context_messages`,
 `completed_tool_results`, `successful_action_receipts`,
-`partial_visible_assistant_output`, and UTC `updated_at`; H3 owns durable
-persistence and H9 owns the AIAgent mapping. The finalizer schema must preserve
+`partial_visible_assistant_output`, and UTC `updated_at`; H3 owns the production
+coordinator, requeue, checkpoint implementation, and resume lookup, while H9
+owns AIAgent mapping, progress, cancellation, and runtime selection. The
+finalizer schema must preserve
 the cache-identity tuple,
 memory version, outcome (`committed`, `unchanged`, or `skipped_interrupted`),
 nullable exact-model token count, unresolved-tokenizer status, intended
@@ -241,3 +256,10 @@ implementation. H7 owns a new one-shot scheduler module. H4 extends the
 maintained-fork Working Memory/finalizer seam here. H9 extends the AIAgent and
 progress adapter here; it must pass the captured primary request cache identity
 and must not introduce a second agent loop.
+
+Existing Hermes core integration points are deliberately non-exclusive: H9's
+outbound observation uses `agent/codex_runtime.py` and
+`agent/outbound_request_scope.py`; isolation and safe-boundary cancellation use
+`agent/agent_init.py` and `run_agent.py`; Stop Hook tool denial uses
+`agent/tool_execution_scope.py`, `model_tools.py`, and `tools/registry.py`.
+These are shared core seams, not files assigned exclusively to H3 or H9.

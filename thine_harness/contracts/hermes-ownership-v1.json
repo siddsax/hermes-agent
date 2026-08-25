@@ -25,7 +25,6 @@
       "thine_harness/input_pump.py"
     ],
     "H9_production_runtime_progress": [
-      "thine_harness/runtime.py",
       "thine_harness/progress_adapter.py"
     ],
     "H10_topics_preferences_retention_dashboard": [
@@ -36,11 +35,40 @@
       "thine_harness/dashboard_read_models.py"
     ]
   },
+  "reference_spikes": {
+    "THI3-41_runtime": {
+      "path": "thine_harness/runtime.py",
+      "status": "executable_reference_spike",
+      "temporarily_co_locates": [
+        "H3_coordinator_behavior",
+        "H9_adapter_behavior"
+      ],
+      "future_production_ownership": {
+        "H3": "coordinator, requeue, checkpoint implementation, and resume lookup",
+        "H9": "AIAgent mapping, progress, cancellation, and runtime selection"
+      }
+    }
+  },
+  "shared_core_touchpoints": {
+    "outbound_observation": [
+      "agent/codex_runtime.py",
+      "agent/outbound_request_scope.py"
+    ],
+    "isolation_and_safe_boundary_cancellation": [
+      "agent/agent_init.py",
+      "run_agent.py"
+    ],
+    "stop_hook_tool_denial": [
+      "agent/tool_execution_scope.py",
+      "model_tools.py",
+      "tools/registry.py"
+    ]
+  },
   "serialization_owners": {
-    "invocation_lifecycle": "THI3-43 freezes language-neutral invocation and BackgroundCheckpoint DTOs; H3 owns checkpoint/coordinator persistence; H9 owns AIAgent mapping and safe-boundary cancellation",
+    "invocation_lifecycle": "THI3-43 freezes language-neutral invocation and BackgroundCheckpoint DTOs; H3 owns coordinator, requeue, checkpoint implementation, and resume lookup; H9 owns AIAgent mapping, progress, cancellation, and runtime selection",
     "working_memory_stop_hook": "THI3-43 freezes language-neutral DTOs; H4 owns persistence/finalization and extends thine_harness/working_memory.py; H9 supplies the captured primary request CacheIdentity",
     "deferred_helper_names": "H2 owns helper implementations; H9 owns runtime catalog projection; wire names remain flat thine_<namespace>_<verb>",
     "model_and_envelope": "runtime-model-v1.json and runtime-envelope-v1.json are immutable v1 inputs to THI3-43"
   },
-  "existing_hermes_core_policy": "Adapters may call existing Hermes internals; later tickets must not fork a second agent loop, tool registry, cron engine, or plugin implementation."
+  "existing_hermes_core_policy": "Shared core touchpoints are non-exclusive integration seams. Adapters may call existing Hermes internals; later tickets must not fork a second agent loop, tool registry, cron engine, or plugin implementation."
 }

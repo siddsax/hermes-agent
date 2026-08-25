@@ -170,12 +170,36 @@ def _pin_tool_search_listing_off() -> None:
     )
 
 
-def _expected_fixed_prefix_tokens() -> int:
+def _fixed_prefix_reserve_tokens() -> int:
     contract_path = (
         Path(__file__).with_name("contracts") / "runtime-envelope-v1.json"
     )
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
-    return int(contract["budget"]["fixed_system_and_bridge_tokens"])
+    return int(contract["budget"]["fixed_prefix_reserve_tokens"])
+
+
+def _summarize_prefix_evidence(
+    records: list[dict[str, Any]],
+    *,
+    reserve_tokens: int,
+) -> dict[str, Any]:
+    """Keep exact run observations while checking only the reserve contract."""
+    estimates = [record["fixed_prefix_estimated_tokens"] for record in records]
+    system_prompt_chars = [record["system_prompt_chars"] for record in records]
+    system_prompt_hashes = [record["system_prompt_sha256"] for record in records]
+    wire_tool_hashes = [record["tool_schema_sha256"] for record in records]
+    return {
+        "fixed_prefix_reserve_tokens": reserve_tokens,
+        "fixed_prefix_estimated_tokens": estimates,
+        "fixed_prefix_within_reserve": all(
+            estimate <= reserve_tokens for estimate in estimates
+        ),
+        "system_prompt_chars": system_prompt_chars,
+        "system_prompt_sha256": system_prompt_hashes,
+        "wire_tool_schema_sha256": wire_tool_hashes,
+        "same_system_prompt_sha256": len(set(system_prompt_hashes)) == 1,
+        "same_tool_schema_sha256": len(set(wire_tool_hashes)) == 1,
+    }
 
 
 def run_integrated_live_probe(
@@ -304,13 +328,10 @@ def run_integrated_live_probe(
         primary_hashes = [record["tool_schema_sha256"] for record in primary_wire]
         hook_hashes = [record["tool_schema_sha256"] for record in hook_wire]
         all_wire = [*primary_wire, *hook_wire]
-        expected_fixed_prefix_tokens = _expected_fixed_prefix_tokens()
-        fixed_prefix_estimates = [
-            record["fixed_prefix_estimated_tokens"] for record in all_wire
-        ]
-        system_prompt_hashes = [
-            record["system_prompt_sha256"] for record in all_wire
-        ]
+        prefix_evidence = _summarize_prefix_evidence(
+            all_wire,
+            reserve_tokens=_fixed_prefix_reserve_tokens(),
+        )
         hook_total_usage = stop_context.last_usage
         evidence = {
             "status": "ok",
@@ -341,14 +362,7 @@ def run_integrated_live_probe(
                 for record in all_wire
             ),
             "deferred_catalog_listing": "off",
-            "fixed_prefix_expected_tokens": expected_fixed_prefix_tokens,
-            "fixed_prefix_estimated_tokens": fixed_prefix_estimates,
-            "fixed_prefix_matches_contract": all(
-                value == expected_fixed_prefix_tokens
-                for value in fixed_prefix_estimates
-            ),
-            "system_prompt_sha256": system_prompt_hashes,
-            "same_system_prompt": len(set(system_prompt_hashes)) == 1,
+            **prefix_evidence,
             "primary_wire_requests": primary_wire,
             "stop_hook_wire_requests": hook_wire,
             "stop_hook_outcome": stop_outcome.kind.value,
@@ -378,13 +392,16 @@ def run_integrated_live_probe(
             raise RuntimeError("integrated probe final marker mismatch")
         if not evidence["same_prompt_cache_key"] or not evidence["same_wire_tool_array"]:
             raise RuntimeError("Stop Hook cache envelope drifted from primary")
-        if not evidence["same_system_prompt"]:
+        if not evidence["same_system_prompt_sha256"]:
             raise RuntimeError("Stop Hook system prompt drifted from primary")
-        if not evidence["fixed_prefix_matches_contract"]:
+        if not evidence["same_tool_schema_sha256"]:
+            raise RuntimeError("Stop Hook wire tool hash drifted from primary")
+        if not evidence["fixed_prefix_within_reserve"]:
             raise RuntimeError(
-                "actual system prompt and wire tool prefix estimate does not match "
-                f"the runtime envelope: {fixed_prefix_estimates!r} != "
-                f"{expected_fixed_prefix_tokens}"
+                "actual system prompt and wire tool prefix estimate exceeds "
+                f"the runtime envelope reserve: "
+                f"{evidence['fixed_prefix_estimated_tokens']!r} > "
+                f"{evidence['fixed_prefix_reserve_tokens']}"
             )
         if evidence["helper_calls_during_stop_hook"] != 0:
             raise RuntimeError("Stop Hook executed a helper handler")

@@ -6,6 +6,7 @@ import pytest
 
 from thine_harness.integrated_probe import (
     OutboundTransportRecorder,
+    _summarize_prefix_evidence,
     run_integrated_live_probe,
 )
 from thine_harness.working_memory import tool_schema_sha256
@@ -85,3 +86,52 @@ def test_integrated_probe_pins_deferred_catalog_listing_off_before_agent_constru
             token_loader=lambda: {"access_token": "not-a-real-token"},
             agent_factory=factory,
         )
+
+
+def test_prefix_proof_preserves_observations_without_freezing_an_exact_estimate():
+    records = [
+        {
+            "fixed_prefix_estimated_tokens": estimate,
+            "system_prompt_chars": chars,
+            "system_prompt_sha256": "stable-system",
+            "tool_schema_sha256": "stable-tools",
+        }
+        for estimate, chars in [(3_000, 9_000), (3_100, 9_100)]
+    ]
+
+    evidence = _summarize_prefix_evidence(records, reserve_tokens=4_096)
+
+    assert evidence == {
+        "fixed_prefix_reserve_tokens": 4_096,
+        "fixed_prefix_estimated_tokens": [3_000, 3_100],
+        "fixed_prefix_within_reserve": True,
+        "system_prompt_chars": [9_000, 9_100],
+        "system_prompt_sha256": ["stable-system", "stable-system"],
+        "wire_tool_schema_sha256": ["stable-tools", "stable-tools"],
+        "same_system_prompt_sha256": True,
+        "same_tool_schema_sha256": True,
+    }
+
+
+def test_prefix_proof_rejects_over_reserve_or_within_run_hash_drift():
+    evidence = _summarize_prefix_evidence(
+        [
+            {
+                "fixed_prefix_estimated_tokens": 4_097,
+                "system_prompt_chars": 9_160,
+                "system_prompt_sha256": "system-primary",
+                "tool_schema_sha256": "tools-primary",
+            },
+            {
+                "fixed_prefix_estimated_tokens": 3_100,
+                "system_prompt_chars": 9_100,
+                "system_prompt_sha256": "system-stop",
+                "tool_schema_sha256": "tools-stop",
+            },
+        ],
+        reserve_tokens=4_096,
+    )
+
+    assert evidence["fixed_prefix_within_reserve"] is False
+    assert evidence["same_system_prompt_sha256"] is False
+    assert evidence["same_tool_schema_sha256"] is False

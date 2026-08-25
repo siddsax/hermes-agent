@@ -2,16 +2,17 @@
   "contract_version": 1,
   "budget": {
     "context_window_tokens": 272000,
-    "fixed_system_and_bridge_tokens": 2613,
+    "fixed_prefix_reserve_tokens": 4096,
     "working_memory_tokens": 16000,
     "output_and_reasoning_tokens": 32768,
     "absolute_transcript_tokens": 200000,
-    "unallocated_safety_tokens": 20619,
+    "unallocated_safety_tokens": 19136,
     "routine_batch_target_tokens": 8000
   },
   "measurement": {
     "hermes_sha": "41447a6d7063b2772b0c2f26a5b22d9bd444fb43",
     "fixed_prefix_estimator": "agent.model_metadata.estimate_request_tokens_rough",
+    "fixed_prefix_reserve_assertion": "every_observed_live_estimate_lte_reserve_exact_observations_not_contract_literals",
     "working_memory_hard_guard": "unresolved_no_exact_openai_codex_gpt_5_6_sol_tokenizer_changed_writes_fail_closed",
     "working_memory_token_count_storage": "exact_configured_model_tokens_only_nullable_when_unmeasured",
     "working_memory_auxiliary_utf8_byte_ceiling": 16000,

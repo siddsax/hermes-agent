@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 @dataclass(frozen=True)
 class RuntimeEnvelopeBudget:
     context_window_tokens: int
-    fixed_system_and_bridge_tokens: int
+    fixed_prefix_reserve_tokens: int
     working_memory_tokens: int
     output_and_reasoning_tokens: int
     absolute_transcript_tokens: int
@@ -19,18 +19,18 @@ class RuntimeEnvelopeBudget:
     def pinned(cls) -> "RuntimeEnvelopeBudget":
         return cls(
             context_window_tokens=272_000,
-            fixed_system_and_bridge_tokens=2_613,
+            fixed_prefix_reserve_tokens=4_096,
             working_memory_tokens=16_000,
             output_and_reasoning_tokens=32_768,
             absolute_transcript_tokens=200_000,
-            unallocated_safety_tokens=20_619,
+            unallocated_safety_tokens=19_136,
             routine_batch_target_tokens=8_000,
         )
 
     @property
     def measured_residual_tokens(self) -> int:
         return self.context_window_tokens - (
-            self.fixed_system_and_bridge_tokens
+            self.fixed_prefix_reserve_tokens
             + self.working_memory_tokens
             + self.output_and_reasoning_tokens
         )
@@ -38,7 +38,7 @@ class RuntimeEnvelopeBudget:
     @property
     def total_reserved_tokens(self) -> int:
         return (
-            self.fixed_system_and_bridge_tokens
+            self.fixed_prefix_reserve_tokens
             + self.working_memory_tokens
             + self.output_and_reasoning_tokens
             + self.absolute_transcript_tokens
