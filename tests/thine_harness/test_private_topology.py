@@ -321,12 +321,16 @@ thine_harness:
 """,
         encoding="utf-8",
     )
+    (hermes_home / ".env").write_text(
+        "HERMES_CONTROL_TOKEN=private-e2e-token\n",
+        encoding="utf-8",
+    )
     environment = dict(os.environ)
     environment.update(
         HERMES_HOME=str(hermes_home),
-        HERMES_CONTROL_TOKEN="private-e2e-token",
         PYTHONUNBUFFERED="1",
     )
+    environment.pop("HERMES_CONTROL_TOKEN", None)
     process = subprocess.Popen(
         [sys.executable, "-m", "thine_harness.private_server"],
         cwd=REPO_ROOT,

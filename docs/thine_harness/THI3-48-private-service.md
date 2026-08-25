@@ -56,7 +56,7 @@ from a Hermes restart. Stop with `Ctrl-C`; restart with the same module command.
 
 ## Private wire contract
 
-Every request requires all three headers:
+Every implemented private operation requires all three headers:
 
 - `Authorization: Bearer <HERMES_CONTROL_TOKEN>`
 - `X-Thine-Firebase-UID: <configured UID>`
@@ -68,7 +68,8 @@ route is implemented here. `POST /v1/control` is reserved for the typed
 `HermesControlPort` integration and deliberately returns `501` until that
 ticket supplies feature behavior. Active requests exceeding
 `request_timeout_seconds` return a redacted `504 request_timed_out` response.
-Other paths return `404`.
+Unknown paths or unsupported methods perform no operation and may be rejected by
+routing with `404` or `405` before authentication.
 
 The local backend launcher probes the fixed authenticated health boundary at
 `http://127.0.0.1:8789/health` with the same `HERMES_CONTROL_TOKEN`, configured
