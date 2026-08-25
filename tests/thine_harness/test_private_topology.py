@@ -1,6 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
 
 import pytest
 from agent.secret_scope import (
@@ -17,6 +25,9 @@ from thine_harness.private_topology import (
     PrivateServiceConfigurationError,
     load_private_service_config,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _enabled_config(**overrides: object) -> dict[str, object]:
@@ -258,3 +269,106 @@ def test_private_server_launch_settings_stay_loopback_and_finite() -> None:
     assert server.config.timeout_keep_alive == 7
     assert server.config.timeout_graceful_shutdown == 7
     assert server.config.server_header is False
+
+
+def _unused_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def _network_health_request(
+    port: int,
+    *,
+    firebase_uid: str,
+) -> tuple[int, str]:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=0.5)
+    try:
+        connection.request(
+            "GET",
+            "/health",
+            headers={
+                "Authorization": "Bearer private-e2e-token",
+                "X-Thine-Firebase-UID": firebase_uid,
+                "X-Request-ID": "private-e2e-request",
+            },
+        )
+        response = connection.getresponse()
+        return response.status, response.read().decode("utf-8")
+    finally:
+        connection.close()
+
+
+@pytest.mark.macos_only
+def test_private_server_module_serves_authenticated_loopback_requests(
+    tmp_path: Path,
+) -> None:
+    port = _unused_loopback_port()
+    hermes_home = tmp_path / "daily-driver-hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        f"""\
+thine_harness:
+  private_service:
+    enabled: true
+    host: 127.0.0.1
+    port: {port}
+    firebase_uid: firebase-e2e-user
+    request_timeout_seconds: 2
+    credential:
+      env: HERMES_CONTROL_TOKEN
+      file: ""
+""",
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment.update(
+        HERMES_HOME=str(hermes_home),
+        HERMES_CONTROL_TOKEN="private-e2e-token",
+        PYTHONUNBUFFERED="1",
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-m", "thine_harness.private_server"],
+        cwd=REPO_ROOT,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    output = ""
+    try:
+        deadline = time.monotonic() + 10
+        while True:
+            if process.poll() is not None:
+                output, _ = process.communicate()
+                pytest.fail("private server exited before becoming ready:\n" + output)
+            try:
+                status, body = _network_health_request(
+                    port,
+                    firebase_uid="firebase-e2e-user",
+                )
+            except (OSError, http.client.HTTPException):
+                if time.monotonic() >= deadline:
+                    pytest.fail("private server did not become ready within 10 seconds")
+                time.sleep(0.05)
+                continue
+            assert status == 200
+            assert '"status":"ready"' in body
+            break
+
+        rejected_status, rejected_body = _network_health_request(
+            port,
+            firebase_uid="another-user",
+        )
+        assert rejected_status == 403
+        assert '"error":"uid_mismatch"' in rejected_body
+
+        process.send_signal(signal.SIGINT)
+        output, _ = process.communicate(timeout=10)
+        assert process.returncode == 0
+        assert "Traceback" not in output
+    finally:
+        if process.poll() is None:
+            process.kill()
+            trailing_output, _ = process.communicate(timeout=5)
+            output += trailing_output
