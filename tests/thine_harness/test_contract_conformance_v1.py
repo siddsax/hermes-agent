@@ -110,6 +110,17 @@ def test_typed_payload_views_are_nested_and_immutable():
         setattr(dto.payload, "attempt_id", "mutated")
 
 
+def test_integer_views_canonicalize_integral_floats_without_changing_the_wire():
+    case = next(case for case in _fixture_cases("valid") if case["target"] == "attempt")
+    payload = case["payload"] | {"ordinal": 1.0}
+
+    dto = Attempt.from_dict(payload)
+
+    assert type(dto.payload.ordinal) is int
+    assert type(dto.to_dict()["ordinal"]) is float
+    assert '"ordinal":1.0' in dto.to_json()
+
+
 def test_union_payload_views_keep_common_and_nested_discriminated_fields():
     event_case = next(
         case for case in _fixture_cases("valid") if case["target"] == "invocation_event"
@@ -143,6 +154,9 @@ def test_all_of_payload_views_preserve_correlated_discriminants():
     request = InvocationRequest.from_dict(request_case["payload"])
     if request.payload.mode == "new":
         assert_type(request.payload.resume_token, None)
+    if request.payload.kind == "p0_user_chat":
+        assert_type(request.payload.input_ref.kind, Literal["user_message"])
+        assert_type(request.payload.source_ref.kind, Literal["user_message"])
 
     reset_case = next(
         case for case in _fixture_cases("valid") if case["target"] == "reset_command"

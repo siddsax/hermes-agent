@@ -31,7 +31,11 @@ class ViewGenerator:
             if not reference.startswith("#/$defs/"):
                 return "FrozenJSONValue"
             name = reference.rsplit("/", 1)[-1]
-            return self.type_for(self.document["$defs"][name], _pascal(name))
+            resolved = self.document["$defs"][name]
+            siblings = {key: value for key, value in schema.items() if key != "$ref"}
+            if siblings:
+                return self.type_for(_overlay_schema(resolved, siblings), hint)
+            return self.type_for(resolved, _pascal(name))
         if "const" in schema:
             return f"Literal[{schema['const']!r}]"
         if "enum" in schema:
@@ -112,8 +116,11 @@ class ViewGenerator:
             reference = schema["$ref"]
             if not reference.startswith("#/$defs/"):
                 return {}
+            resolved = self.document["$defs"][reference.rsplit("/", 1)[-1]]
+            siblings = {key: value for key, value in schema.items() if key != "$ref"}
             return self.optional_paths(
-                self.document["$defs"][reference.rsplit("/", 1)[-1]], path
+                _overlay_schema(resolved, siblings) if siblings else resolved,
+                path,
             )
         if "oneOf" in schema or "allOf" in schema:
             combined: dict[tuple[str, ...], set[str]] = {}

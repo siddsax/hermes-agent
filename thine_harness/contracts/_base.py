@@ -143,4 +143,6 @@ def _freeze_json(
         return tuple(
             _freeze_json(child, optional_fields, (*path, "*")) for child in value
         )
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
     return value

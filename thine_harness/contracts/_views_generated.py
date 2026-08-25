@@ -1014,10 +1014,10 @@ class RuntimeInvocationRequestVariant10View(Protocol):
     def prompt_token_count(self) -> int: ...
 
     @property
-    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+    def input_ref(self) -> RuntimeRuntimeInvocationRequestVariant10InputRefView: ...
 
     @property
-    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+    def source_ref(self) -> RuntimeRuntimeInvocationRequestVariant10SourceRefView: ...
 
     @property
     def resume_token(self) -> str: ...
@@ -1083,10 +1083,10 @@ class RuntimeInvocationRequestVariant1View(Protocol):
     def prompt_token_count(self) -> int: ...
 
     @property
-    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+    def input_ref(self) -> RuntimeRuntimeInvocationRequestVariant1InputRefView: ...
 
     @property
-    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+    def source_ref(self) -> RuntimeRuntimeInvocationRequestVariant1SourceRefView: ...
 
     @property
     def resume_token(self) -> None: ...
@@ -1152,10 +1152,10 @@ class RuntimeInvocationRequestVariant2View(Protocol):
     def prompt_token_count(self) -> int: ...
 
     @property
-    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+    def input_ref(self) -> RuntimeRuntimeInvocationRequestVariant2InputRefView: ...
 
     @property
-    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+    def source_ref(self) -> RuntimeRuntimeInvocationRequestVariant2SourceRefView: ...
 
     @property
     def resume_token(self) -> None: ...
@@ -1221,10 +1221,10 @@ class RuntimeInvocationRequestVariant3View(Protocol):
     def prompt_token_count(self) -> int: ...
 
     @property
-    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+    def input_ref(self) -> RuntimeRuntimeInvocationRequestVariant3InputRefView: ...
 
     @property
-    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+    def source_ref(self) -> RuntimeRuntimeInvocationRequestVariant3SourceRefView: ...
 
     @property
     def resume_token(self) -> None: ...
@@ -1290,10 +1290,10 @@ class RuntimeInvocationRequestVariant4View(Protocol):
     def prompt_token_count(self) -> int: ...
 
     @property
-    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+    def input_ref(self) -> RuntimeRuntimeInvocationRequestVariant4InputRefView: ...
 
     @property
-    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+    def source_ref(self) -> RuntimeRuntimeInvocationRequestVariant4SourceRefView: ...
 
     @property
     def resume_token(self) -> None: ...
@@ -1359,10 +1359,10 @@ class RuntimeInvocationRequestVariant5View(Protocol):
     def prompt_token_count(self) -> int: ...
 
     @property
-    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+    def input_ref(self) -> RuntimeRuntimeInvocationRequestVariant5InputRefView: ...
 
     @property
-    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+    def source_ref(self) -> RuntimeRuntimeInvocationRequestVariant5SourceRefView: ...
 
     @property
     def resume_token(self) -> None: ...
@@ -1428,10 +1428,10 @@ class RuntimeInvocationRequestVariant6View(Protocol):
     def prompt_token_count(self) -> int: ...
 
     @property
-    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+    def input_ref(self) -> RuntimeRuntimeInvocationRequestVariant6InputRefView: ...
 
     @property
-    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+    def source_ref(self) -> RuntimeRuntimeInvocationRequestVariant6SourceRefView: ...
 
     @property
     def resume_token(self) -> str: ...
@@ -1497,10 +1497,10 @@ class RuntimeInvocationRequestVariant7View(Protocol):
     def prompt_token_count(self) -> int: ...
 
     @property
-    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+    def input_ref(self) -> RuntimeRuntimeInvocationRequestVariant7InputRefView: ...
 
     @property
-    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+    def source_ref(self) -> RuntimeRuntimeInvocationRequestVariant7SourceRefView: ...
 
     @property
     def resume_token(self) -> str: ...
@@ -1566,10 +1566,10 @@ class RuntimeInvocationRequestVariant8View(Protocol):
     def prompt_token_count(self) -> int: ...
 
     @property
-    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+    def input_ref(self) -> RuntimeRuntimeInvocationRequestVariant8InputRefView: ...
 
     @property
-    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+    def source_ref(self) -> RuntimeRuntimeInvocationRequestVariant8SourceRefView: ...
 
     @property
     def resume_token(self) -> str: ...
@@ -1635,10 +1635,10 @@ class RuntimeInvocationRequestVariant9View(Protocol):
     def prompt_token_count(self) -> int: ...
 
     @property
-    def input_ref(self) -> RuntimeInvocationReferenceView: ...
+    def input_ref(self) -> RuntimeRuntimeInvocationRequestVariant9InputRefView: ...
 
     @property
-    def source_ref(self) -> RuntimeInvocationReferenceView: ...
+    def source_ref(self) -> RuntimeRuntimeInvocationRequestVariant9SourceRefView: ...
 
     @property
     def resume_token(self) -> str: ...
@@ -3317,25 +3317,6 @@ class RuntimeContextMessageVariant3View(Protocol):
     def safe_summary(self) -> str: ...
 
 
-class RuntimeInvocationReferenceView(Protocol):
-    @property
-    def kind(
-        self,
-    ) -> Literal[
-        "user_message",
-        "transcript_availability",
-        "transcript_claim",
-        "speaker_mapping_event",
-        "interaction_window",
-        "interaction_batch",
-        "schedule",
-        "quarantine_retry",
-    ]: ...
-
-    @property
-    def id(self) -> str: ...
-
-
 class RuntimeRuntimeActionIntentVariant1SafePayloadView(Protocol):
     @property
     def payload_kind(self) -> Literal["background_message"]: ...
@@ -3447,6 +3428,166 @@ class RuntimeRuntimeInvocationEventVariant4UsageView(Protocol):
 
     @property
     def cache_write_tokens(self) -> int: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant10InputRefView(Protocol):
+    @property
+    def kind(self) -> Literal["schedule"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant10SourceRefView(Protocol):
+    @property
+    def kind(self) -> Literal["schedule"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant1InputRefView(Protocol):
+    @property
+    def kind(self) -> Literal["user_message"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant1SourceRefView(Protocol):
+    @property
+    def kind(self) -> Literal["user_message"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant2InputRefView(Protocol):
+    @property
+    def kind(self) -> Literal["transcript_claim"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant2SourceRefView(Protocol):
+    @property
+    def kind(self) -> Literal["transcript_availability"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant3InputRefView(Protocol):
+    @property
+    def kind(self) -> Literal["speaker_mapping_event"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant3SourceRefView(Protocol):
+    @property
+    def kind(self) -> Literal["speaker_mapping_event"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant4InputRefView(Protocol):
+    @property
+    def kind(self) -> Literal["interaction_batch"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant4SourceRefView(Protocol):
+    @property
+    def kind(self) -> Literal["interaction_window"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant5InputRefView(Protocol):
+    @property
+    def kind(self) -> Literal["schedule"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant5SourceRefView(Protocol):
+    @property
+    def kind(self) -> Literal["schedule"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant6InputRefView(Protocol):
+    @property
+    def kind(self) -> Literal["user_message"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant6SourceRefView(Protocol):
+    @property
+    def kind(self) -> Literal["user_message"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant7InputRefView(Protocol):
+    @property
+    def kind(self) -> Literal["transcript_claim"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant7SourceRefView(Protocol):
+    @property
+    def kind(self) -> Literal["transcript_availability"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant8InputRefView(Protocol):
+    @property
+    def kind(self) -> Literal["speaker_mapping_event"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant8SourceRefView(Protocol):
+    @property
+    def kind(self) -> Literal["speaker_mapping_event"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant9InputRefView(Protocol):
+    @property
+    def kind(self) -> Literal["interaction_batch"]: ...
+
+    @property
+    def id(self) -> str: ...
+
+
+class RuntimeRuntimeInvocationRequestVariant9SourceRefView(Protocol):
+    @property
+    def kind(self) -> Literal["interaction_window"]: ...
+
+    @property
+    def id(self) -> str: ...
 
 
 class RuntimeRuntimeQuarantineRecordVariant1ImmutableRangeView(Protocol):
@@ -6195,9 +6336,9 @@ class DataplaneSegmentVariant1View(Protocol):
         self,
     ) -> (
         None
-        | DataplaneSpeakerVariant2View
-        | DataplaneSpeakerVariant3View
-        | DataplaneSpeakerVariant4View
+        | DataplaneDataplaneSegmentVariant1SpeakerVariant2View
+        | DataplaneDataplaneSegmentVariant1SpeakerVariant3View
+        | DataplaneDataplaneSegmentVariant1SpeakerVariant4View
     ): ...
 
     @property
@@ -6231,9 +6372,9 @@ class DataplaneSegmentVariant2View(Protocol):
         self,
     ) -> (
         None
-        | DataplaneSpeakerVariant2View
-        | DataplaneSpeakerVariant3View
-        | DataplaneSpeakerVariant4View
+        | DataplaneDataplaneSegmentVariant2SpeakerVariant2View
+        | DataplaneDataplaneSegmentVariant2SpeakerVariant3View
+        | DataplaneDataplaneSegmentVariant2SpeakerVariant4View
     ): ...
 
     @property
@@ -6281,7 +6422,7 @@ class DataplaneVersionView(Protocol):
     def minor(self) -> int: ...
 
 
-class DataplaneSpeakerVariant2View(Protocol):
+class DataplaneDataplaneSegmentVariant1SpeakerVariant2View(Protocol):
     @property
     def source_speaker_id(self) -> str | None: ...
 
@@ -6298,7 +6439,7 @@ class DataplaneSpeakerVariant2View(Protocol):
     def attribution(self) -> Literal["you"]: ...
 
 
-class DataplaneSpeakerVariant3View(Protocol):
+class DataplaneDataplaneSegmentVariant1SpeakerVariant3View(Protocol):
     @property
     def source_speaker_id(self) -> str | None: ...
 
@@ -6315,7 +6456,58 @@ class DataplaneSpeakerVariant3View(Protocol):
     def attribution(self) -> Literal["others"]: ...
 
 
-class DataplaneSpeakerVariant4View(Protocol):
+class DataplaneDataplaneSegmentVariant1SpeakerVariant4View(Protocol):
+    @property
+    def source_speaker_id(self) -> str | None: ...
+
+    @property
+    def canonical_speaker_id(self) -> str | None: ...
+
+    @property
+    def canonical_display_name(self) -> str | None: ...
+
+    @property
+    def canonical_is_user(self) -> None: ...
+
+    @property
+    def attribution(self) -> Literal["unknown"]: ...
+
+
+class DataplaneDataplaneSegmentVariant2SpeakerVariant2View(Protocol):
+    @property
+    def source_speaker_id(self) -> str | None: ...
+
+    @property
+    def canonical_speaker_id(self) -> str | None: ...
+
+    @property
+    def canonical_display_name(self) -> str | None: ...
+
+    @property
+    def canonical_is_user(self) -> Literal[True]: ...
+
+    @property
+    def attribution(self) -> Literal["you"]: ...
+
+
+class DataplaneDataplaneSegmentVariant2SpeakerVariant3View(Protocol):
+    @property
+    def source_speaker_id(self) -> str | None: ...
+
+    @property
+    def canonical_speaker_id(self) -> str | None: ...
+
+    @property
+    def canonical_display_name(self) -> str | None: ...
+
+    @property
+    def canonical_is_user(self) -> Literal[False]: ...
+
+    @property
+    def attribution(self) -> Literal["others"]: ...
+
+
+class DataplaneDataplaneSegmentVariant2SpeakerVariant4View(Protocol):
     @property
     def source_speaker_id(self) -> str | None: ...
 

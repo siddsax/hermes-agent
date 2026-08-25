@@ -21,6 +21,8 @@ cover nested objects, arrays become tuples, and closed enum/constant fields use
 `Literal` discriminants, so ports can remain statically typed without changing
 the frozen wire. Regenerate these views with
 `python thine_harness/contracts/_codegen.py`, then run the repository formatter.
+The read-only view projects JSON Schema integer values such as `1.0` to Python
+`int`; `to_dict()` and `to_json()` retain the decoded wire representation.
 
 ## Decoder behavior
 
