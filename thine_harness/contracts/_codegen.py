@@ -37,8 +37,12 @@ class ViewGenerator:
         if "enum" in schema:
             return "Literal[" + ", ".join(repr(value) for value in schema["enum"]) + "]"
         if "oneOf" in schema:
+            base = {key: value for key, value in schema.items() if key != "oneOf"}
             return " | ".join(
-                self.type_for(option, f"{hint}Variant{index}")
+                self.type_for(
+                    _overlay_schema(base, option),
+                    f"{hint}Variant{index}",
+                )
                 for index, option in enumerate(schema["oneOf"], start=1)
             )
 
@@ -191,6 +195,27 @@ from ._base import FrozenJSONValue
         (PACKAGE_ROOT / f"{module_name}.py").write_text(
             "\n".join(body), encoding="utf-8"
         )
+
+
+def _overlay_schema(base: dict[str, Any], refinement: dict[str, Any]) -> dict[str, Any]:
+    """Overlay one discriminated branch without dropping its common object shape."""
+
+    merged = {**base, **refinement}
+    if "required" in base or "required" in refinement:
+        merged["required"] = list(
+            dict.fromkeys([*base.get("required", []), *refinement.get("required", [])])
+        )
+    base_properties = base.get("properties", {})
+    refinement_properties = refinement.get("properties", {})
+    if base_properties or refinement_properties:
+        merged["properties"] = {
+            key: _overlay_schema(base_properties.get(key, {}), child)
+            if key in base_properties
+            else child
+            for key, child in refinement_properties.items()
+        }
+        merged["properties"] = {**base_properties, **merged["properties"]}
+    return merged
 
 
 if __name__ == "__main__":

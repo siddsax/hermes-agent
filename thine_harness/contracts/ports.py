@@ -57,7 +57,13 @@ from .working_memory import StopHookDecision, WorkingMemorySnapshot
 
 
 ClaimId = NewType("ClaimId", str)
+ClaimRequestId = NewType("ClaimRequestId", str)
+MemoryVersion = NewType("MemoryVersion", str)
+QuarantineId = NewType("QuarantineId", str)
+RunId = NewType("RunId", str)
 SequenceNumber = NewType("SequenceNumber", int)
+SpeakerCursor = NewType("SpeakerCursor", int)
+SpeakerEventId = NewType("SpeakerEventId", str)
 UserId = NewType("UserId", str)
 
 
@@ -84,7 +90,9 @@ class WorkingMemoryPort(Protocol):
 class TranscriptPort(Protocol):
     def claim(self, request: TranscriptClaimRequest) -> TranscriptClaim: ...
 
-    def lookup_claim(self, claim_id: ClaimId) -> TranscriptClaimLookup: ...
+    def lookup_claim(
+        self, claim_request_id: ClaimRequestId
+    ) -> TranscriptClaimLookup: ...
 
     def renew(
         self, request: TranscriptLeaseRenewRequest
@@ -92,9 +100,14 @@ class TranscriptPort(Protocol):
 
     def reclaim(self, request: TranscriptReclaimRequest) -> TranscriptReclaimResult: ...
 
-    def release(self, request: TranscriptRelease) -> TranscriptRelease: ...
+    def release(self, claim_id: ClaimId, reason: str) -> TranscriptRelease: ...
 
-    def acknowledge(self, request: TranscriptAck) -> TranscriptAck: ...
+    def acknowledge(
+        self,
+        claim_id: ClaimId,
+        run_id: RunId,
+        memory_version: MemoryVersion,
+    ) -> TranscriptAck: ...
 
     def canonical_lookup(
         self, sequence_number: SequenceNumber
@@ -150,7 +163,16 @@ class SchedulePort(Protocol):
 class SpeakerMappingPort(Protocol):
     def next(self, user_id: str) -> SpeakerMappingEvent | None: ...
 
-    def acknowledge(self, outcome: SpeakerCursorOutcome) -> SpeakerCursorOutcome: ...
+    def acknowledge(
+        self, event_id: SpeakerEventId, cursor: SpeakerCursor
+    ) -> SpeakerCursorOutcome: ...
+
+    def quarantine_and_advance(
+        self,
+        event_id: SpeakerEventId,
+        cursor: SpeakerCursor,
+        quarantine_id: QuarantineId,
+    ) -> SpeakerCursorOutcome: ...
 
 
 class PolicyPort(Protocol):
@@ -180,17 +202,23 @@ class HermesControlPort(Protocol):
 __all__ = [
     "ActionPort",
     "ClaimId",
+    "ClaimRequestId",
     "ChatPort",
     "HermesControlPort",
     "HomeStatePort",
     "InteractionPort",
     "InvocationPort",
+    "MemoryVersion",
     "NotificationPort",
     "OperatorDashboardPort",
     "PolicyPort",
+    "QuarantineId",
     "RecoveryPort",
+    "RunId",
     "SchedulePort",
     "SequenceNumber",
+    "SpeakerCursor",
+    "SpeakerEventId",
     "SpeakerMappingPort",
     "TranscriptPort",
     "UserId",

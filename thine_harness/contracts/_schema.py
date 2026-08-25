@@ -226,6 +226,8 @@ def load_json(path: Path) -> Any:
 def reject_unsafe_integral_numbers(value: Any, path: str = "$") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path}: JSON object member name must be a string")
             reject_unsafe_integral_numbers(child, f"{path}.{key}")
     elif isinstance(value, list):
         for index, child in enumerate(value):
@@ -234,6 +236,8 @@ def reject_unsafe_integral_numbers(value: Any, path: str = "$") -> None:
         raise ValueError(f"{path}: non-finite number is not valid JSON")
     elif _is_unsafe_integral_number(value):
         raise ValueError(f"{path}: integer exceeds interoperable JSON safe range")
+    elif value is not None and not isinstance(value, (bool, int, float, str)):
+        raise ValueError(f"{path}: unsupported JSON value {type(value).__name__}")
 
 
 def resolve_schema(
@@ -354,7 +358,7 @@ def semantic_errors(
 
     _inspect_extensions(payload, errors)
     for path, key in _walk_keys(payload):
-        if key in EXACT_FORBIDDEN_FIELDS:
+        if _normalized_wire_key(key) in EXACT_FORBIDDEN_FIELDS:
             errors.append(f"forbidden exact {key} field: {path}")
         sensitive_part = _sensitive_field_part(key)
         if sensitive_part:

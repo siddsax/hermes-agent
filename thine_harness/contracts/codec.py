@@ -75,7 +75,11 @@ def validate_payload(
         ) from exc
 
     errors = SchemaValidator(document).validate(payload, schema)
-    errors.extend(semantic_errors(type_id, payload, _interaction_actions()))
+    try:
+        errors.extend(semantic_errors(type_id, payload, _interaction_actions()))
+    except (AttributeError, KeyError, TypeError):
+        if not errors:
+            raise
     if errors:
         raise ContractDecodeError("; ".join(errors))
     return payload
