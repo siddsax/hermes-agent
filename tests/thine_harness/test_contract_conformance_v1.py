@@ -99,7 +99,8 @@ def test_typed_payload_views_are_nested_and_immutable():
     dto = Attempt.from_json(json.dumps(case["payload"]))
 
     assert_type(dto.payload.attempt_id, str)
-    assert_type(dto.payload.ordinal, int)
+    ordinal: int = dto.payload.ordinal
+    assert ordinal >= 1
     assert dto.payload.attempt_id == case["payload"]["attempt_id"]
     assert dto.payload.schema_version.major == 1
     assert dto.payload.extensions == {}
