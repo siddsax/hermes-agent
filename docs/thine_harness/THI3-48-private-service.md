@@ -66,7 +66,9 @@ Missing or incorrect credentials return `401`; a different Firebase UID returns
 `403`; an invalid request ID returns `400`. The authenticated `GET /health`
 route is implemented here. `POST /v1/control` is reserved for the typed
 `HermesControlPort` integration and deliberately returns `501` until that
-ticket supplies feature behavior. Other paths return `404`.
+ticket supplies feature behavior. Active requests exceeding
+`request_timeout_seconds` return a redacted `504 request_timed_out` response.
+Other paths return `404`.
 
 The local backend uses `HERMES_CONTROL_URL=http://127.0.0.1:8789`, the same
 `HERMES_CONTROL_TOKEN`, and a finite client timeout. The phone continues to use

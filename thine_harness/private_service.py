@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import time
 import uuid
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .private_topology import PrivateServiceConfig
 
@@ -29,13 +31,50 @@ class _PrivateRequestRejected(Exception):
         self.request_id = request_id
 
 
+class _RequestDeadlineMiddleware:
+    def __init__(self, app: ASGIApp, timeout_seconds: float) -> None:
+        self.app = app
+        self.timeout_seconds = timeout_seconds
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        response_started = False
+
+        async def track_response(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                await self.app(scope, receive, track_response)
+        except TimeoutError:
+            if response_started:
+                raise
+            request_id = Request(scope).headers.get("X-Request-ID", "")
+            content: dict[str, str] = {"error": "request_timed_out"}
+            if (
+                request_id
+                and request_id == request_id.strip()
+                and len(request_id) <= 128
+            ):
+                content["request_id"] = request_id
+            response = JSONResponse(status_code=504, content=content)
+            await response(scope, receive, send)
+
+
 def _validated_request_id(request: Request) -> str:
     request_id = request.headers.get("X-Request-ID", "")
-    if (
-        not request_id
-        or request_id != request_id.strip()
-        or len(request_id) > 128
-    ):
+    if not request_id or request_id != request_id.strip() or len(request_id) > 128:
         raise _PrivateRequestRejected(
             status_code=400,
             error="invalid_request_id",
@@ -55,7 +94,10 @@ def _authenticate_request(
     if (
         not separator
         or scheme.lower() != "bearer"
-        or not hmac.compare_digest(bearer, config.credential)
+        or not hmac.compare_digest(
+            bearer.encode("utf-8"),
+            config.credential.encode("utf-8"),
+        )
     ):
         raise _PrivateRequestRejected(
             status_code=401,
@@ -64,7 +106,10 @@ def _authenticate_request(
         )
 
     firebase_uid = request.headers.get("X-Thine-Firebase-UID", "")
-    if not hmac.compare_digest(firebase_uid, config.firebase_uid):
+    if not hmac.compare_digest(
+        firebase_uid.encode("utf-8"),
+        config.firebase_uid.encode("utf-8"),
+    ):
         raise _PrivateRequestRejected(
             status_code=403,
             error="uid_mismatch",
@@ -98,6 +143,12 @@ def create_private_service_app(
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+    )
+    app.add_middleware(
+        # Starlette accepts callable ASGI middleware classes here; ty's
+        # variadic middleware-factory protocol does not recognize the class.
+        _RequestDeadlineMiddleware,  # ty: ignore[invalid-argument-type]
+        config.request_timeout_seconds,
     )
 
     @app.exception_handler(_PrivateRequestRejected)

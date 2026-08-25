@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
+from agent.secret_scope import (
+    reset_secret_scope,
+    set_multiplex_active,
+    set_secret_scope,
+)
 from fastapi.testclient import TestClient
 from hermes_cli.config_defaults import DEFAULT_CONFIG
 
@@ -25,7 +32,9 @@ def _enabled_config(**overrides: object) -> dict[str, object]:
     return {"thine_harness": {"private_service": private_service}}
 
 
-def test_enabled_private_service_loads_behavior_from_config_and_secret_from_env() -> None:
+def test_enabled_private_service_loads_behavior_from_config_and_secret_from_env() -> (
+    None
+):
     config = load_private_service_config(
         _enabled_config(),
         environ={"HERMES_CONTROL_TOKEN": "private-test-token"},
@@ -51,14 +60,57 @@ def test_default_config_keeps_private_service_disabled_without_a_secret() -> Non
 def test_private_credential_can_be_loaded_from_a_file(tmp_path) -> None:
     credential_file = tmp_path / "control-token"
     credential_file.write_text("file-secret\n", encoding="utf-8")
-    config = _enabled_config(
-        credential={"env": "", "file": str(credential_file)}
-    )
+    config = _enabled_config(credential={"env": "", "file": str(credential_file)})
 
     loaded = load_private_service_config(config, environ={})
 
     assert loaded.credential == "file-secret"
     assert "file-secret" not in repr(loaded)
+
+
+def test_production_loader_reads_profile_config_and_scoped_secret(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hermes_home = tmp_path / "daily-driver-hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """\
+thine_harness:
+  private_service:
+    enabled: true
+    host: 127.0.0.1
+    port: 8789
+    firebase_uid: firebase-profile-user
+    request_timeout_seconds: 5
+    credential:
+      env: HERMES_CONTROL_TOKEN
+      file: ""
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_CONTROL_TOKEN", "profile-private-token")
+
+    config = load_private_service_config()
+
+    assert config.enabled is True
+    assert config.firebase_uid == "firebase-profile-user"
+    assert config.credential == "profile-private-token"
+
+
+def test_private_service_uses_active_profile_secret_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HERMES_CONTROL_TOKEN", "wrong-process-token")
+    scope_token = set_secret_scope({"HERMES_CONTROL_TOKEN": "scoped-private-token"})
+    set_multiplex_active(True)
+    try:
+        config = load_private_service_config(_enabled_config())
+    finally:
+        reset_secret_scope(scope_token)
+        set_multiplex_active(False)
+
+    assert config.credential == "scoped-private-token"
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.10", "example.com"])
@@ -97,7 +149,9 @@ def _headers(**overrides: str) -> dict[str, str]:
 def test_authenticated_health_is_stable_for_reconnect_detection() -> None:
     with _client() as client:
         first = client.get("/health", headers=_headers())
-        second = client.get("/health", headers=_headers(**{"X-Request-ID": "request-2"}))
+        second = client.get(
+            "/health", headers=_headers(**{"X-Request-ID": "request-2"})
+        )
 
     assert first.status_code == 200
     assert first.json() == {
@@ -129,6 +183,51 @@ def test_private_service_fails_closed_at_auth_and_uid_boundary(
     assert response.status_code == status_code
     assert response.json()["error"] == error_code
     assert "private-test-token" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("header_name", "header_value", "status_code", "error_code"),
+    [
+        ("Authorization", "Bearer töken", 401, "unauthorized"),
+        ("X-Thine-Firebase-UID", "usér", 403, "uid_mismatch"),
+    ],
+)
+def test_non_ascii_authentication_headers_are_rejected_without_a_500(
+    header_name: str, header_value: str, status_code: int, error_code: str
+) -> None:
+    headers = [
+        (name.encode("ascii"), value.encode("utf-8"))
+        for name, value in _headers(**{header_name: header_value}).items()
+    ]
+    with _client() as client:
+        response = client.get("/health", headers=headers)
+
+    assert response.status_code == status_code
+    assert response.json()["error"] == error_code
+
+
+def test_private_service_enforces_an_active_request_deadline() -> None:
+    config = load_private_service_config(
+        _enabled_config(request_timeout_seconds=0.1),
+        environ={"HERMES_CONTROL_TOKEN": "private-test-token"},
+    )
+    app = create_private_service_app(config)
+
+    @app.get("/test-only/never-finishes")
+    async def never_finishes() -> None:
+        await asyncio.Event().wait()
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/test-only/never-finishes",
+            headers=_headers(),
+        )
+
+    assert response.status_code == 504
+    assert response.json() == {
+        "error": "request_timed_out",
+        "request_id": "request-1",
+    }
 
 
 def test_control_route_is_reserved_but_exposes_no_generic_rpc() -> None:

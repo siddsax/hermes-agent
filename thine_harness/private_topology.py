@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ipaddress
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,7 +49,7 @@ def _loopback_literal(value: object) -> str:
 def _resolve_credential(
     credential_config: Mapping[str, object],
     *,
-    environ: Mapping[str, str],
+    environ: Mapping[str, str] | None,
 ) -> str:
     env_name = str(credential_config.get("env") or "").strip()
     file_name = str(credential_config.get("file") or "").strip()
@@ -60,7 +59,13 @@ def _resolve_credential(
         )
 
     if env_name:
-        value = str(environ.get(env_name) or "").strip()
+        if environ is None:
+            from agent.secret_scope import get_secret
+
+            raw_value = get_secret(env_name)
+        else:
+            raw_value = environ.get(env_name)
+        value = str(raw_value or "").strip()
         source = f"environment variable {env_name}"
     else:
         try:
@@ -92,7 +97,6 @@ def load_private_service_config(
         from hermes_cli.config import load_config
 
         config = load_config()
-    environment = os.environ if environ is None else environ
     harness = _mapping(config.get("thine_harness", {}), path="thine_harness")
     service = _mapping(
         harness.get("private_service", {}),
@@ -131,7 +135,7 @@ def load_private_service_config(
     if enabled:
         credential = _resolve_credential(
             _mapping(service.get("credential", {}), path="credential"),
-            environ=environment,
+            environ=environ,
         )
 
     return PrivateServiceConfig(
