@@ -10,8 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+import json
 import threading
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, Sequence
 
 
 SAFE_BOUNDARY_RESUME_PROMPT = (
@@ -146,10 +147,140 @@ class BackgroundCheckpoint:
     updated_at: str
 
 
+@dataclass(frozen=True)
+class BackgroundCheckpointPayload:
+    """Provider-safe state persisted atomically with coordinator requeue."""
+
+    original_input: str
+    remaining_work: str
+    context_messages: tuple[dict[str, Any], ...] = ()
+    completed_tool_results: tuple[dict[str, Any], ...] = ()
+    successful_action_receipts: tuple[dict[str, Any], ...] = ()
+    partial_visible_assistant_output: str = ""
+
+    @classmethod
+    def from_turn(
+        cls,
+        request: InvocationRequest,
+        result: AgentTurnResult,
+    ) -> "BackgroundCheckpointPayload":
+        """Capture only committed visible history; hidden reasoning is absent."""
+        return cls(
+            original_input=request.original_input or request.prompt,
+            remaining_work=result.remaining_work or SAFE_BOUNDARY_RESUME_PROMPT,
+            context_messages=tuple(
+                dict(message)
+                for message in (result.context_messages or request.context_messages)
+            ),
+            completed_tool_results=tuple(
+                _merge_checkpoint_records(
+                    request.completed_tool_results,
+                    result.completed_tool_results,
+                )
+            ),
+            successful_action_receipts=tuple(
+                _merge_checkpoint_records(
+                    request.successful_action_receipts,
+                    result.successful_action_receipts,
+                )
+            ),
+            partial_visible_assistant_output=(
+                request.partial_visible_assistant_output
+                + result.partial_visible_assistant_output
+            ),
+        )
+
+
+def _merge_checkpoint_records(
+    previous: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in [*previous, *current]:
+        marker = repr(sorted(record.items(), key=lambda item: item[0]))
+        if marker not in seen:
+            seen.add(marker)
+            merged.append(dict(record))
+    return merged
+
+
 class BackgroundCheckpointStorePort(Protocol):
     def save(self, checkpoint: BackgroundCheckpoint) -> None: ...
 
     def load(self, resume_token: str) -> BackgroundCheckpoint: ...
+
+
+class BackgroundCheckpointView(Protocol):
+    @property
+    def remaining_work(self) -> str: ...
+
+    @property
+    def original_input(self) -> str: ...
+
+    @property
+    def context_messages(self) -> tuple[dict[str, Any], ...]: ...
+
+    @property
+    def completed_tool_results(self) -> tuple[dict[str, Any], ...]: ...
+
+    @property
+    def successful_action_receipts(self) -> tuple[dict[str, Any], ...]: ...
+
+    @property
+    def partial_visible_assistant_output(self) -> str: ...
+
+
+def build_background_invocation_request(
+    *,
+    logical_run_id: str,
+    initial_prompt: str,
+    checkpoint: BackgroundCheckpointView | None,
+    newest_working_memory: str,
+    durable_action_receipts: Sequence[dict[str, Any]] = (),
+) -> InvocationRequest:
+    """Build an initial request or a restart-safe safe-boundary continuation."""
+    if checkpoint is None:
+        return InvocationRequest(
+            logical_run_id=logical_run_id,
+            kind=InvocationKind.BACKGROUND,
+            prompt=initial_prompt,
+            resume_token=logical_run_id,
+            original_input=initial_prompt,
+        )
+    receipts = _merge_checkpoint_records(
+        list(checkpoint.successful_action_receipts),
+        [dict(receipt) for receipt in durable_action_receipts],
+    )
+    resume_prompt = (
+        checkpoint.remaining_work
+        + "\n\nThe following state is newer than the original turn. Treat it as "
+        "authoritative. Do not repeat any completed observable effect; inspect "
+        "or reuse its durable receipt instead.\n<newest_working_memory>\n"
+        + newest_working_memory
+        + "\n</newest_working_memory>\n<completed_action_receipts>\n"
+        + json.dumps(
+            receipts,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n</completed_action_receipts>"
+    )
+    return InvocationRequest(
+        logical_run_id=logical_run_id,
+        kind=InvocationKind.BACKGROUND,
+        prompt=resume_prompt,
+        resume_token=logical_run_id,
+        context_messages=[dict(message) for message in checkpoint.context_messages],
+        original_input=checkpoint.original_input or initial_prompt,
+        completed_tool_results=[
+            dict(result) for result in checkpoint.completed_tool_results
+        ],
+        successful_action_receipts=receipts,
+        partial_visible_assistant_output=(checkpoint.partial_visible_assistant_output),
+    )
 
 
 class InvocationControl:
@@ -515,26 +646,20 @@ class HermesInvocationRuntime:
         if result.interrupted:
             if request.kind is InvocationKind.BACKGROUND:
                 assert self._checkpoint_store is not None
+                payload = BackgroundCheckpointPayload.from_turn(request, result)
                 self._checkpoint_store.save(
                     BackgroundCheckpoint(
                         resume_token=request.resume_token or "",
                         logical_run_id=request.logical_run_id,
-                        input_prompt=request.original_input or request.prompt,
-                        remaining_work=result.remaining_work or request.prompt,
-                        context_messages=list(
-                            result.context_messages or request.context_messages
-                        ),
-                        completed_tool_results=self._merge_checkpoint_records(
-                            request.completed_tool_results,
-                            result.completed_tool_results,
-                        ),
-                        successful_action_receipts=self._merge_checkpoint_records(
-                            request.successful_action_receipts,
-                            result.successful_action_receipts,
+                        input_prompt=payload.original_input,
+                        remaining_work=payload.remaining_work,
+                        context_messages=list(payload.context_messages),
+                        completed_tool_results=list(payload.completed_tool_results),
+                        successful_action_receipts=list(
+                            payload.successful_action_receipts
                         ),
                         partial_visible_assistant_output=(
-                            request.partial_visible_assistant_output
-                            + result.partial_visible_assistant_output
+                            payload.partial_visible_assistant_output
                         ),
                         updated_at=self._clock(),
                     )
@@ -604,26 +729,13 @@ class HermesInvocationRuntime:
             control=control,
         )
 
-    @staticmethod
-    def _merge_checkpoint_records(
-        previous: list[dict[str, Any]],
-        current: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        merged: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for record in [*previous, *current]:
-            marker = repr(sorted(record.items(), key=lambda item: item[0]))
-            if marker not in seen:
-                seen.add(marker)
-                merged.append(dict(record))
-        return merged
-
-
 __all__ = [
     "AgentSessionPort",
     "AgentTurnResult",
     "BackgroundCheckpoint",
+    "BackgroundCheckpointPayload",
     "BackgroundCheckpointStorePort",
+    "BackgroundCheckpointView",
     "HermesAIAgentSession",
     "HermesInvocationRuntime",
     "InvocationControl",
@@ -635,5 +747,6 @@ __all__ = [
     "RuntimeModelConfig",
     "RuntimeSelectionError",
     "SAFE_BOUNDARY_RESUME_PROMPT",
+    "build_background_invocation_request",
     "runtime_selection_fingerprint",
 ]

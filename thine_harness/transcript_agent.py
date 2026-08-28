@@ -27,12 +27,12 @@ from .run_coordinator import (
 from .run_finalizer import finalize_pending_transcript_quarantine
 from .run_state import DurableRunState, PendingTranscriptAck
 from .runtime import (
+    BackgroundCheckpointPayload,
     HermesAIAgentSession,
     InvocationControl as ProviderInvocationControl,
     InvocationEvent,
-    InvocationKind,
-    InvocationRequest,
     RuntimeModelConfig,
+    build_background_invocation_request,
 )
 from .working_memory import (
     CacheIdentity,
@@ -337,16 +337,19 @@ class RealTranscriptAgentRuntime:
         )
         relay.start()
         events: list[InvocationEvent] = []
+        request = build_background_invocation_request(
+            logical_run_id=str(payload.logical_run_id),
+            initial_prompt=prompt,
+            checkpoint=context.checkpoint,
+            newest_working_memory=current.markdown,
+            durable_action_receipts=tuple(
+                asdict(receipt) for receipt in context.acknowledged_receipts
+            ),
+        )
         try:
             with self._binding.activate(prepared):
                 result = self._session.invoke(
-                    InvocationRequest(
-                        logical_run_id=str(payload.logical_run_id),
-                        kind=InvocationKind.BACKGROUND,
-                        prompt=prompt,
-                        resume_token=str(payload.logical_run_id),
-                        original_input=prompt,
-                    ),
+                    request,
                     emit=events.append,
                     control=provider_control,
                 )
@@ -355,7 +358,10 @@ class RealTranscriptAgentRuntime:
             relay.join(timeout=0.1)
         if result.interrupted:
             return InvocationOutcome.preempted(
-                remaining_work=result.remaining_work or "resume transcript inference"
+                remaining_work=result.remaining_work or "resume transcript inference",
+                checkpoint_payload=BackgroundCheckpointPayload.from_turn(
+                    request, result
+                ),
             )
         if result.failed or not result.completed:
             return InvocationOutcome.fault(

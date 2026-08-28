@@ -28,7 +28,7 @@ from .contracts.transcripts import TranscriptAck, TranscriptClaim
 from .working_memory import WorkingMemorySnapshot
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 class DurableStateError(RuntimeError):
@@ -58,6 +58,11 @@ class CheckpointRecord:
     cause: str
     remaining_work: str
     completed_receipt_ids: tuple[str, ...]
+    original_input: str
+    context_messages: tuple[dict[str, Any], ...]
+    completed_tool_results: tuple[dict[str, Any], ...]
+    successful_action_receipts: tuple[dict[str, Any], ...]
+    partial_visible_assistant_output: str
     updated_at_ms: int
 
 
@@ -797,6 +802,25 @@ class DurableRunState:
                     COMMIT;
                     """
                 )
+                version = 7
+            if version == 7:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    ALTER TABLE checkpoints
+                        ADD COLUMN original_input TEXT NOT NULL DEFAULT '';
+                    ALTER TABLE checkpoints
+                        ADD COLUMN context_messages_json TEXT NOT NULL DEFAULT '[]';
+                    ALTER TABLE checkpoints
+                        ADD COLUMN completed_tool_results_json TEXT NOT NULL DEFAULT '[]';
+                    ALTER TABLE checkpoints
+                        ADD COLUMN successful_action_receipts_json TEXT NOT NULL DEFAULT '[]';
+                    ALTER TABLE checkpoints
+                        ADD COLUMN partial_visible_assistant_output TEXT NOT NULL DEFAULT '';
+                    PRAGMA user_version = 8;
+                    COMMIT;
+                    """
+                )
         except BaseException:
             connection.rollback()
             raise
@@ -1097,9 +1121,23 @@ class DurableRunState:
         cause: str,
         remaining_work: str,
         completed_receipt_ids: tuple[str, ...],
+        original_input: str = "",
+        context_messages: tuple[dict[str, Any], ...] = (),
+        completed_tool_results: tuple[dict[str, Any], ...] = (),
+        successful_action_receipts: tuple[dict[str, Any], ...] = (),
+        partial_visible_assistant_output: str = "",
         now_ms: int,
     ) -> CheckpointRecord:
         receipt_ids = tuple(dict.fromkeys(completed_receipt_ids))
+        context_messages_json = self._checkpoint_json(
+            "context_messages", context_messages
+        )
+        completed_tool_results_json = self._checkpoint_json(
+            "completed_tool_results", completed_tool_results
+        )
+        successful_action_receipts_json = self._checkpoint_json(
+            "successful_action_receipts", successful_action_receipts
+        )
         with self._transaction() as connection:
             self._require_active_owner(
                 connection,
@@ -1127,8 +1165,11 @@ class DurableRunState:
                 """
                 INSERT INTO checkpoints (
                     checkpoint_id, user_id, logical_run_id, cause, remaining_work,
-                    completed_receipt_ids_json, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    completed_receipt_ids_json, original_input,
+                    context_messages_json, completed_tool_results_json,
+                    successful_action_receipts_json,
+                    partial_visible_assistant_output, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     checkpoint_id,
@@ -1137,6 +1178,11 @@ class DurableRunState:
                     cause,
                     remaining_work,
                     json.dumps(receipt_ids, separators=(",", ":")),
+                    original_input,
+                    context_messages_json,
+                    completed_tool_results_json,
+                    successful_action_receipts_json,
+                    partial_visible_assistant_output,
                     now_ms,
                 ),
             )
@@ -1159,8 +1205,33 @@ class DurableRunState:
             cause=cause,
             remaining_work=remaining_work,
             completed_receipt_ids=receipt_ids,
+            original_input=original_input,
+            context_messages=tuple(dict(item) for item in context_messages),
+            completed_tool_results=tuple(dict(item) for item in completed_tool_results),
+            successful_action_receipts=tuple(
+                dict(item) for item in successful_action_receipts
+            ),
+            partial_visible_assistant_output=partial_visible_assistant_output,
             updated_at_ms=now_ms,
         )
+
+    @staticmethod
+    def _checkpoint_json(
+        field: str,
+        records: tuple[dict[str, Any], ...],
+    ) -> str:
+        try:
+            return json.dumps(
+                records,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        except (TypeError, ValueError) as exc:
+            raise DurableStateError(
+                f"checkpoint {field} must be finite JSON objects"
+            ) from exc
 
     def requeue_input_transport_failure(
         self,
@@ -4025,12 +4096,29 @@ class DurableRunState:
 
     @staticmethod
     def _checkpoint_from_row(row: sqlite3.Row) -> CheckpointRecord:
+        def records(column: str) -> tuple[dict[str, Any], ...]:
+            decoded = json.loads(str(row[column]))
+            if not isinstance(decoded, list) or any(
+                not isinstance(item, dict) for item in decoded
+            ):
+                raise DurableStateError(
+                    f"checkpoint {column} is not an array of objects"
+                )
+            return tuple(dict(item) for item in decoded)
+
         return CheckpointRecord(
             checkpoint_id=str(row["checkpoint_id"]),
             logical_run_id=str(row["logical_run_id"]),
             cause=str(row["cause"]),
             remaining_work=str(row["remaining_work"]),
             completed_receipt_ids=tuple(json.loads(row["completed_receipt_ids_json"])),
+            original_input=str(row["original_input"]),
+            context_messages=records("context_messages_json"),
+            completed_tool_results=records("completed_tool_results_json"),
+            successful_action_receipts=records("successful_action_receipts_json"),
+            partial_visible_assistant_output=str(
+                row["partial_visible_assistant_output"]
+            ),
             updated_at_ms=int(row["updated_at_ms"]),
         )
 

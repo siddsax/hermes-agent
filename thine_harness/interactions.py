@@ -44,11 +44,11 @@ from .run_state import (
     StoredInteractionClaim,
 )
 from .runtime import (
+    BackgroundCheckpointPayload,
     HermesAIAgentSession,
     InvocationControl as ProviderInvocationControl,
-    InvocationKind,
-    InvocationRequest,
     RuntimeModelConfig,
+    build_background_invocation_request,
 )
 from .working_memory import (
     CacheIdentity,
@@ -514,16 +514,19 @@ class RealInteractionAgentRuntime:
             target=relay, name="thine-interaction-preemption", daemon=True
         )
         thread.start()
+        request = build_background_invocation_request(
+            logical_run_id=str(context.tick.payload.logical_run_id),
+            initial_prompt=prompt,
+            checkpoint=context.checkpoint,
+            newest_working_memory=current.markdown,
+            durable_action_receipts=tuple(
+                asdict(receipt) for receipt in context.acknowledged_receipts
+            ),
+        )
         try:
             with self._binding.activate(prepared):
                 result = self._session.invoke(
-                    InvocationRequest(
-                        logical_run_id=str(context.tick.payload.logical_run_id),
-                        kind=InvocationKind.BACKGROUND,
-                        prompt=prompt,
-                        resume_token=str(context.tick.payload.logical_run_id),
-                        original_input=prompt,
-                    ),
+                    request,
                     emit=lambda _event: None,
                     control=provider_control,
                 )
@@ -532,7 +535,10 @@ class RealInteractionAgentRuntime:
             thread.join(timeout=0.1)
         if result.interrupted:
             return InvocationOutcome.preempted(
-                remaining_work=result.remaining_work or "resume interaction inference"
+                remaining_work=result.remaining_work or "resume interaction inference",
+                checkpoint_payload=BackgroundCheckpointPayload.from_turn(
+                    request, result
+                ),
             )
         if result.failed or not result.completed:
             return InvocationOutcome.fault(
