@@ -553,6 +553,14 @@ def test_expired_uncheckpointed_invocation_consumes_one_durable_attempt(tmp_path
     first = state.lease_next("daily-user", owner="dead-process", now_ms=0)
     assert first is not None
     assert first.attempt_ordinal == 1
+    state.mark_inference_started(
+        user_id="daily-user",
+        logical_run_id="run:crashed",
+        owner="dead-process",
+        attempt_id=first.attempt_id,
+        lease_token=first.lease_token,
+        now_ms=0,
+    )
 
     restarted = DurableRunState(database, lease_duration_ms=10)
     resumed = restarted.lease_next("daily-user", owner="restart", now_ms=11)
@@ -566,11 +574,37 @@ def test_expired_uncheckpointed_invocation_consumes_one_durable_attempt(tmp_path
     ]
 
 
+def test_expired_input_preparation_reuses_attempt_without_counting_fault(
+    tmp_path: Path,
+):
+    database = tmp_path / "state.sqlite3"
+    state = DurableRunState(database, lease_duration_ms=10)
+    state.enqueue(_tick("crashed-before-input"), now_ms=0)
+    first = state.lease_next("daily-user", owner="dead-process", now_ms=0)
+    assert first is not None
+
+    resumed = state.lease_next("daily-user", owner="restart", now_ms=11)
+
+    assert resumed is not None and resumed.attempt_ordinal == 1
+    assert resumed.attempt_id == first.attempt_id
+    assert [
+        (item.ordinal, item.status) for item in state.diagnostics("daily-user").attempts
+    ] == [(1, "running")]
+
+
 def test_stale_lease_cannot_finalize_a_recovered_attempt(tmp_path: Path):
     state = DurableRunState(tmp_path / "state.sqlite3", lease_duration_ms=10)
     state.enqueue(_tick("stale"), now_ms=0)
     first = state.lease_next("daily-user", owner="local-harness", now_ms=0)
     assert first is not None
+    state.mark_inference_started(
+        user_id="daily-user",
+        logical_run_id="run:stale",
+        owner="local-harness",
+        attempt_id=first.attempt_id,
+        lease_token=first.lease_token,
+        now_ms=0,
+    )
     second = state.lease_next("daily-user", owner="local-harness", now_ms=11)
     assert second is not None
     assert second.attempt_ordinal == 2

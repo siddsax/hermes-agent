@@ -19,6 +19,7 @@ from .run_coordinator import (
     InvocationOutcome,
     RunFinalizationResult,
 )
+from .run_finalizer import finalize_pending_transcript_quarantine
 from .run_state import DurableRunState, PendingTranscriptAck
 from .runtime import (
     HermesAIAgentSession,
@@ -118,7 +119,16 @@ class TranscriptClaimToolBinding:
                 separators=(",", ":"),
             )
         return json.dumps(
-            {"ok": True, "claim": prepared.claim.to_dict()},
+            {
+                "ok": True,
+                "claim": prepared.claim.to_dict(),
+                "input_gaps": [gap.to_dict() for gap in prepared.input_gaps],
+                "explicit_retry": (
+                    None
+                    if prepared.explicit_retry is None
+                    else prepared.explicit_retry.to_dict()
+                ),
+            },
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -263,6 +273,20 @@ class RealTranscriptAgentRuntime:
             "<working_memory>\n"
             + current.markdown
             + "\n</working_memory>\n"
+            + "<input_gaps>\n"
+            + json.dumps(
+                [gap.to_dict() for gap in prepared.input_gaps],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n</input_gaps>\n"
+            + "<explicit_retry>\n"
+            + (
+                "null"
+                if prepared.explicit_retry is None
+                else prepared.explicit_retry.to_json()
+            )
+            + "\n</explicit_retry>\n"
             f"<logical_run_id>{payload.logical_run_id}</logical_run_id>"
         )
         provider_control = ProviderInvocationControl()
@@ -357,8 +381,16 @@ class TranscriptAgentFinalizer:
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
 
     def resume_pending(self, user_id: str) -> RunFinalizationResult | None:
+        quarantined = self.finalize_quarantine(user_id)
+        if quarantined is not None:
+            return quarantined
         pending = self._state.next_pending_transcript_ack(user_id)
         return None if pending is None else self._ack_pending(pending)
+
+    def finalize_quarantine(self, user_id: str) -> RunFinalizationResult | None:
+        return finalize_pending_transcript_quarantine(
+            self._state, self._transcript_port, user_id
+        )
 
     def finalize(
         self,

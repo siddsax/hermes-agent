@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Callable, cast
 
 from .contracts.ports import ClaimId, MemoryVersion, RunId, TranscriptPort
-from .input_pump import PreparedTranscriptInput
+from .input_pump import (
+    PreparedTranscriptInput,
+    TranscriptQuarantineRequest,
+    TranscriptRecoveryPort,
+)
 from .run_coordinator import (
     ActiveRunLease,
     InvocationContext,
@@ -31,10 +35,18 @@ class TranscriptNoActionFinalizer:
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
 
     def resume_pending(self, user_id: str) -> RunFinalizationResult | None:
+        quarantined = self.finalize_quarantine(user_id)
+        if quarantined is not None:
+            return quarantined
         pending = self._state.next_pending_transcript_ack(user_id)
         if pending is None:
             return None
         return self._ack_pending(pending)
+
+    def finalize_quarantine(self, user_id: str) -> RunFinalizationResult | None:
+        return finalize_pending_transcript_quarantine(
+            self._state, self._transcript_port, user_id
+        )
 
     def finalize(
         self,
@@ -88,4 +100,43 @@ class TranscriptNoActionFinalizer:
         )
 
 
-__all__ = ["TranscriptNoActionFinalizer"]
+def finalize_pending_transcript_quarantine(
+    state: DurableRunState,
+    transcript_port: TranscriptPort,
+    user_id: str,
+) -> RunFinalizationResult | None:
+    """Synchronize one durable third-failure suffix without rerunning inference."""
+    pending = state.next_pending_transcript_quarantine(user_id)
+    if pending is None:
+        return None
+    try:
+        result = cast(TranscriptRecoveryPort, transcript_port).quarantine(
+            TranscriptQuarantineRequest(
+                claim_id=pending.claim_id,
+                logical_run_id=pending.logical_run_id,
+                quarantine_id=pending.quarantine_id,
+                failure_code=pending.failure_code,
+                fault_attempts_total=3,
+                quarantined_at_ms=pending.quarantined_at_ms,
+            )
+        )
+    except Exception:
+        return RunFinalizationResult(
+            tick_id=pending.tick_id,
+            logical_run_id=pending.logical_run_id,
+            attempt_ordinal=pending.attempt_ordinal,
+            status="quarantine_pending",
+        )
+    state.complete_transcript_quarantine(result)
+    return RunFinalizationResult(
+        tick_id=pending.tick_id,
+        logical_run_id=pending.logical_run_id,
+        attempt_ordinal=pending.attempt_ordinal,
+        status="quarantined",
+    )
+
+
+__all__ = [
+    "TranscriptNoActionFinalizer",
+    "finalize_pending_transcript_quarantine",
+]

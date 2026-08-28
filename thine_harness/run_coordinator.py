@@ -202,7 +202,12 @@ class RunFinalizationResult:
     tick_id: str
     logical_run_id: str
     attempt_ordinal: int
-    status: Literal["completed", "awaiting_audio_ack"]
+    status: Literal[
+        "completed",
+        "awaiting_audio_ack",
+        "quarantine_pending",
+        "quarantined",
+    ]
 
 
 class RunFinalizerPort(Protocol):
@@ -217,6 +222,8 @@ class RunFinalizerPort(Protocol):
         *,
         lease: ActiveRunLease,
     ) -> RunFinalizationResult: ...
+
+    def finalize_quarantine(self, user_id: str) -> RunFinalizationResult | None: ...
 
 
 @dataclass(frozen=True)
@@ -480,25 +487,56 @@ class RunCoordinator:
                 lease_token=leased.lease_token,
                 clock_ms=self._clock_ms,
             )
+            input_error: Exception | None = None
             try:
-                if self._input_port is not None:
-                    context = replace(
-                        context,
-                        prepared_input=self._input_port.prepare(
+                try:
+                    if self._input_port is not None:
+                        context = replace(
                             context,
-                            lease=active_lease,
-                        ),
+                            prepared_input=self._input_port.prepare(
+                                context,
+                                lease=active_lease,
+                            ),
+                        )
+                except Exception as exc:
+                    input_error = exc
+                if input_error is None:
+                    self._state.mark_inference_started(
+                        user_id=user_id,
+                        logical_run_id=str(payload.logical_run_id),
+                        owner=self._lease_owner,
+                        attempt_id=leased.attempt_id,
+                        lease_token=leased.lease_token,
+                        now_ms=self._clock_ms(),
                     )
-                outcome = self._runtime.invoke(context, tools=tools, control=control)
-            except Exception as exc:
-                outcome = InvocationOutcome.fault(
-                    f"runtime_exception:{type(exc).__name__}"
-                )
+                    try:
+                        outcome = self._runtime.invoke(
+                            context, tools=tools, control=control
+                        )
+                    except Exception as exc:
+                        outcome = InvocationOutcome.fault(
+                            f"runtime_exception:{type(exc).__name__}"
+                        )
             finally:
                 renewal_stop.set()
                 renewal_thread.join(timeout=renewal_interval + 0.1)
                 with self._active_lock:
                     self._active = None
+            if input_error is not None:
+                self._state.requeue_input_transport_failure(
+                    user_id=user_id,
+                    logical_run_id=str(payload.logical_run_id),
+                    owner=self._lease_owner,
+                    attempt_id=leased.attempt_id,
+                    lease_token=leased.lease_token,
+                    now_ms=self._clock_ms(),
+                )
+                return RunResult(
+                    tick_id=str(payload.tick_id),
+                    logical_run_id=str(payload.logical_run_id),
+                    attempt_ordinal=leased.attempt_ordinal,
+                    status="input_retry_pending",
+                )
             if outcome.status == "completed":
                 if self._finalizer is not None:
                     try:
@@ -519,6 +557,18 @@ class RunCoordinator:
                             ),
                             now_ms=self._clock_ms(),
                         )
+                        quarantine_finalizer = getattr(
+                            self._finalizer, "finalize_quarantine", None
+                        )
+                        if status == "quarantined" and quarantine_finalizer is not None:
+                            quarantined = quarantine_finalizer(user_id)
+                            if quarantined is not None:
+                                return RunResult(
+                                    tick_id=quarantined.tick_id,
+                                    logical_run_id=quarantined.logical_run_id,
+                                    attempt_ordinal=quarantined.attempt_ordinal,
+                                    status=quarantined.status,
+                                )
                         return RunResult(
                             tick_id=str(payload.tick_id),
                             logical_run_id=str(payload.logical_run_id),
@@ -587,6 +637,18 @@ class RunCoordinator:
                     failure_code=outcome.failure_code or "runtime_fault",
                     now_ms=self._clock_ms(),
                 )
+                quarantine_finalizer = getattr(
+                    self._finalizer, "finalize_quarantine", None
+                )
+                if status == "quarantined" and quarantine_finalizer is not None:
+                    quarantined = quarantine_finalizer(user_id)
+                    if quarantined is not None:
+                        return RunResult(
+                            tick_id=quarantined.tick_id,
+                            logical_run_id=quarantined.logical_run_id,
+                            attempt_ordinal=quarantined.attempt_ordinal,
+                            status=quarantined.status,
+                        )
                 return RunResult(
                     tick_id=str(payload.tick_id),
                     logical_run_id=str(payload.logical_run_id),

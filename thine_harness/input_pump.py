@@ -5,13 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ipaddress
 import time
-from typing import Callable, cast
+from typing import Callable, cast, Literal, Protocol
 from urllib.parse import urlparse
 import uuid
 
 import httpx
 
 from .contracts import JSONValue
+from .contracts.recovery import ExplicitRetry, InputGap
 from .contracts.ports import (
     ClaimId,
     ClaimRequestId,
@@ -49,6 +50,355 @@ _TARGET_TRANSCRIPT_TOKENS = 8_000
 _ABSOLUTE_WINDOW_TOKENS = 200_000
 
 
+def _require_exact_fields(
+    value: dict[str, JSONValue], fields: set[str], *, label: str
+) -> None:
+    if set(value) != fields:
+        raise ValueError(f"{label} fields do not match the closed wire shape")
+
+
+def _require_string(value: JSONValue, *, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be a non-empty string")
+    return value
+
+
+def _require_integer(value: JSONValue, *, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{label} must be a non-negative integer")
+    return value
+
+
+def _require_positive_integer(value: JSONValue, *, label: str) -> int:
+    result = _require_integer(value, label=label)
+    if result == 0:
+        raise ValueError(f"{label} must be positive")
+    return result
+
+
+def _require_boolean(value: JSONValue, *, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} must be a boolean")
+    return value
+
+
+def _require_list(value: JSONValue, *, label: str) -> list[JSONValue]:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be an array")
+    return cast(list[JSONValue], value)
+
+
+def _require_adoption_kind(value: JSONValue) -> str:
+    result = _require_string(value, label="adoption_kind")
+    if result != "startup_existing_buffer":
+        raise ValueError("adoption_kind is outside the closed recovery wire")
+    return result
+
+
+@dataclass(frozen=True)
+class TranscriptQuarantineRequest:
+    """Claim-scoped request for the backend-owned source advance."""
+
+    claim_id: str
+    logical_run_id: str
+    quarantine_id: str
+    failure_code: str
+    fault_attempts_total: Literal[3]
+    quarantined_at_ms: int
+
+    def to_dict(self) -> dict[str, JSONValue]:
+        return {
+            "claim_id": self.claim_id,
+            "logical_run_id": self.logical_run_id,
+            "quarantine_id": self.quarantine_id,
+            "failure_code": self.failure_code,
+            "fault_attempts_total": self.fault_attempts_total,
+            "quarantined_at_ms": self.quarantined_at_ms,
+        }
+
+
+@dataclass(frozen=True)
+class TranscriptQuarantineResult:
+    status: Literal["quarantined"]
+    quarantine_id: str
+    claim_id: str
+    logical_run_id: str
+    source_identity: str
+    aggregation_buffer_ids: tuple[int, ...]
+    sequence_numbers: tuple[int | None, ...]
+    provenance: tuple[str, ...]
+    adoption_kinds: tuple[str | None, ...]
+    failure_code: str
+    fault_attempts_total: Literal[3]
+    quarantined_at_ms: int
+    normal_cursor_advanced: bool
+    input_retained: bool
+    canonical_transcript_retained: bool
+    input_gap: InputGap
+
+    @classmethod
+    def from_dict(cls, value: dict[str, JSONValue]) -> "TranscriptQuarantineResult":
+        _require_exact_fields(
+            value,
+            {
+                "status",
+                "quarantine_id",
+                "claim_id",
+                "logical_run_id",
+                "source_identity",
+                "aggregation_buffer_ids",
+                "sequence_numbers",
+                "provenance",
+                "adoption_kinds",
+                "failure_code",
+                "fault_attempts_total",
+                "quarantined_at_ms",
+                "normal_cursor_advanced",
+                "input_retained",
+                "canonical_transcript_retained",
+                "input_gap",
+            },
+            label="transcript quarantine response",
+        )
+        if value["status"] != "quarantined" or value["fault_attempts_total"] != 3:
+            raise ValueError("transcript quarantine response has invalid constants")
+        if (
+            value["normal_cursor_advanced"] is not True
+            or value["input_retained"] is not True
+            or value["canonical_transcript_retained"] is not True
+        ):
+            raise ValueError("transcript quarantine response has invalid invariants")
+        buffer_ids = _require_list(
+            value["aggregation_buffer_ids"], label="aggregation_buffer_ids"
+        )
+        sequences = _require_list(value["sequence_numbers"], label="sequence_numbers")
+        provenance = _require_list(value["provenance"], label="provenance")
+        adoption_kinds = _require_list(value["adoption_kinds"], label="adoption_kinds")
+        if not (
+            len(buffer_ids) == len(sequences) == len(provenance) == len(adoption_kinds)
+        ):
+            raise ValueError("transcript quarantine range arrays must align")
+        return cls(
+            status="quarantined",
+            quarantine_id=_require_string(
+                value["quarantine_id"], label="quarantine_id"
+            ),
+            claim_id=_require_string(value["claim_id"], label="claim_id"),
+            logical_run_id=_require_string(
+                value["logical_run_id"], label="logical_run_id"
+            ),
+            source_identity=_require_string(
+                value["source_identity"], label="source_identity"
+            ),
+            aggregation_buffer_ids=tuple(
+                _require_positive_integer(item, label="aggregation_buffer_id")
+                for item in buffer_ids
+            ),
+            sequence_numbers=tuple(
+                None
+                if item is None
+                else _require_positive_integer(item, label="sequence_number")
+                for item in sequences
+            ),
+            provenance=tuple(
+                _require_string(item, label="provenance") for item in provenance
+            ),
+            adoption_kinds=tuple(
+                None if item is None else _require_adoption_kind(item)
+                for item in adoption_kinds
+            ),
+            failure_code=_require_string(value["failure_code"], label="failure_code"),
+            fault_attempts_total=3,
+            quarantined_at_ms=_require_integer(
+                value["quarantined_at_ms"], label="quarantined_at_ms"
+            ),
+            normal_cursor_advanced=_require_boolean(
+                value["normal_cursor_advanced"], label="normal_cursor_advanced"
+            ),
+            input_retained=_require_boolean(
+                value["input_retained"], label="input_retained"
+            ),
+            canonical_transcript_retained=_require_boolean(
+                value["canonical_transcript_retained"],
+                label="canonical_transcript_retained",
+            ),
+            input_gap=InputGap.from_dict(
+                cast(dict[str, JSONValue], value["input_gap"])
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class TranscriptRetryRequest:
+    quarantine_id: str
+    retry_run_id: str
+    retry_request_id: str
+    requested_at_ms: int
+    lease_duration_ms: int
+
+    def to_dict(self) -> dict[str, JSONValue]:
+        return {
+            "quarantine_id": self.quarantine_id,
+            "retry_run_id": self.retry_run_id,
+            "retry_request_id": self.retry_request_id,
+            "requested_at_ms": self.requested_at_ms,
+            "lease_duration_ms": self.lease_duration_ms,
+        }
+
+
+@dataclass(frozen=True)
+class TranscriptRetryResult:
+    quarantine_id: str
+    retry_run_id: str
+    retry_request_id: str
+    requested_at_ms: int
+    original_claim_id: str
+    original_source_identity: str
+    original_provenance: tuple[str, ...]
+    normal_cursor_rewound: bool
+    quarantine_retained: bool
+    claim: TranscriptClaim
+
+    @classmethod
+    def from_dict(cls, value: dict[str, JSONValue]) -> "TranscriptRetryResult":
+        _require_exact_fields(
+            value,
+            {
+                "quarantine_id",
+                "retry_run_id",
+                "retry_request_id",
+                "requested_at_ms",
+                "original_claim_id",
+                "original_source_identity",
+                "original_provenance",
+                "normal_cursor_rewound",
+                "quarantine_retained",
+                "claim",
+            },
+            label="transcript quarantine retry response",
+        )
+        original_provenance = _require_list(
+            value["original_provenance"], label="original_provenance"
+        )
+        if (
+            value["normal_cursor_rewound"] is not False
+            or value["quarantine_retained"] is not True
+        ):
+            raise ValueError("transcript quarantine retry changed immutable state")
+        return cls(
+            quarantine_id=_require_string(
+                value["quarantine_id"], label="quarantine_id"
+            ),
+            retry_run_id=_require_string(value["retry_run_id"], label="retry_run_id"),
+            retry_request_id=_require_string(
+                value["retry_request_id"], label="retry_request_id"
+            ),
+            requested_at_ms=_require_integer(
+                value["requested_at_ms"], label="requested_at_ms"
+            ),
+            original_claim_id=_require_string(
+                value["original_claim_id"], label="original_claim_id"
+            ),
+            original_source_identity=_require_string(
+                value["original_source_identity"], label="original_source_identity"
+            ),
+            original_provenance=tuple(
+                _require_string(item, label="original_provenance")
+                for item in original_provenance
+            ),
+            normal_cursor_rewound=_require_boolean(
+                value["normal_cursor_rewound"], label="normal_cursor_rewound"
+            ),
+            quarantine_retained=_require_boolean(
+                value["quarantine_retained"], label="quarantine_retained"
+            ),
+            claim=TranscriptClaim.from_dict(cast(dict[str, JSONValue], value["claim"])),
+        )
+
+
+@dataclass(frozen=True)
+class TranscriptRetryInspection:
+    retry_request_id: str
+    retry_run_id: str
+    claim_id: str
+    requested_at_ms: int
+    claim_state: str
+
+
+@dataclass(frozen=True)
+class TranscriptQuarantineInspectionResult:
+    quarantine: TranscriptQuarantineResult
+    source_rows_present: bool
+    retries: tuple[TranscriptRetryInspection, ...]
+
+    @classmethod
+    def from_dict(
+        cls, value: dict[str, JSONValue]
+    ) -> "TranscriptQuarantineInspectionResult":
+        _require_exact_fields(
+            value,
+            {"quarantine", "source_rows_present", "retries"},
+            label="transcript quarantine inspection response",
+        )
+        retry_values = _require_list(value["retries"], label="retries")
+        retries: list[TranscriptRetryInspection] = []
+        for item in retry_values:
+            if not isinstance(item, dict):
+                raise ValueError("retry inspection must be an object")
+            retry_item = cast(dict[str, JSONValue], item)
+            _require_exact_fields(
+                retry_item,
+                {
+                    "retry_request_id",
+                    "retry_run_id",
+                    "claim_id",
+                    "requested_at_ms",
+                    "claim_state",
+                },
+                label="retry inspection",
+            )
+            retries.append(
+                TranscriptRetryInspection(
+                    retry_request_id=_require_string(
+                        retry_item["retry_request_id"], label="retry_request_id"
+                    ),
+                    retry_run_id=_require_string(
+                        retry_item["retry_run_id"], label="retry_run_id"
+                    ),
+                    claim_id=_require_string(retry_item["claim_id"], label="claim_id"),
+                    requested_at_ms=_require_integer(
+                        retry_item["requested_at_ms"], label="requested_at_ms"
+                    ),
+                    claim_state=_require_string(
+                        retry_item["claim_state"], label="claim_state"
+                    ),
+                )
+            )
+        return cls(
+            quarantine=TranscriptQuarantineResult.from_dict(
+                cast(dict[str, JSONValue], value["quarantine"])
+            ),
+            source_rows_present=_require_boolean(
+                value["source_rows_present"], label="source_rows_present"
+            ),
+            retries=tuple(retries),
+        )
+
+
+class TranscriptRecoveryPort(Protocol):
+    def quarantine(
+        self, request: TranscriptQuarantineRequest
+    ) -> TranscriptQuarantineResult: ...
+
+    def retry_quarantine(
+        self, request: TranscriptRetryRequest
+    ) -> TranscriptRetryResult: ...
+
+    def inspect_quarantine(
+        self, quarantine_id: str
+    ) -> TranscriptQuarantineInspectionResult: ...
+
+
 class TranscriptClaimNotFound(LookupError):
     """The backend has no durable claim for this request identity yet."""
 
@@ -84,7 +434,9 @@ class BackendTranscriptClient:
         ):
             raise ValueError("backend transcript origin must be loopback-only HTTP")
         if not credential or not firebase_uid:
-            raise ValueError("backend transcript credential and Firebase UID are required")
+            raise ValueError(
+                "backend transcript credential and Firebase UID are required"
+            )
         self._credential = credential
         self._firebase_uid = firebase_uid
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
@@ -102,9 +454,7 @@ class BackendTranscriptClient:
             self._post("/v1/transcripts/claims", request.to_dict())
         )
 
-    def lookup_claim(
-        self, claim_request_id: ClaimRequestId
-    ) -> TranscriptClaimLookup:
+    def lookup_claim(self, claim_request_id: ClaimRequestId) -> TranscriptClaimLookup:
         return TranscriptClaimLookup.from_dict(
             self._post(
                 "/v1/transcripts/claims/lookup",
@@ -113,9 +463,7 @@ class BackendTranscriptClient:
             )
         )
 
-    def renew(
-        self, request: TranscriptLeaseRenewRequest
-    ) -> TranscriptLeaseRenewResult:
+    def renew(self, request: TranscriptLeaseRenewRequest) -> TranscriptLeaseRenewResult:
         return TranscriptLeaseRenewResult.from_dict(
             self._post("/v1/transcripts/claims/renew", request.to_dict())
         )
@@ -165,6 +513,30 @@ class BackendTranscriptClient:
             )
         )
 
+    def quarantine(
+        self, request: TranscriptQuarantineRequest
+    ) -> TranscriptQuarantineResult:
+        return TranscriptQuarantineResult.from_dict(
+            self._post("/v1/transcripts/claims/quarantine", request.to_dict())
+        )
+
+    def retry_quarantine(
+        self, request: TranscriptRetryRequest
+    ) -> TranscriptRetryResult:
+        return TranscriptRetryResult.from_dict(
+            self._post("/v1/transcripts/quarantines/retry", request.to_dict())
+        )
+
+    def inspect_quarantine(
+        self, quarantine_id: str
+    ) -> TranscriptQuarantineInspectionResult:
+        return TranscriptQuarantineInspectionResult.from_dict(
+            self._post(
+                "/v1/transcripts/quarantines/inspect",
+                {"quarantine_id": quarantine_id},
+            )
+        )
+
     def _post(
         self,
         path: str,
@@ -197,6 +569,8 @@ class PreparedTranscriptInput:
     """One backend-owned claim attached to one leased P1 Logical Run."""
 
     claim: TranscriptClaim
+    input_gaps: tuple[InputGap, ...] = ()
+    explicit_retry: ExplicitRetry | None = None
 
 
 class TranscriptInputPump:
@@ -224,7 +598,9 @@ class TranscriptInputPump:
         if not user_id or not source_hint:
             raise ValueError("user_id and source_hint are required")
         identity = f"{user_id}\0{source_hint}"
-        tick_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"thine-transcript-tick:{identity}"))
+        tick_id = str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"thine-transcript-tick:{identity}")
+        )
         logical_run_id = str(
             uuid.uuid5(uuid.NAMESPACE_URL, f"thine-transcript-run:{identity}")
         )
@@ -232,36 +608,32 @@ class TranscriptInputPump:
             uuid.uuid5(uuid.NAMESPACE_URL, f"thine-transcript-source:{identity}")
         )
         queued_at_ms = self._clock_ms()
-        tick = Tick.from_dict(
-            {
-                "schema_version": _VERSION,
-                "tick_id": tick_id,
-                "user_id": user_id,
-                "logical_run_id": logical_run_id,
-                "kind": "p1_transcript",
-                "priority": "p1",
-                "occurred_at_ms": occurred_at_ms,
-                "received_at_ms": received_at_ms,
-                "queued_at_ms": queued_at_ms,
-                "source_ref": {
-                    "kind": "transcript_availability",
-                    "id": reference_id,
-                },
-                "causation_id": None,
-                "correlation_id": tick_id,
-                "attempt_ordinal": 1,
-                "lease": None,
-                "communication_allowance_snapshot": None,
-                "payload": {
-                    "payload_kind": "transcript_availability",
-                    "reference_id": reference_id,
-                },
-                "extensions": {},
-            }
-        )
-        return self._state.enqueue_transcript_availability(
-            tick, now_ms=queued_at_ms
-        )
+        tick = Tick.from_dict({
+            "schema_version": _VERSION,
+            "tick_id": tick_id,
+            "user_id": user_id,
+            "logical_run_id": logical_run_id,
+            "kind": "p1_transcript",
+            "priority": "p1",
+            "occurred_at_ms": occurred_at_ms,
+            "received_at_ms": received_at_ms,
+            "queued_at_ms": queued_at_ms,
+            "source_ref": {
+                "kind": "transcript_availability",
+                "id": reference_id,
+            },
+            "causation_id": None,
+            "correlation_id": tick_id,
+            "attempt_ordinal": 1,
+            "lease": None,
+            "communication_allowance_snapshot": None,
+            "payload": {
+                "payload_kind": "transcript_availability",
+                "reference_id": reference_id,
+            },
+            "extensions": {},
+        })
+        return self._state.enqueue_transcript_availability(tick, now_ms=queued_at_ms)
 
     @staticmethod
     def claim_request(
@@ -272,29 +644,27 @@ class TranscriptInputPump:
         now_ms: int,
     ) -> TranscriptClaimRequest:
         del user_id  # user scope is carried by authenticated adapter credentials
-        return TranscriptClaimRequest.from_dict(
-            {
-                "schema_version": _VERSION,
-                "claim_request_id": claim_request_id,
-                "lease_owner": logical_run_id,
-                "now_ms": now_ms,
-                "lease_duration_ms": _CLAIM_LEASE_MS,
-                "caps": {
-                    "target_source_duration_ms": _TARGET_SOURCE_DURATION_MS,
-                    "target_transcript_tokens": _TARGET_TRANSCRIPT_TOKENS,
-                    "absolute_window_tokens": _ABSOLUTE_WINDOW_TOKENS,
-                    "max_entries": None,
-                    "continuation_cursor": None,
-                },
-                "eligibility": {
-                    "source_type": "audio",
-                    "status_filter": None,
-                    "unknown_speaker_eligible": True,
-                    "excluded_source_types": ["audio_fast", "non_audio"],
-                },
-                "extensions": {},
-            }
-        )
+        return TranscriptClaimRequest.from_dict({
+            "schema_version": _VERSION,
+            "claim_request_id": claim_request_id,
+            "lease_owner": logical_run_id,
+            "now_ms": now_ms,
+            "lease_duration_ms": _CLAIM_LEASE_MS,
+            "caps": {
+                "target_source_duration_ms": _TARGET_SOURCE_DURATION_MS,
+                "target_transcript_tokens": _TARGET_TRANSCRIPT_TOKENS,
+                "absolute_window_tokens": _ABSOLUTE_WINDOW_TOKENS,
+                "max_entries": None,
+                "continuation_cursor": None,
+            },
+            "eligibility": {
+                "source_type": "audio",
+                "status_filter": None,
+                "unknown_speaker_eligible": True,
+                "excluded_source_types": ["audio_fast", "non_audio"],
+            },
+            "extensions": {},
+        })
 
     def prepare(
         self,
@@ -305,10 +675,19 @@ class TranscriptInputPump:
         payload = context.tick.payload
         if payload.kind != "p1_transcript":
             return None
-        claim_request_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"thine-transcript-claim:{lease.logical_run_id}",
+        explicit_retry = self._state.explicit_transcript_retry(
+            user_id=lease.user_id, retry_run_id=lease.logical_run_id
+        )
+        claim_request_id = (
+            self._state.transcript_retry_request_id(
+                user_id=lease.user_id, retry_run_id=lease.logical_run_id
+            )
+            if explicit_retry is not None
+            else str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"thine-transcript-claim:{lease.logical_run_id}",
+                )
             )
         )
         now_ms = self._clock_ms()
@@ -322,34 +701,81 @@ class TranscriptInputPump:
             lease_token=lease.lease_token,
             now_ms=now_ms,
         )
-        if stored.claim is not None:
-            return PreparedTranscriptInput(stored.claim)
-        try:
-            lookup = self._transcript_port.lookup_claim(
-                ClaimRequestId(claim_request_id)
-            )
-            claim = TranscriptClaim.from_dict(lookup.to_dict())
-        except TranscriptClaimNotFound:
-            claim = self._transcript_port.claim(
-                self.claim_request(
-                    user_id=lease.user_id,
-                    logical_run_id=lease.logical_run_id,
-                    claim_request_id=claim_request_id,
-                    now_ms=now_ms,
+        if stored.claim is None:
+            if explicit_retry is not None:
+                recovery_port = cast(TranscriptRecoveryPort, self._transcript_port)
+                retried = recovery_port.retry_quarantine(
+                    TranscriptRetryRequest(
+                        quarantine_id=str(explicit_retry.payload.quarantine_id),
+                        retry_run_id=lease.logical_run_id,
+                        retry_request_id=claim_request_id,
+                        requested_at_ms=int(explicit_retry.payload.created_at_ms),
+                        lease_duration_ms=_CLAIM_LEASE_MS,
+                    )
                 )
+                if (
+                    retried.quarantine_id != explicit_retry.payload.quarantine_id
+                    or retried.retry_run_id != lease.logical_run_id
+                    or retried.retry_request_id != claim_request_id
+                    or retried.requested_at_ms != explicit_retry.payload.created_at_ms
+                    or retried.original_claim_id
+                    != explicit_retry.payload.source_identity
+                    or retried.original_source_identity
+                    != explicit_retry.payload.source_identity
+                    or not retried.quarantine_retained
+                    or retried.normal_cursor_rewound
+                ):
+                    raise ValueError("backend transcript retry identity mismatch")
+                claim = retried.claim
+            else:
+                try:
+                    lookup = self._transcript_port.lookup_claim(
+                        ClaimRequestId(claim_request_id)
+                    )
+                    claim = TranscriptClaim.from_dict(lookup.to_dict())
+                except TranscriptClaimNotFound:
+                    claim = self._transcript_port.claim(
+                        self.claim_request(
+                            user_id=lease.user_id,
+                            logical_run_id=lease.logical_run_id,
+                            claim_request_id=claim_request_id,
+                            now_ms=now_ms,
+                        )
+                    )
+            stored = self._state.record_transcript_claim(
+                user_id=lease.user_id,
+                logical_run_id=lease.logical_run_id,
+                claim=claim,
+                owner=lease.owner,
+                attempt_id=lease.attempt_id,
+                lease_token=lease.lease_token,
+                now_ms=self._clock_ms(),
             )
-        stored = self._state.record_transcript_claim(
-            user_id=lease.user_id,
-            logical_run_id=lease.logical_run_id,
-            claim=claim,
-            owner=lease.owner,
-            attempt_id=lease.attempt_id,
-            lease_token=lease.lease_token,
-            now_ms=self._clock_ms(),
-        )
         if stored.claim is None:
             raise RuntimeError("durable transcript claim disappeared")
-        return PreparedTranscriptInput(stored.claim)
+        gaps = self._state.attach_pending_transcript_gaps(
+            user_id=lease.user_id, logical_run_id=lease.logical_run_id
+        )
+        return PreparedTranscriptInput(
+            stored.claim,
+            input_gaps=gaps,
+            explicit_retry=explicit_retry,
+        )
+
+    def enqueue_explicit_retry(
+        self,
+        *,
+        user_id: str,
+        quarantine_id: str,
+        retry_run_id: str,
+        created_at_ms: int,
+    ) -> ExplicitRetry:
+        return self._state.enqueue_transcript_retry(
+            user_id=user_id,
+            quarantine_id=quarantine_id,
+            retry_run_id=retry_run_id,
+            created_at_ms=created_at_ms,
+        )
 
 
 class FakeTranscriptNoActionRuntime:
@@ -374,7 +800,9 @@ class FakeTranscriptNoActionRuntime:
         if not isinstance(prepared, PreparedTranscriptInput):
             raise ValueError("fake transcript decision requires one prepared claim")
         if not prepared.claim.payload.entries:
-            raise ValueError("fake transcript decision cannot infer over an empty claim")
+            raise ValueError(
+                "fake transcript decision cannot infer over an empty claim"
+            )
         self.invocations.append(context)
         return InvocationOutcome.no_action()
 
@@ -385,4 +813,11 @@ __all__ = [
     "PreparedTranscriptInput",
     "TranscriptClaimNotFound",
     "TranscriptInputPump",
+    "TranscriptQuarantineRequest",
+    "TranscriptQuarantineInspectionResult",
+    "TranscriptQuarantineResult",
+    "TranscriptRecoveryPort",
+    "TranscriptRetryRequest",
+    "TranscriptRetryInspection",
+    "TranscriptRetryResult",
 ]
