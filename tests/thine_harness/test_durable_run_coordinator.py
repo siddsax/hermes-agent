@@ -21,6 +21,7 @@ from thine_harness.run_state import (
     DurableRunState,
     DurableStateError,
     ReceiptConflict,
+    SCHEMA_VERSION,
     default_database_path,
 )
 from thine_harness.runtime import RuntimeModelConfig
@@ -676,13 +677,16 @@ def test_state_path_is_profile_scoped_and_future_schema_fails_closed(
 
     database = tmp_path / "future.sqlite3"
     with sqlite3.connect(database) as connection:
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
 
     with pytest.raises(DurableStateError, match="newer than supported"):
         DurableRunState(database)
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert (
+            connection.execute("PRAGMA user_version").fetchone()[0]
+            == SCHEMA_VERSION + 1
+        )
 
 
 def test_receipt_reuse_with_changed_intent_fails_closed(tmp_path: Path):

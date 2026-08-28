@@ -15,13 +15,16 @@ from pathlib import Path
 import secrets
 import sqlite3
 from typing import Any, Iterator, Literal
+import uuid
 
 from hermes_constants import get_hermes_home
 
 from .contracts.runtime import Tick
+from .contracts.runtime import InputReceipt, RunFinalization, RunReceipt
+from .contracts.transcripts import TranscriptAck, TranscriptClaim
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class DurableStateError(RuntimeError):
@@ -115,6 +118,43 @@ class StateDiagnostics:
     quarantines: tuple[QuarantineDiagnostic, ...]
 
 
+@dataclass(frozen=True)
+class StoredTranscriptClaim:
+    user_id: str
+    tick_id: str
+    logical_run_id: str
+    claim_request_id: str
+    claim_id: str | None
+    claim: TranscriptClaim | None
+    state: str
+
+
+@dataclass(frozen=True)
+class PendingTranscriptAck:
+    user_id: str
+    tick_id: str
+    logical_run_id: str
+    attempt_ordinal: int
+    claim_id: str
+    memory_version: int
+    finalization_id: str
+
+
+@dataclass(frozen=True)
+class TranscriptRunRecord:
+    queue_state: str
+    attempts_total: int
+    decision_outcome: str | None
+    visible_action_intent_count: int | None
+    working_memory_outcome: str | None
+    memory_version: int | None
+    finalization_phase: str | None
+    ack_id: str | None
+    input_receipt_id: str | None
+    run_receipt_id: str | None
+    canonical_transcript_retained: bool | None
+
+
 def default_database_path() -> Path:
     return get_hermes_home() / "thine-harness" / "run-state.sqlite3"
 
@@ -164,9 +204,8 @@ class DurableRunState:
                 raise DurableStateError(
                     f"run-state schema {version} is newer than supported {SCHEMA_VERSION}"
                 )
-            if version == SCHEMA_VERSION:
-                return
-            connection.executescript(
+            if version == 0:
+                connection.executescript(
                 f"""
                 BEGIN IMMEDIATE;
                 CREATE TABLE queue_items (
@@ -251,10 +290,97 @@ class DurableRunState:
                 );
                 CREATE INDEX quarantines_by_user
                     ON quarantines(user_id, quarantined_at_ms);
-                PRAGMA user_version = {SCHEMA_VERSION};
+                PRAGMA user_version = 1;
                 COMMIT;
                 """
-            )
+                )
+                version = 1
+            if version == 1:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE working_memory_state (
+                        user_id TEXT PRIMARY KEY,
+                        version INTEGER NOT NULL,
+                        markdown TEXT NOT NULL,
+                        token_count INTEGER,
+                        last_run_id TEXT
+                    );
+
+                    CREATE TABLE working_memory_unchanged (
+                        marker_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL UNIQUE,
+                        expected_version INTEGER NOT NULL,
+                        recorded_at_ms INTEGER NOT NULL,
+                        FOREIGN KEY(logical_run_id) REFERENCES queue_items(logical_run_id)
+                    );
+
+                    CREATE TABLE transcript_claims (
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL PRIMARY KEY,
+                        tick_id TEXT NOT NULL UNIQUE,
+                        claim_request_id TEXT NOT NULL,
+                        claim_id TEXT,
+                        claim_json TEXT,
+                        ack_json TEXT,
+                        state TEXT NOT NULL,
+                        memory_version INTEGER,
+                        finalization_id TEXT,
+                        created_at_ms INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        UNIQUE(user_id, claim_request_id),
+                        UNIQUE(user_id, claim_id),
+                        FOREIGN KEY(logical_run_id) REFERENCES queue_items(logical_run_id)
+                    );
+                    CREATE INDEX transcript_claims_by_user_state
+                        ON transcript_claims(user_id, state, created_at_ms);
+
+                    CREATE TABLE decision_outcomes (
+                        decision_receipt_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL UNIQUE,
+                        outcome TEXT NOT NULL,
+                        visible_action_intent_count INTEGER NOT NULL,
+                        recorded_at_ms INTEGER NOT NULL,
+                        FOREIGN KEY(logical_run_id) REFERENCES queue_items(logical_run_id)
+                    );
+
+                    CREATE TABLE run_finalizations (
+                        finalization_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL UNIQUE,
+                        tick_id TEXT NOT NULL,
+                        phase TEXT NOT NULL,
+                        working_memory_outcome TEXT NOT NULL,
+                        source_ack_id TEXT,
+                        finalization_json TEXT NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        FOREIGN KEY(logical_run_id) REFERENCES queue_items(logical_run_id)
+                    );
+
+                    CREATE TABLE input_receipts (
+                        receipt_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL UNIQUE,
+                        ack_id TEXT NOT NULL UNIQUE,
+                        receipt_json TEXT NOT NULL,
+                        recorded_at_ms INTEGER NOT NULL,
+                        FOREIGN KEY(logical_run_id) REFERENCES queue_items(logical_run_id)
+                    );
+
+                    CREATE TABLE run_receipts (
+                        receipt_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL UNIQUE,
+                        receipt_json TEXT NOT NULL,
+                        recorded_at_ms INTEGER NOT NULL,
+                        FOREIGN KEY(logical_run_id) REFERENCES queue_items(logical_run_id)
+                    );
+                    PRAGMA user_version = 2;
+                    COMMIT;
+                    """
+                )
         except BaseException:
             connection.rollback()
             raise
@@ -263,39 +389,77 @@ class DurableRunState:
 
     def enqueue(self, tick: Tick, *, now_ms: int) -> str:
         payload = tick.payload
-        priority_rank = {"p0": 0, "p1": 1, "p2": 2}[str(payload.priority)]
         with self._transaction() as connection:
+            self._insert_tick_locked(connection, tick=tick, now_ms=now_ms)
+        return str(payload.tick_id)
+
+    def enqueue_transcript_availability(self, tick: Tick, *, now_ms: int) -> str:
+        """Insert at most one outstanding transcript availability Tick per user."""
+        payload = tick.payload
+        if payload.kind != "p1_transcript":
+            raise ValueError("transcript availability requires a p1_transcript Tick")
+        with self._transaction() as connection:
+            replay = connection.execute(
+                """
+                SELECT tick_id FROM queue_items
+                WHERE user_id = ? AND tick_id = ? AND kind = 'p1_transcript'
+                """,
+                (payload.user_id, payload.tick_id),
+            ).fetchone()
+            if replay is not None:
+                return str(replay["tick_id"])
             existing = connection.execute(
-                "SELECT tick_json FROM queue_items WHERE tick_id = ? AND user_id = ?",
-                (payload.tick_id, payload.user_id),
+                """
+                SELECT tick_id FROM queue_items
+                WHERE user_id = ? AND kind = 'p1_transcript'
+                  AND state IN ('queued', 'running', 'awaiting_audio_ack')
+                ORDER BY enqueue_sequence
+                LIMIT 1
+                """,
+                (payload.user_id,),
             ).fetchone()
             if existing is not None:
-                if json.loads(existing["tick_json"]) != tick.to_dict():
-                    raise DurableStateError(
-                        "tick_id was reused with a different payload"
-                    )
-                return str(payload.tick_id)
-            connection.execute(
-                """
-                INSERT INTO queue_items (
-                    tick_id, user_id, logical_run_id, kind, priority, priority_rank,
-                    source_kind, source_id, tick_json, state, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)
-                """,
-                (
-                    payload.tick_id,
-                    payload.user_id,
-                    payload.logical_run_id,
-                    payload.kind,
-                    payload.priority,
-                    priority_rank,
-                    payload.source_ref.kind,
-                    payload.source_ref.id,
-                    tick.to_json(),
-                    now_ms,
-                ),
-            )
+                return str(existing["tick_id"])
+            self._insert_tick_locked(connection, tick=tick, now_ms=now_ms)
         return str(payload.tick_id)
+
+    @staticmethod
+    def _insert_tick_locked(
+        connection: sqlite3.Connection,
+        *,
+        tick: Tick,
+        now_ms: int,
+    ) -> None:
+        payload = tick.payload
+        existing = connection.execute(
+            "SELECT tick_json FROM queue_items WHERE tick_id = ? AND user_id = ?",
+            (payload.tick_id, payload.user_id),
+        ).fetchone()
+        if existing is not None:
+            if json.loads(existing["tick_json"]) != tick.to_dict():
+                raise DurableStateError("tick_id was reused with a different payload")
+            return
+        priority_rank = {"p0": 0, "p1": 1, "p2": 2}[str(payload.priority)]
+        connection.execute(
+            """
+            INSERT INTO queue_items (
+                tick_id, user_id, logical_run_id, kind, priority, priority_rank,
+                source_kind, source_id, tick_json, state, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)
+            """,
+            (
+                payload.tick_id,
+                payload.user_id,
+                payload.logical_run_id,
+                payload.kind,
+                payload.priority,
+                priority_rank,
+                payload.source_ref.kind,
+                payload.source_ref.id,
+                tick.to_json(),
+                now_ms,
+            ),
+        )
 
     def lease_next(self, user_id: str, *, owner: str, now_ms: int) -> LeasedRun | None:
         with self._transaction() as connection:
@@ -536,6 +700,589 @@ class DurableRunState:
                 """,
                 (now_ms, now_ms, user_id, logical_run_id),
             )
+
+    def ensure_transcript_claim_request(
+        self,
+        *,
+        user_id: str,
+        tick_id: str,
+        logical_run_id: str,
+        claim_request_id: str,
+        owner: str,
+        attempt_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> StoredTranscriptClaim:
+        """Persist the idempotency key before the first Dataplane claim call."""
+        with self._transaction() as connection:
+            item = self._require_active_owner(
+                connection,
+                user_id=user_id,
+                logical_run_id=logical_run_id,
+                owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
+                now_ms=now_ms,
+            )
+            if item["kind"] != "p1_transcript" or item["tick_id"] != tick_id:
+                raise DurableStateError("claim request does not belong to this Tick")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO transcript_claims (
+                    user_id, logical_run_id, tick_id, claim_request_id,
+                    state, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, 'requested', ?, ?)
+                """,
+                (
+                    user_id,
+                    logical_run_id,
+                    tick_id,
+                    claim_request_id,
+                    now_ms,
+                    now_ms,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM transcript_claims
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (user_id, logical_run_id),
+            ).fetchone()
+            if row is None:
+                raise DurableStateError("transcript claim request was not durable")
+            if row["claim_request_id"] != claim_request_id:
+                raise DurableStateError(
+                    "Logical Run already owns a different claim request"
+                )
+            return self._stored_transcript_claim_from_row(row)
+
+    def record_transcript_claim(
+        self,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        claim: TranscriptClaim,
+        owner: str,
+        attempt_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> StoredTranscriptClaim:
+        """Attach one frozen claim envelope to its leased Logical Run."""
+        payload = claim.payload
+        with self._transaction() as connection:
+            self._require_active_owner(
+                connection,
+                user_id=user_id,
+                logical_run_id=logical_run_id,
+                owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
+                now_ms=now_ms,
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM transcript_claims
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (user_id, logical_run_id),
+            ).fetchone()
+            if row is None:
+                raise DurableStateError("claim response arrived before request persistence")
+            if payload.claim_request_id != row["claim_request_id"]:
+                raise DurableStateError("claim response request identity mismatch")
+            if payload.lease_owner != logical_run_id:
+                raise DurableStateError("claim response lease owner mismatch")
+            canonical = claim.to_json()
+            if row["claim_json"] is not None and row["claim_json"] != canonical:
+                raise DurableStateError("claim lookup changed its frozen envelope")
+            connection.execute(
+                """
+                UPDATE transcript_claims
+                SET claim_id = ?, claim_json = ?, state = 'claimed', updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (
+                    payload.claim_id,
+                    canonical,
+                    now_ms,
+                    user_id,
+                    logical_run_id,
+                ),
+            )
+            stored = connection.execute(
+                """
+                SELECT * FROM transcript_claims
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (user_id, logical_run_id),
+            ).fetchone()
+            if stored is None:
+                raise DurableStateError("claim response was not durable")
+            return self._stored_transcript_claim_from_row(stored)
+
+    def finalize_transcript_no_action(
+        self,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        owner: str,
+        attempt_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> PendingTranscriptAck:
+        """Atomically mark memory unchanged and enter the ack-only suffix."""
+        with self._transaction() as connection:
+            item = self._require_active_owner(
+                connection,
+                user_id=user_id,
+                logical_run_id=logical_run_id,
+                owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
+                now_ms=now_ms,
+            )
+            if item["kind"] != "p1_transcript":
+                raise DurableStateError("transcript finalizer received another Tick kind")
+            claim = connection.execute(
+                """
+                SELECT * FROM transcript_claims
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (user_id, logical_run_id),
+            ).fetchone()
+            if (
+                claim is None
+                or claim["state"] != "claimed"
+                or claim["claim_id"] is None
+                or claim["claim_json"] is None
+            ):
+                raise DurableStateError("transcript run has no durable claimed input")
+            claim_payload = TranscriptClaim.from_json(claim["claim_json"]).payload
+            if not claim_payload.entries:
+                raise DurableStateError("empty transcript claim cannot enter inference finalization")
+
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO working_memory_state (
+                    user_id, version, markdown, token_count, last_run_id
+                ) VALUES (?, 0, '', NULL, NULL)
+                """,
+                (user_id,),
+            )
+            memory = connection.execute(
+                "SELECT version FROM working_memory_state WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if memory is None:
+                raise DurableStateError("working memory singleton is missing")
+            memory_version = int(memory["version"])
+            finalization_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"thine-transcript-finalization:{logical_run_id}",
+                )
+            )
+            finalization = RunFinalization.from_dict(
+                {
+                    "schema_version": {"major": 1, "minor": 0},
+                    "finalization_id": finalization_id,
+                    "logical_run_id": logical_run_id,
+                    "tick_id": str(item["tick_id"]),
+                    "tick_kind": "p1_transcript",
+                    "phase": "awaiting_audio_ack",
+                    "source_ack_id": None,
+                    "final_reply_receipt_id": None,
+                    "recovery_mode": "ack_only",
+                    "inference_allowed": False,
+                    "restream_allowed": False,
+                    "working_memory_outcome": "unchanged",
+                    "finalized_at_ms": None,
+                    "extensions": {},
+                }
+            )
+            connection.execute(
+                """
+                INSERT INTO working_memory_unchanged (
+                    marker_id, user_id, logical_run_id, expected_version,
+                    recorded_at_ms
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    f"memory-unchanged:{logical_run_id}",
+                    user_id,
+                    logical_run_id,
+                    memory_version,
+                    now_ms,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE working_memory_state SET last_run_id = ?
+                WHERE user_id = ? AND version = ?
+                """,
+                (logical_run_id, user_id, memory_version),
+            )
+            connection.execute(
+                """
+                INSERT INTO decision_outcomes (
+                    decision_receipt_id, user_id, logical_run_id, outcome,
+                    visible_action_intent_count, recorded_at_ms
+                ) VALUES (?, ?, ?, 'no_action', 0, ?)
+                """,
+                (
+                    f"decision-receipt:{logical_run_id}",
+                    user_id,
+                    logical_run_id,
+                    now_ms,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO run_finalizations (
+                    finalization_id, user_id, logical_run_id, tick_id, phase,
+                    working_memory_outcome, source_ack_id, finalization_json,
+                    updated_at_ms
+                ) VALUES (?, ?, ?, ?, 'awaiting_audio_ack', 'unchanged', NULL, ?, ?)
+                """,
+                (
+                    finalization_id,
+                    user_id,
+                    logical_run_id,
+                    item["tick_id"],
+                    finalization.to_json(),
+                    now_ms,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE transcript_claims
+                SET state = 'awaiting_ack', memory_version = ?,
+                    finalization_id = ?, updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (
+                    memory_version,
+                    finalization_id,
+                    now_ms,
+                    user_id,
+                    logical_run_id,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE attempts SET status = 'succeeded', finished_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ? AND attempt_id = ?
+                  AND status = 'running'
+                """,
+                (now_ms, user_id, logical_run_id, attempt_id),
+            )
+            connection.execute(
+                """
+                UPDATE queue_items
+                SET state = 'awaiting_audio_ack', lease_owner = NULL,
+                    lease_token = NULL, lease_expires_at_ms = NULL, updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (now_ms, user_id, logical_run_id),
+            )
+            attempt_ordinal = int(
+                connection.execute(
+                    "SELECT ordinal FROM attempts WHERE attempt_id = ?",
+                    (attempt_id,),
+                ).fetchone()[0]
+            )
+            return PendingTranscriptAck(
+                user_id=user_id,
+                tick_id=str(item["tick_id"]),
+                logical_run_id=logical_run_id,
+                attempt_ordinal=attempt_ordinal,
+                claim_id=str(claim["claim_id"]),
+                memory_version=memory_version,
+                finalization_id=finalization_id,
+            )
+
+    def next_pending_transcript_ack(
+        self, user_id: str
+    ) -> PendingTranscriptAck | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT q.tick_id, q.logical_run_id, t.claim_id,
+                       t.memory_version, t.finalization_id,
+                       MAX(a.ordinal) AS attempt_ordinal
+                FROM queue_items q
+                JOIN transcript_claims t
+                  ON t.user_id = q.user_id
+                 AND t.logical_run_id = q.logical_run_id
+                JOIN attempts a
+                  ON a.user_id = q.user_id
+                 AND a.logical_run_id = q.logical_run_id
+                WHERE q.user_id = ? AND q.state = 'awaiting_audio_ack'
+                  AND t.state = 'awaiting_ack'
+                GROUP BY q.tick_id, q.logical_run_id, t.claim_id,
+                         t.memory_version, t.finalization_id, q.enqueue_sequence
+                ORDER BY q.enqueue_sequence
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return PendingTranscriptAck(
+            user_id=user_id,
+            tick_id=str(row["tick_id"]),
+            logical_run_id=str(row["logical_run_id"]),
+            attempt_ordinal=int(row["attempt_ordinal"]),
+            claim_id=str(row["claim_id"]),
+            memory_version=int(row["memory_version"]),
+            finalization_id=str(row["finalization_id"]),
+        )
+
+    def complete_transcript_ack(
+        self,
+        *,
+        pending: PendingTranscriptAck,
+        acknowledgement: TranscriptAck,
+    ) -> None:
+        """Commit the frozen input/run receipts after Dataplane cleanup."""
+        ack = acknowledgement.payload
+        if (
+            ack.claim_id != pending.claim_id
+            or ack.run_id != pending.logical_run_id
+            or ack.memory_version != str(pending.memory_version)
+            or not ack.durable_receipt_written
+            or not ack.canonical_transcript_retained
+        ):
+            raise DurableStateError("Dataplane acknowledgement identity mismatch")
+        recorded_at_ms = int(ack.acknowledged_at_ms)
+        input_receipt = InputReceipt.from_dict(
+            {
+                "schema_version": {"major": 1, "minor": 0},
+                "receipt_id": f"input-receipt:{ack.ack_id}",
+                "source_kind": "transcript",
+                "source_identity": pending.claim_id,
+                "logical_run_id": pending.logical_run_id,
+                "ack_id": ack.ack_id,
+                "disposition": "acknowledged",
+                "recorded_at_ms": recorded_at_ms,
+                "extensions": {},
+            }
+        )
+        finalization = RunFinalization.from_dict(
+            {
+                "schema_version": {"major": 1, "minor": 0},
+                "finalization_id": pending.finalization_id,
+                "logical_run_id": pending.logical_run_id,
+                "tick_id": pending.tick_id,
+                "tick_kind": "p1_transcript",
+                "phase": "completed",
+                "source_ack_id": ack.ack_id,
+                "final_reply_receipt_id": None,
+                "recovery_mode": "ack_only",
+                "inference_allowed": False,
+                "restream_allowed": False,
+                "working_memory_outcome": "unchanged",
+                "finalized_at_ms": recorded_at_ms,
+                "extensions": {},
+            }
+        )
+        with self._transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT q.state, t.state AS claim_state
+                FROM queue_items q JOIN transcript_claims t
+                  ON t.user_id = q.user_id
+                 AND t.logical_run_id = q.logical_run_id
+                WHERE q.user_id = ? AND q.logical_run_id = ?
+                """,
+                (pending.user_id, pending.logical_run_id),
+            ).fetchone()
+            if row is None:
+                raise DurableStateError("acknowledgement targets an unknown run")
+            if row["state"] == "completed" and row["claim_state"] == "acknowledged":
+                return
+            if row["state"] != "awaiting_audio_ack" or row["claim_state"] != "awaiting_ack":
+                raise DurableStateError("run is not awaiting transcript acknowledgement")
+            attempts_total = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) FROM attempts
+                    WHERE user_id = ? AND logical_run_id = ?
+                    """,
+                    (pending.user_id, pending.logical_run_id),
+                ).fetchone()[0]
+            )
+            run_receipt = RunReceipt.from_dict(
+                {
+                    "schema_version": {"major": 1, "minor": 0},
+                    "receipt_id": f"run-receipt:{pending.logical_run_id}",
+                    "logical_run_id": pending.logical_run_id,
+                    "tick_id": pending.tick_id,
+                    "outcome": "completed",
+                    "attempts_total": attempts_total,
+                    "finalization_id": pending.finalization_id,
+                    "recorded_at_ms": recorded_at_ms,
+                    "extensions": {},
+                }
+            )
+            connection.execute(
+                """
+                INSERT INTO input_receipts (
+                    receipt_id, user_id, logical_run_id, ack_id,
+                    receipt_json, recorded_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    input_receipt.payload.receipt_id,
+                    pending.user_id,
+                    pending.logical_run_id,
+                    ack.ack_id,
+                    input_receipt.to_json(),
+                    recorded_at_ms,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO run_receipts (
+                    receipt_id, user_id, logical_run_id, receipt_json, recorded_at_ms
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    run_receipt.payload.receipt_id,
+                    pending.user_id,
+                    pending.logical_run_id,
+                    run_receipt.to_json(),
+                    recorded_at_ms,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE run_finalizations
+                SET phase = 'completed', source_ack_id = ?, finalization_json = ?,
+                    updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (
+                    ack.ack_id,
+                    finalization.to_json(),
+                    recorded_at_ms,
+                    pending.user_id,
+                    pending.logical_run_id,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE transcript_claims
+                SET state = 'acknowledged', ack_json = ?, updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (
+                    acknowledgement.to_json(),
+                    recorded_at_ms,
+                    pending.user_id,
+                    pending.logical_run_id,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE queue_items
+                SET state = 'completed', completed_at_ms = ?, updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (
+                    recorded_at_ms,
+                    recorded_at_ms,
+                    pending.user_id,
+                    pending.logical_run_id,
+                ),
+            )
+
+    def transcript_run_record(
+        self, *, user_id: str, logical_run_id: str
+    ) -> TranscriptRunRecord:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT q.state AS queue_state,
+                       COUNT(a.attempt_id) AS attempts_total,
+                       d.outcome AS decision_outcome,
+                       d.visible_action_intent_count,
+                       f.working_memory_outcome,
+                       f.phase AS finalization_phase,
+                       t.memory_version,
+                       t.ack_json,
+                       i.ack_id,
+                       i.receipt_id AS input_receipt_id,
+                       r.receipt_id AS run_receipt_id
+                FROM queue_items q
+                LEFT JOIN attempts a
+                  ON a.user_id = q.user_id AND a.logical_run_id = q.logical_run_id
+                LEFT JOIN decision_outcomes d
+                  ON d.user_id = q.user_id AND d.logical_run_id = q.logical_run_id
+                LEFT JOIN run_finalizations f
+                  ON f.user_id = q.user_id AND f.logical_run_id = q.logical_run_id
+                LEFT JOIN transcript_claims t
+                  ON t.user_id = q.user_id AND t.logical_run_id = q.logical_run_id
+                LEFT JOIN input_receipts i
+                  ON i.user_id = q.user_id AND i.logical_run_id = q.logical_run_id
+                LEFT JOIN run_receipts r
+                  ON r.user_id = q.user_id AND r.logical_run_id = q.logical_run_id
+                WHERE q.user_id = ? AND q.logical_run_id = ?
+                GROUP BY q.state, d.outcome, d.visible_action_intent_count,
+                         f.working_memory_outcome, f.phase, t.memory_version,
+                         t.ack_json, i.ack_id, i.receipt_id, r.receipt_id
+                """,
+                (user_id, logical_run_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(logical_run_id)
+        canonical_retained: bool | None = None
+        if row["ack_json"] is not None:
+            canonical_retained = bool(
+                TranscriptAck.from_json(row["ack_json"]).payload.canonical_transcript_retained
+            )
+        return TranscriptRunRecord(
+            queue_state=str(row["queue_state"]),
+            attempts_total=int(row["attempts_total"]),
+            decision_outcome=(
+                str(row["decision_outcome"])
+                if row["decision_outcome"] is not None
+                else None
+            ),
+            visible_action_intent_count=(
+                int(row["visible_action_intent_count"])
+                if row["visible_action_intent_count"] is not None
+                else None
+            ),
+            working_memory_outcome=(
+                str(row["working_memory_outcome"])
+                if row["working_memory_outcome"] is not None
+                else None
+            ),
+            memory_version=(
+                int(row["memory_version"])
+                if row["memory_version"] is not None
+                else None
+            ),
+            finalization_phase=(
+                str(row["finalization_phase"])
+                if row["finalization_phase"] is not None
+                else None
+            ),
+            ack_id=str(row["ack_id"]) if row["ack_id"] is not None else None,
+            input_receipt_id=(
+                str(row["input_receipt_id"])
+                if row["input_receipt_id"] is not None
+                else None
+            ),
+            run_receipt_id=(
+                str(row["run_receipt_id"])
+                if row["run_receipt_id"] is not None
+                else None
+            ),
+            canonical_transcript_retained=canonical_retained,
+        )
 
     def record_fault(
         self,
@@ -1045,6 +1792,23 @@ class DurableRunState:
             acknowledged_at_ms=int(row["acknowledged_at_ms"]),
         )
 
+    @staticmethod
+    def _stored_transcript_claim_from_row(row: sqlite3.Row) -> StoredTranscriptClaim:
+        claim = (
+            TranscriptClaim.from_json(row["claim_json"])
+            if row["claim_json"] is not None
+            else None
+        )
+        return StoredTranscriptClaim(
+            user_id=str(row["user_id"]),
+            tick_id=str(row["tick_id"]),
+            logical_run_id=str(row["logical_run_id"]),
+            claim_request_id=str(row["claim_request_id"]),
+            claim_id=(str(row["claim_id"]) if row["claim_id"] is not None else None),
+            claim=claim,
+            state=str(row["state"]),
+        )
+
 
 def diagnostics_as_dict(
     diagnostics: StateDiagnostics,
@@ -1066,11 +1830,14 @@ __all__ = [
     "DurableStateError",
     "LeaseDiagnostic",
     "LeasedRun",
+    "PendingTranscriptAck",
     "QueueDiagnostic",
     "QuarantineDiagnostic",
     "ReceiptConflict",
     "SCHEMA_VERSION",
     "StateDiagnostics",
+    "StoredTranscriptClaim",
+    "TranscriptRunRecord",
     "ToolReceiptRecord",
     "default_database_path",
     "diagnostics_as_dict",
