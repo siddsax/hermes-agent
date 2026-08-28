@@ -22,9 +22,10 @@ from hermes_constants import get_hermes_home
 from .contracts.runtime import Tick
 from .contracts.runtime import InputReceipt, RunFinalization, RunReceipt
 from .contracts.transcripts import TranscriptAck, TranscriptClaim
+from .working_memory import WorkingMemorySnapshot
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class DurableStateError(RuntimeError):
@@ -153,6 +154,25 @@ class TranscriptRunRecord:
     input_receipt_id: str | None
     run_receipt_id: str | None
     canonical_transcript_retained: bool | None
+
+
+@dataclass(frozen=True)
+class AgentRunInspection:
+    logical_run_id: str
+    attempt_id: str
+    provider: str
+    model: str
+    api_mode: str
+    reasoning_effort: str
+    decision_outcome: str
+    final_output: str
+    tool_discoveries: tuple[str, ...]
+    usage: dict[str, int]
+    stop_hook_outcome: str
+    stop_hook_cache_identity: dict[str, str]
+    memory_version: int
+    memory_token_count: int | None
+    recorded_at_ms: int
 
 
 def default_database_path() -> Path:
@@ -378,6 +398,57 @@ class DurableRunState:
                         FOREIGN KEY(logical_run_id) REFERENCES queue_items(logical_run_id)
                     );
                     PRAGMA user_version = 2;
+                    COMMIT;
+                    """
+                )
+                version = 2
+            if version == 2:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE working_memory_versions (
+                        user_id TEXT NOT NULL,
+                        version INTEGER NOT NULL,
+                        markdown TEXT NOT NULL,
+                        configured_model_token_count INTEGER,
+                        tokenizer_status TEXT NOT NULL,
+                        logical_run_id TEXT,
+                        committed_at_ms INTEGER NOT NULL,
+                        PRIMARY KEY (user_id, version)
+                    );
+                    INSERT INTO working_memory_versions (
+                        user_id, version, markdown, configured_model_token_count,
+                        tokenizer_status, logical_run_id, committed_at_ms
+                    )
+                    SELECT user_id, version, markdown, token_count,
+                           CASE WHEN token_count IS NULL
+                                THEN 'unresolved_fail_closed' ELSE 'exact' END,
+                           last_run_id, 0
+                    FROM working_memory_state;
+
+                    CREATE TABLE agent_run_inspections (
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        api_mode TEXT NOT NULL,
+                        reasoning_effort TEXT NOT NULL,
+                        decision_outcome TEXT NOT NULL,
+                        final_output TEXT NOT NULL,
+                        tool_discoveries_json TEXT NOT NULL,
+                        usage_json TEXT NOT NULL,
+                        stop_hook_outcome TEXT NOT NULL,
+                        stop_hook_cache_identity_json TEXT NOT NULL,
+                        memory_version INTEGER NOT NULL,
+                        memory_token_count INTEGER,
+                        recorded_at_ms INTEGER NOT NULL,
+                        PRIMARY KEY (user_id, logical_run_id),
+                        FOREIGN KEY(logical_run_id) REFERENCES queue_items(logical_run_id)
+                    );
+                    CREATE INDEX agent_run_inspections_recent
+                        ON agent_run_inspections(user_id, recorded_at_ms DESC);
+                    PRAGMA user_version = 3;
                     COMMIT;
                     """
                 )
@@ -821,6 +892,43 @@ class DurableRunState:
                 raise DurableStateError("claim response was not durable")
             return self._stored_transcript_claim_from_row(stored)
 
+    def working_memory_snapshot(self, user_id: str) -> WorkingMemorySnapshot:
+        """Load the one automatically injected profile-scoped memory document."""
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO working_memory_state (
+                    user_id, version, markdown, token_count, last_run_id
+                ) VALUES (?, 0, '', NULL, NULL)
+                """,
+                (user_id,),
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO working_memory_versions (
+                    user_id, version, markdown, configured_model_token_count,
+                    tokenizer_status, logical_run_id, committed_at_ms
+                ) VALUES (?, 0, '', NULL, 'unresolved_fail_closed', NULL, 0)
+                """,
+                (user_id,),
+            )
+            row = connection.execute(
+                """
+                SELECT version, markdown, token_count
+                FROM working_memory_state WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            raise DurableStateError("working memory singleton is missing")
+        return WorkingMemorySnapshot(
+            version=int(row["version"]),
+            markdown=str(row["markdown"]),
+            token_count=(
+                None if row["token_count"] is None else int(row["token_count"])
+            ),
+        )
+
     def finalize_transcript_no_action(
         self,
         *,
@@ -830,8 +938,13 @@ class DurableRunState:
         attempt_id: str,
         lease_token: str,
         now_ms: int,
+        expected_memory_version: int | None = None,
+        memory_markdown: str | None = None,
+        memory_token_count: int | None = None,
+        tokenizer_status: str = "unresolved_fail_closed",
+        agent_inspection: dict[str, Any] | None = None,
     ) -> PendingTranscriptAck:
-        """Atomically mark memory unchanged and enter the ack-only suffix."""
+        """Atomically finalize no-action memory and enter the ack-only suffix."""
         with self._transaction() as connection:
             item = self._require_active_owner(
                 connection,
@@ -870,13 +983,85 @@ class DurableRunState:
                 """,
                 (user_id,),
             )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO working_memory_versions (
+                    user_id, version, markdown, configured_model_token_count,
+                    tokenizer_status, logical_run_id, committed_at_ms
+                ) VALUES (?, 0, '', NULL, 'unresolved_fail_closed', NULL, 0)
+                """,
+                (user_id,),
+            )
             memory = connection.execute(
-                "SELECT version FROM working_memory_state WHERE user_id = ?",
+                """
+                SELECT version, markdown, token_count
+                FROM working_memory_state WHERE user_id = ?
+                """,
                 (user_id,),
             ).fetchone()
             if memory is None:
                 raise DurableStateError("working memory singleton is missing")
             memory_version = int(memory["version"])
+            if memory_markdown is None:
+                memory_token_count = (
+                    None
+                    if memory["token_count"] is None
+                    else int(memory["token_count"])
+                )
+            if (
+                expected_memory_version is not None
+                and memory_version != expected_memory_version
+            ):
+                raise DurableStateError(
+                    "working memory version changed during the Stop Hook"
+                )
+            memory_outcome = "unchanged"
+            if memory_markdown is not None:
+                if tokenizer_status != "exact" or memory_token_count is None:
+                    raise DurableStateError(
+                        "changed working memory requires exact configured-model tokens"
+                    )
+                if memory_token_count < 0 or memory_token_count > 16_000:
+                    raise DurableStateError(
+                        "changed working memory exceeds the 16K-token contract"
+                    )
+                memory_version += 1
+                connection.execute(
+                    """
+                    INSERT INTO working_memory_versions (
+                        user_id, version, markdown, configured_model_token_count,
+                        tokenizer_status, logical_run_id, committed_at_ms
+                    ) VALUES (?, ?, ?, ?, 'exact', ?, ?)
+                    """,
+                    (
+                        user_id,
+                        memory_version,
+                        memory_markdown,
+                        memory_token_count,
+                        logical_run_id,
+                        now_ms,
+                    ),
+                )
+                updated = connection.execute(
+                    """
+                    UPDATE working_memory_state
+                    SET version = ?, markdown = ?, token_count = ?, last_run_id = ?
+                    WHERE user_id = ? AND version = ?
+                    """,
+                    (
+                        memory_version,
+                        memory_markdown,
+                        memory_token_count,
+                        logical_run_id,
+                        user_id,
+                        memory_version - 1,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise DurableStateError(
+                        "working memory version changed during finalization"
+                    )
+                memory_outcome = "written"
             finalization_id = str(
                 uuid.uuid5(
                     uuid.NAMESPACE_URL,
@@ -896,33 +1081,34 @@ class DurableRunState:
                     "recovery_mode": "ack_only",
                     "inference_allowed": False,
                     "restream_allowed": False,
-                    "working_memory_outcome": "unchanged",
+                    "working_memory_outcome": memory_outcome,
                     "finalized_at_ms": None,
                     "extensions": {},
                 }
             )
-            connection.execute(
-                """
-                INSERT INTO working_memory_unchanged (
-                    marker_id, user_id, logical_run_id, expected_version,
-                    recorded_at_ms
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    f"memory-unchanged:{logical_run_id}",
-                    user_id,
-                    logical_run_id,
-                    memory_version,
-                    now_ms,
-                ),
-            )
-            connection.execute(
-                """
-                UPDATE working_memory_state SET last_run_id = ?
-                WHERE user_id = ? AND version = ?
-                """,
-                (logical_run_id, user_id, memory_version),
-            )
+            if memory_outcome == "unchanged":
+                connection.execute(
+                    """
+                    INSERT INTO working_memory_unchanged (
+                        marker_id, user_id, logical_run_id, expected_version,
+                        recorded_at_ms
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"memory-unchanged:{logical_run_id}",
+                        user_id,
+                        logical_run_id,
+                        memory_version,
+                        now_ms,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE working_memory_state SET last_run_id = ?
+                    WHERE user_id = ? AND version = ?
+                    """,
+                    (logical_run_id, user_id, memory_version),
+                )
             connection.execute(
                 """
                 INSERT INTO decision_outcomes (
@@ -943,17 +1129,60 @@ class DurableRunState:
                     finalization_id, user_id, logical_run_id, tick_id, phase,
                     working_memory_outcome, source_ack_id, finalization_json,
                     updated_at_ms
-                ) VALUES (?, ?, ?, ?, 'awaiting_audio_ack', 'unchanged', NULL, ?, ?)
+                ) VALUES (?, ?, ?, ?, 'awaiting_audio_ack', ?, NULL, ?, ?)
                 """,
                 (
                     finalization_id,
                     user_id,
                     logical_run_id,
                     item["tick_id"],
+                    memory_outcome,
                     finalization.to_json(),
                     now_ms,
                 ),
             )
+            if agent_inspection is not None:
+                required = {
+                    "provider",
+                    "model",
+                    "api_mode",
+                    "reasoning_effort",
+                    "final_output",
+                    "tool_discoveries",
+                    "usage",
+                    "stop_hook_outcome",
+                    "stop_hook_cache_identity",
+                }
+                if set(agent_inspection) != required:
+                    raise DurableStateError("agent inspection fields are incomplete")
+                connection.execute(
+                    """
+                    INSERT INTO agent_run_inspections (
+                        user_id, logical_run_id, attempt_id, provider, model,
+                        api_mode, reasoning_effort, decision_outcome, final_output,
+                        tool_discoveries_json, usage_json, stop_hook_outcome,
+                        stop_hook_cache_identity_json, memory_version,
+                        memory_token_count, recorded_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'no_action', ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        logical_run_id,
+                        attempt_id,
+                        str(agent_inspection["provider"]),
+                        str(agent_inspection["model"]),
+                        str(agent_inspection["api_mode"]),
+                        str(agent_inspection["reasoning_effort"]),
+                        str(agent_inspection["final_output"]),
+                        json.dumps(agent_inspection["tool_discoveries"], separators=(",", ":")),
+                        json.dumps(agent_inspection["usage"], separators=(",", ":"), sort_keys=True),
+                        str(agent_inspection["stop_hook_outcome"]),
+                        json.dumps(agent_inspection["stop_hook_cache_identity"], separators=(",", ":"), sort_keys=True),
+                        memory_version,
+                        memory_token_count,
+                        now_ms,
+                    ),
+                )
             connection.execute(
                 """
                 UPDATE transcript_claims
@@ -1069,6 +1298,17 @@ class DurableRunState:
                 "extensions": {},
             }
         )
+        with self._connect() as connection:
+            outcome_row = connection.execute(
+                """
+                SELECT working_memory_outcome FROM run_finalizations
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (pending.user_id, pending.logical_run_id),
+            ).fetchone()
+        if outcome_row is None:
+            raise DurableStateError("transcript finalization is missing")
+        memory_outcome = str(outcome_row["working_memory_outcome"])
         finalization = RunFinalization.from_dict(
             {
                 "schema_version": {"major": 1, "minor": 0},
@@ -1082,7 +1322,7 @@ class DurableRunState:
                 "recovery_mode": "ack_only",
                 "inference_allowed": False,
                 "restream_allowed": False,
-                "working_memory_outcome": "unchanged",
+                "working_memory_outcome": memory_outcome,
                 "finalized_at_ms": recorded_at_ms,
                 "extensions": {},
             }
@@ -1282,6 +1522,50 @@ class DurableRunState:
                 else None
             ),
             canonical_transcript_retained=canonical_retained,
+        )
+
+    def inspect_agent_run(
+        self, *, user_id: str, logical_run_id: str
+    ) -> AgentRunInspection:
+        """Read one explicit model/tool/receipt/Stop-Hook diagnostic record."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM agent_run_inspections
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (user_id, logical_run_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(logical_run_id)
+        return AgentRunInspection(
+            logical_run_id=str(row["logical_run_id"]),
+            attempt_id=str(row["attempt_id"]),
+            provider=str(row["provider"]),
+            model=str(row["model"]),
+            api_mode=str(row["api_mode"]),
+            reasoning_effort=str(row["reasoning_effort"]),
+            decision_outcome=str(row["decision_outcome"]),
+            final_output=str(row["final_output"]),
+            tool_discoveries=tuple(json.loads(row["tool_discoveries_json"])),
+            usage={
+                str(key): int(value)
+                for key, value in json.loads(row["usage_json"]).items()
+            },
+            stop_hook_outcome=str(row["stop_hook_outcome"]),
+            stop_hook_cache_identity={
+                str(key): str(value)
+                for key, value in json.loads(
+                    row["stop_hook_cache_identity_json"]
+                ).items()
+            },
+            memory_version=int(row["memory_version"]),
+            memory_token_count=(
+                None
+                if row["memory_token_count"] is None
+                else int(row["memory_token_count"])
+            ),
+            recorded_at_ms=int(row["recorded_at_ms"]),
         )
 
     def record_fault(
@@ -1824,6 +2108,7 @@ def diagnostics_as_dict(
 
 
 __all__ = [
+    "AgentRunInspection",
     "AttemptDiagnostic",
     "CheckpointRecord",
     "DurableRunState",
