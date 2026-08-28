@@ -9,7 +9,7 @@ import json
 import threading
 import time
 from typing import Any, Callable, Iterator, Mapping, Protocol, cast
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 import uuid
 
 import httpx
@@ -76,6 +76,14 @@ class BackgroundMessagePort(Protocol):
     def deliver(self, intent: NotificationIntent) -> NotificationOutcome: ...
 
 
+class StandaloneNotificationPort(Protocol):
+    def permission(self) -> NotificationPermission: ...
+
+    def deliver_standalone(self, intent: NotificationIntent) -> NotificationOutcome: ...
+
+    def standalone_receipt(self, action_id: str) -> NotificationOutcome | None: ...
+
+
 class BackendCommunicationClient:
     """Authenticated client for the backend's closed communication helpers."""
 
@@ -139,6 +147,48 @@ class BackendCommunicationClient:
         ):
             raise ValueError("backend returned a mismatched background-message outcome")
         return outcome
+
+    def deliver_standalone(self, intent: NotificationIntent) -> NotificationOutcome:
+        response = self._client.post(
+            "/_local-hermes/private/v1/communications/standalone-notification",
+            headers=self._headers(),
+            json=intent.to_dict(),
+        )
+        response.raise_for_status()
+        outcome = NotificationOutcome.from_dict(self._json_object(response))
+        self._validate_standalone_outcome(intent, outcome)
+        return outcome
+
+    def standalone_receipt(self, action_id: str) -> NotificationOutcome | None:
+        response = self._client.get(
+            "/_local-hermes/private/v1/communications/standalone-notification/"
+            + quote(action_id, safe=""),
+            headers=self._headers(),
+        )
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        outcome = NotificationOutcome.from_dict(self._json_object(response))
+        if (
+            outcome.payload.action_id != action_id
+            or outcome.payload.communication_kind != "standalone_notification"
+            or outcome.payload.persisted_message_id is not None
+        ):
+            raise ValueError("backend returned a mismatched standalone receipt")
+        return outcome
+
+    @staticmethod
+    def _validate_standalone_outcome(
+        intent: NotificationIntent, outcome: NotificationOutcome
+    ) -> None:
+        payload = outcome.payload
+        if (
+            payload.action_id != intent.payload.action_id
+            or payload.communication_kind != "standalone_notification"
+            or payload.persisted_message_id is not None
+            or payload.allowance_consumed != (payload.outcome == "accepted")
+        ):
+            raise ValueError("backend returned a mismatched standalone outcome")
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -283,7 +333,9 @@ class CommunicationToolBinding:
     def reconcile_due(self, user_id: str) -> tuple[str, ...]:
         """Retry transport only; this never starts or resumes model reasoning."""
         completed: list[str] = []
-        for record in self._dispatcher.pending_actions(user_id):
+        for record in self._dispatcher.pending_actions(
+            user_id, action_kind="background_message"
+        ):
             reconciled = self._deliver(record)
             if reconciled.state == "succeeded":
                 completed.append(reconciled.action_id)
@@ -314,6 +366,7 @@ class CommunicationToolBinding:
                 "allowance": allowance,
             })
         assert record.outcome is not None and record.receipt is not None
+        assert record.assistant_message_id is not None
         outcome = record.outcome.payload
         return self._json({
             "ok": True,
@@ -373,4 +426,5 @@ __all__ = [
     "COMMUNICATION_STATUS_TOOL_SCHEMA",
     "COMMUNICATION_TOOLSET",
     "CommunicationToolBinding",
+    "StandaloneNotificationPort",
 ]

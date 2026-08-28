@@ -48,6 +48,7 @@ from .speaker_mappings import (
     SpeakerMappingInspectionToolBinding,
     SpeakerMappingToolBinding,
 )
+from .standalone_notifications import StandaloneNotificationToolBinding
 from .transcript_agent import TranscriptAgentFinalizer, build_real_transcript_runtime
 
 
@@ -124,6 +125,17 @@ def build_product_p0_controller(
         dispatcher=ActionDispatcher(store.run_state),
         backend=communications,
     )
+    notification_binding = StandaloneNotificationToolBinding(
+        dispatcher=ActionDispatcher(store.run_state),
+        backend=communications,
+    )
+
+    def communication_context(user_id: str) -> dict[str, object]:
+        return {
+            **communication_binding.prompt_context(user_id),
+            **notification_binding.prompt_context(user_id),
+        }
+
     transcript_runtime = build_real_transcript_runtime(
         store.run_state,
         firebase_uid=private_config.firebase_uid,
@@ -131,12 +143,13 @@ def build_product_p0_controller(
             interaction_binding,
             speaker_binding,
             communication_binding,
+            notification_binding,
             SpeakerMappingInspectionToolBinding(
                 state=store.run_state,
                 user_id=private_config.firebase_uid,
             ),
         ),
-        communication_context=communication_binding.prompt_context,
+        communication_context=communication_context,
     )
     transcript_input = TranscriptInputPump(
         store.run_state,
@@ -154,6 +167,7 @@ def build_product_p0_controller(
 
     def scan_background(user_id: str, coordinator: RunCoordinator) -> object:
         communication_binding.reconcile_due(user_id)
+        notification_binding.reconcile_due(user_id)
         return speaker_input.enqueue_next(user_id, coordinator=coordinator)
 
     controller = P0ChatController(
@@ -168,16 +182,16 @@ def build_product_p0_controller(
                     store.run_state,
                     agent=transcript_runtime.agent,
                     binding=interaction_binding,
-                    communication_context=communication_binding.prompt_context,
+                    communication_context=communication_context,
                 ),
                 "p1_speaker": RealSpeakerMappingAgentRuntime(
                     store.run_state,
                     agent=transcript_runtime.agent,
                     binding=speaker_binding,
-                    communication_context=communication_binding.prompt_context,
+                    communication_context=communication_context,
                 ),
             },
-            context_bindings=(communication_binding,),
+            context_bindings=(communication_binding, notification_binding),
         ),
         background_input=BackgroundInputRouter({
             "p1_transcript": transcript_input,

@@ -804,6 +804,7 @@ class DurableRunState:
                 )
                 version = 7
             if version == 7:
+                connection.execute("PRAGMA foreign_keys = OFF")
                 connection.executescript(
                     """
                     BEGIN IMMEDIATE;
@@ -817,10 +818,98 @@ class DurableRunState:
                         ADD COLUMN successful_action_receipts_json TEXT NOT NULL DEFAULT '[]';
                     ALTER TABLE checkpoints
                         ADD COLUMN partial_visible_assistant_output TEXT NOT NULL DEFAULT '';
+
+                    ALTER TABLE communication_allowance_ledger
+                        RENAME TO communication_allowance_ledger_v7;
+                    ALTER TABLE communication_actions
+                        RENAME TO communication_actions_v7;
+                    DROP INDEX communication_actions_due;
+                    DROP INDEX communication_allowance_by_user;
+
+                    CREATE TABLE communication_actions (
+                        action_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL,
+                        tick_id TEXT NOT NULL,
+                        effect_ordinal INTEGER NOT NULL
+                            CHECK (effect_ordinal BETWEEN 1 AND 2),
+                        action_kind TEXT NOT NULL
+                            CHECK (action_kind IN (
+                                'background_message',
+                                'standalone_notification'
+                            )),
+                        intent_fingerprint TEXT NOT NULL,
+                        assistant_message_id TEXT,
+                        title TEXT NOT NULL,
+                        message_text TEXT NOT NULL,
+                        navigation_template TEXT,
+                        action_intent_json TEXT NOT NULL,
+                        notification_intent_json TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        outcome_json TEXT,
+                        receipt_json TEXT,
+                        last_error_code TEXT,
+                        created_at_ms INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        UNIQUE(user_id, logical_run_id, effect_ordinal),
+                        UNIQUE(user_id, assistant_message_id),
+                        FOREIGN KEY(logical_run_id)
+                            REFERENCES queue_items(logical_run_id)
+                    );
+                    CREATE INDEX communication_actions_due
+                        ON communication_actions(
+                            user_id, action_kind, state, updated_at_ms
+                        );
+
+                    INSERT INTO communication_actions (
+                        action_id, user_id, logical_run_id, tick_id,
+                        effect_ordinal, action_kind, intent_fingerprint,
+                        assistant_message_id, title, message_text,
+                        navigation_template, action_intent_json,
+                        notification_intent_json, state, outcome_json,
+                        receipt_json, last_error_code, created_at_ms,
+                        updated_at_ms
+                    )
+                    SELECT
+                        action_id, user_id, logical_run_id, tick_id,
+                        effect_ordinal, 'background_message',
+                        intent_fingerprint, assistant_message_id, 'Thine',
+                        message_text, 'route.chat', action_intent_json,
+                        notification_intent_json, state, outcome_json,
+                        receipt_json, last_error_code, created_at_ms,
+                        updated_at_ms
+                    FROM communication_actions_v7;
+
+                    CREATE TABLE communication_allowance_ledger (
+                        action_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        reserved_at_ms INTEGER NOT NULL,
+                        consumed_at_ms INTEGER,
+                        released_at_ms INTEGER,
+                        FOREIGN KEY(action_id)
+                            REFERENCES communication_actions(action_id)
+                    );
+                    CREATE INDEX communication_allowance_by_user
+                        ON communication_allowance_ledger(
+                            user_id, state, reserved_at_ms DESC
+                        );
+                    INSERT INTO communication_allowance_ledger
+                    SELECT * FROM communication_allowance_ledger_v7;
+
+                    DROP TABLE communication_allowance_ledger_v7;
+                    DROP TABLE communication_actions_v7;
                     PRAGMA user_version = 8;
                     COMMIT;
                     """
                 )
+                connection.execute("PRAGMA foreign_keys = ON")
+                violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+                if violations:
+                    raise DurableStateError(
+                        "communication migration left invalid foreign keys"
+                    )
+                version = 8
         except BaseException:
             connection.rollback()
             raise
