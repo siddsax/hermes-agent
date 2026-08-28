@@ -103,6 +103,8 @@ class CachedStopHookContextPort(Protocol):
 
     def continue_stop_hook(self, request: StopHookRequest) -> WorkingMemoryProposal: ...
 
+    def count_candidate_tokens(self, candidate: str) -> int: ...
+
 
 class WorkingMemoryStorePort(Protocol):
     def commit(
@@ -170,6 +172,7 @@ class HermesCachedStopHookContext:
             "output_tokens": 0,
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
         }
 
     @property
@@ -207,7 +210,11 @@ class HermesCachedStopHookContext:
         }
         prompt = (
             "Stop Hook: update Working Memory only if something worth remembering "
-            "changed during the completed invocation. Return one JSON object with "
+            "changed during the completed invocation. Keep only recent agent actions, "
+            "commitments, unresolved threads, expected follow-ups, and at most the "
+            "last ten Tick summaries so the next invocation avoids repetition. Do "
+            "not copy transcript/source facts into memory. Compact resolved routine "
+            "history before the target. Return one JSON object with "
             "exact keys worth_remembering (boolean) and markdown (string or null). "
             "Do not call tools. Input:"
             + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -264,6 +271,74 @@ class HermesCachedStopHookContext:
                 "Stop Hook unchanged decision requires null markdown"
             )
         return WorkingMemoryProposal.unchanged()
+
+    def count_candidate_tokens(self, candidate: str) -> int:
+        """Ask the configured provider to tokenize one exact visible candidate.
+
+        Codex Responses reports cumulative ``output_tokens`` and the exact hidden
+        ``reasoning_tokens`` subset.  A candidate is measurable only when it is
+        the sole visible output and round-trips byte-for-byte; otherwise this
+        fails closed instead of treating a local estimate as model tokens.
+        """
+        before = dict(self._last_usage)
+        history_before = len(self._conversation_history)
+        prompt = (
+            "Configured-model token measurement. Return the text between the "
+            "candidate delimiters byte-for-byte as your entire visible response. "
+            "Do not add delimiters, Markdown fences, commentary, or tool calls.\n"
+            "<candidate>"
+            + candidate
+            + "</candidate>"
+        )
+        prior_persist_disabled = bool(
+            getattr(self._agent, "_persist_disabled", False)
+        )
+        self._agent._persist_disabled = True
+        try:
+            from agent.tool_execution_scope import deny_tool_execution
+
+            with deny_tool_execution("Working Memory token measurement is read-only"):
+                raw = self._agent.run_conversation(
+                    prompt,
+                    conversation_history=list(self._conversation_history),
+                )
+        finally:
+            self._agent._persist_disabled = prior_persist_disabled
+        measured = {
+            key: int(raw.get(key) or 0)
+            for key in self._last_usage
+        }
+        messages = raw.get("messages")
+        if isinstance(messages, list):
+            self._conversation_history = list(messages)
+        self._last_usage = measured
+        new_messages = (
+            list(messages[history_before:]) if isinstance(messages, list) else []
+        )
+        if str(raw.get("final_response") or "") != candidate:
+            raise WorkingMemoryTokenizerUnavailable(
+                "configured model did not reproduce the Working Memory candidate "
+                "exactly for authoritative token measurement"
+            )
+        if raw.get("response_transformed") is True:
+            raise WorkingMemoryTokenizerUnavailable(
+                "configured model response was transformed after token accounting"
+            )
+        if raw.get("api_calls") not in {None, 1} or any(
+            isinstance(message, dict) and message.get("role") == "tool"
+            for message in new_messages
+        ):
+            raise WorkingMemoryTokenizerUnavailable(
+                "configured-model token measurement was not one tool-free response"
+            )
+        output_delta = measured["output_tokens"] - before["output_tokens"]
+        reasoning_delta = measured["reasoning_tokens"] - before["reasoning_tokens"]
+        visible_tokens = output_delta - reasoning_delta
+        if output_delta < 0 or reasoning_delta < 0 or visible_tokens < 0:
+            raise WorkingMemoryTokenizerUnavailable(
+                "configured model returned inconsistent cumulative token usage"
+            )
+        return visible_tokens
 
 
 class StopHookRunner:
@@ -322,9 +397,9 @@ class StopHookRunner:
         markdown = proposal.markdown
         byte_count = utf8_byte_size(markdown)
         token_count = (
-            self._token_counter(markdown)
-            if self._token_counter is not None
-            else None
+            None
+            if byte_count > MAX_WORKING_MEMORY_UTF8_BYTES
+            else self._measure_tokens(markdown, context, identity)
         )
         if byte_count > MAX_WORKING_MEMORY_UTF8_BYTES or (
             token_count is not None and token_count > MAX_WORKING_MEMORY_TOKENS
@@ -344,11 +419,7 @@ class StopHookRunner:
                 )
             markdown = proposal.markdown
             byte_count = utf8_byte_size(markdown)
-            token_count = (
-                self._token_counter(markdown)
-                if self._token_counter is not None
-                else None
-            )
+            token_count = self._measure_tokens(markdown, context, identity)
             if byte_count > COMPACTION_TARGET_UTF8_BYTES:
                 raise WorkingMemoryLimitError(
                     f"compacted working memory is {byte_count} UTF-8 bytes; "
@@ -384,6 +455,28 @@ class StopHookRunner:
             version,
             token_count,
         )
+
+    def _measure_tokens(
+        self,
+        markdown: str,
+        context: CachedStopHookContextPort,
+        expected_identity: CacheIdentity,
+    ) -> int:
+        if self._token_counter is not None:
+            return self._token_counter(markdown)
+        counter = getattr(context, "count_candidate_tokens", None)
+        if not callable(counter):
+            raise WorkingMemoryTokenizerUnavailable(
+                "configured-model tokenizer is unavailable; refusing to store "
+                "UTF-8 bytes as token_count"
+            )
+        count = counter(markdown)
+        self._require_same_context(context, expected_identity)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise WorkingMemoryTokenizerUnavailable(
+                "configured-model token measurement returned an invalid count"
+            )
+        return count
 
     @staticmethod
     def _require_same_context(

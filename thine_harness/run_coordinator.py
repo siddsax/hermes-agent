@@ -103,14 +103,19 @@ class InvocationOutcome:
     remaining_work: str = ""
     failure_code: str | None = None
     decision_outcome: Literal["no_action"] | None = None
+    finalization_context: Any | None = None
 
     @classmethod
     def completed(cls) -> "InvocationOutcome":
         return cls("completed")
 
     @classmethod
-    def no_action(cls) -> "InvocationOutcome":
-        return cls("completed", decision_outcome="no_action")
+    def no_action(cls, *, finalization_context: Any | None = None) -> "InvocationOutcome":
+        return cls(
+            "completed",
+            decision_outcome="no_action",
+            finalization_context=finalization_context,
+        )
 
     @classmethod
     def checkpointed(

@@ -20,6 +20,13 @@ from thine_harness.input_pump import (
 from thine_harness.run_coordinator import RunCoordinator
 from thine_harness.run_finalizer import TranscriptNoActionFinalizer
 from thine_harness.run_state import DurableRunState
+from thine_harness.transcript_agent import (
+    INSPECT_CLAIM_TOOL_NAME,
+    RealTranscriptAgentRuntime,
+    RunInspectionToolBinding,
+    TranscriptAgentFinalizer,
+    TranscriptClaimToolBinding,
+)
 
 
 def _claimed_transcript(
@@ -410,3 +417,199 @@ def test_backend_transcript_client_uses_only_explicit_loopback_helpers():
     ]
     assert all(request.headers["authorization"] == "Bearer private-token" for request in requests)
     assert all(request.headers["x-thine-firebase-uid"] == "daily-user" for request in requests)
+
+
+class _FakeWireTransport:
+    def convert_tools(self, tools):
+        return list(tools)
+
+
+class _RealGPTContractAgent:
+    provider = "openai-codex"
+    model = "gpt-5.6-sol"
+    api_mode = "codex_responses"
+    reasoning_config = {"enabled": True, "effort": "medium"}
+    context_compressor = type("Context", (), {"context_length": 272_000})()
+    skip_memory = True
+    skip_background_review = True
+    _fallback_chain = []
+    _fallback_model = None
+    _cached_system_prompt = "stable harness prefix"
+    ephemeral_system_prompt = "stable transcript policy"
+
+    def __init__(self):
+        self.session_id = "thine-background:daily-user"
+        self.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": name,
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+            for name in ("tool_search", "tool_describe", "tool_call")
+        ]
+        self._persist_disabled = False
+        self.primary_prompts: list[str] = []
+        self.hook_count = 0
+        self.measurement_count = 0
+        self._output_tokens = 0
+        self._reasoning_tokens = 0
+
+    def _get_transport(self):
+        return _FakeWireTransport()
+
+    def run_conversation(self, prompt, **kwargs):
+        history = list(kwargs.get("conversation_history") or [])
+        if prompt.startswith("Stop Hook:"):
+            self.hook_count += 1
+            self._output_tokens += 20
+            self._reasoning_tokens += 12
+            response = (
+                '{"worth_remembering":true,"markdown":'
+                '"# Recent operations\\n\\n- Inspected one transcript Tick and chose no action."}'
+                if self.hook_count == 1
+                else '{"worth_remembering":false,"markdown":null}'
+            )
+            return {
+                "final_response": response,
+                "completed": True,
+                "messages": [*history, {"role": "assistant", "content": response}],
+                "output_tokens": self._output_tokens,
+                "reasoning_tokens": self._reasoning_tokens,
+            }
+        if prompt.startswith("Configured-model token measurement."):
+            self.measurement_count += 1
+            candidate = "# Recent operations\n\n- Inspected one transcript Tick and chose no action."
+            self._output_tokens += 33
+            self._reasoning_tokens += 13
+            return {
+                "final_response": candidate,
+                "completed": True,
+                "messages": [*history, {"role": "assistant", "content": candidate}],
+                "output_tokens": self._output_tokens,
+                "reasoning_tokens": self._reasoning_tokens,
+            }
+        self.primary_prompts.append(prompt)
+        callback = kwargs.get("stream_callback")
+        if callback is not None:
+            callback("private progress")
+        self._output_tokens += 10
+        self._reasoning_tokens += 4
+        messages = (
+            [
+                {"role": "tool", "tool_name": "tool_search", "content": "found"},
+                {"role": "tool", "tool_name": "tool_describe", "content": "schema"},
+                {
+                    "role": "tool",
+                    "tool_name": INSPECT_CLAIM_TOOL_NAME,
+                    "content": "claim",
+                },
+                {
+                    "role": "assistant",
+                    "content": "No user-visible action is needed.",
+                },
+            ]
+            if len(self.primary_prompts) == 1
+            else [
+                {
+                    "role": "assistant",
+                    "content": "No tool or user-visible action is needed.",
+                }
+            ]
+        )
+        return {
+            "final_response": "No user-visible action is needed.",
+            "messages": messages,
+            "completed": True,
+            "failed": False,
+            "interrupted": False,
+            "input_tokens": 100 * len(self.primary_prompts),
+            "output_tokens": self._output_tokens,
+            "reasoning_tokens": self._reasoning_tokens,
+            "cache_read_tokens": 80,
+            "cache_write_tokens": 0,
+        }
+
+
+def test_real_gpt_transcript_path_commits_memory_then_loads_it_on_next_tick(
+    tmp_path: Path,
+):
+    database = tmp_path / "real-gpt.sqlite3"
+    transcript = _TranscriptPort()
+    state = DurableRunState(database)
+    pump = TranscriptInputPump(state, transcript_port=transcript, clock_ms=lambda: 100)
+    agent = _RealGPTContractAgent()
+    runtime = RealTranscriptAgentRuntime(
+        state,
+        agent=agent,
+        binding=TranscriptClaimToolBinding(),
+    )
+    coordinator = RunCoordinator(
+        state,
+        runtime=runtime,
+        feature_port=_NoFeatureEffects(),
+        input_port=pump,
+        finalizer=TranscriptAgentFinalizer(
+            state, transcript_port=transcript, clock_ms=lambda: 100
+        ),
+        clock_ms=lambda: 100,
+    )
+
+    pump.enqueue_availability(
+        user_id="daily-user",
+        source_hint="aggregation-buffer-ready:901",
+        occurred_at_ms=90,
+        received_at_ms=95,
+    )
+    first = coordinator.run_next("daily-user")
+
+    assert first is not None and first.status == "completed"
+    memory = state.working_memory_snapshot("daily-user")
+    assert memory.version == 1
+    assert memory.token_count == 20
+    assert "Inspected one transcript Tick" in memory.markdown
+    inspection = state.inspect_agent_run(
+        user_id="daily-user", logical_run_id=first.logical_run_id
+    )
+    assert inspection.model == "gpt-5.6-sol"
+    assert inspection.reasoning_effort == "medium"
+    assert inspection.decision_outcome == "no_action"
+    assert inspection.stop_hook_outcome == "committed"
+    assert inspection.tool_discoveries == (
+        "tool_search",
+        "tool_describe",
+        INSPECT_CLAIM_TOOL_NAME,
+    )
+    assert inspection.memory_version == 1
+    assert inspection.memory_token_count == 20
+    inspected_receipts = __import__("json").loads(
+        RunInspectionToolBinding(state=state, user_id="daily-user").inspect(
+            {"logical_run_id": first.logical_run_id}
+        )
+    )
+    assert inspected_receipts["ok"] is True
+    assert inspected_receipts["agent_run"]["model"] == "gpt-5.6-sol"
+    assert inspected_receipts["transcript_receipt"]["run_receipt_id"] == (
+        f"run-receipt:{first.logical_run_id}"
+    )
+
+    pump.enqueue_availability(
+        user_id="daily-user",
+        source_hint="aggregation-buffer-ready:902",
+        occurred_at_ms=101,
+        received_at_ms=102,
+    )
+    second = coordinator.run_next("daily-user")
+
+    assert second is not None and second.status == "completed"
+    assert "Inspected one transcript Tick" in agent.primary_prompts[1]
+    assert state.working_memory_snapshot("daily-user").version == 1
+    second_inspection = state.inspect_agent_run(
+        user_id="daily-user", logical_run_id=second.logical_run_id
+    )
+    assert second_inspection.tool_discoveries == ()
+    assert second_inspection.decision_outcome == "no_action"
+    assert agent.hook_count == 2
+    assert agent.measurement_count == 1

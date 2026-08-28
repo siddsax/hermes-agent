@@ -145,7 +145,112 @@ def test_aiagent_stop_hook_continues_on_same_agent_history_and_cache_identity():
         "output_tokens": 12,
         "cache_read_tokens": 1024,
         "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
     }
+
+
+def test_aiagent_candidate_measurement_subtracts_reasoning_and_requires_exact_text():
+    candidate = "# Recent operations\n\n- Asked once; do not repeat."
+
+    class _MeasuringAgent(_CachedAIAgent):
+        def __init__(self):
+            super().__init__()
+            self.call_count = 0
+
+        def run_conversation(self, prompt, **kwargs):
+            self.call_count += 1
+            if self.call_count == 1:
+                return {
+                    "final_response": (
+                        '{"worth_remembering":true,"markdown":'
+                        + __import__("json").dumps(candidate)
+                        + "}"
+                    ),
+                    "input_tokens": 100,
+                    "output_tokens": 30,
+                    "reasoning_tokens": 20,
+                    "cache_read_tokens": 50,
+                    "cache_write_tokens": 0,
+                    "messages": list(kwargs["conversation_history"]),
+                }
+            return {
+                "final_response": candidate,
+                "input_tokens": 200,
+                "output_tokens": 87,
+                "reasoning_tokens": 52,
+                "cache_read_tokens": 150,
+                "cache_write_tokens": 0,
+                "messages": list(kwargs["conversation_history"]),
+            }
+
+    agent = _MeasuringAgent()
+    context = HermesCachedStopHookContext(
+        agent=agent,
+        conversation_history=[],
+        cache_identity=CacheIdentity.from_request(
+            session_id=agent.session_id,
+            prompt_cache_key="pck-measured",
+            tools=agent.tools,
+        ),
+    )
+    store = _MemoryStore()
+
+    outcome = StopHookRunner().finalize(
+        run_id="run-measured",
+        current=WorkingMemorySnapshot(0, "", None),
+        context=context,
+        store=store,
+        interrupted=False,
+    )
+
+    assert outcome.token_count == (87 - 30) - (52 - 20) == 25
+    assert store.commits == [(0, candidate, 25, "run-measured")]
+
+
+def test_aiagent_candidate_measurement_fails_closed_on_non_exact_reproduction():
+    class _NonExactAgent(_CachedAIAgent):
+        def __init__(self):
+            super().__init__()
+            self.call_count = 0
+
+        def run_conversation(self, prompt, **kwargs):
+            self.call_count += 1
+            if self.call_count == 1:
+                return {
+                    "final_response": (
+                        '{"worth_remembering":true,"markdown":"exact candidate"}'
+                    ),
+                    "messages": list(kwargs["conversation_history"]),
+                }
+            return {
+                "final_response": "exact candidate\n",
+                "output_tokens": 3,
+                "reasoning_tokens": 0,
+                "messages": list(kwargs["conversation_history"]),
+            }
+
+    agent = _NonExactAgent()
+    context = HermesCachedStopHookContext(
+        agent=agent,
+        conversation_history=[],
+        cache_identity=CacheIdentity.from_request(
+            session_id=agent.session_id,
+            prompt_cache_key="pck-non-exact",
+            tools=agent.tools,
+        ),
+    )
+    store = _MemoryStore()
+
+    with pytest.raises(WorkingMemoryTokenizerUnavailable, match="did not reproduce"):
+        StopHookRunner().finalize(
+            run_id="run-non-exact",
+            current=WorkingMemorySnapshot(0, "", None),
+            context=context,
+            store=store,
+            interrupted=False,
+        )
+
+    assert store.commits == []
 
 
 @pytest.mark.parametrize(
