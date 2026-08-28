@@ -110,7 +110,9 @@ class InvocationOutcome:
         return cls("completed")
 
     @classmethod
-    def no_action(cls, *, finalization_context: Any | None = None) -> "InvocationOutcome":
+    def no_action(
+        cls, *, finalization_context: Any | None = None
+    ) -> "InvocationOutcome":
         return cls(
             "completed",
             decision_outcome="no_action",
@@ -202,7 +204,16 @@ class RunFinalizationResult:
     tick_id: str
     logical_run_id: str
     attempt_ordinal: int
-    status: Literal["completed", "awaiting_audio_ack"]
+    status: Literal[
+        "completed",
+        "awaiting_audio_ack",
+        "awaiting_reply_persistence",
+        "memory_finalization_pending",
+        "terminal_event_pending",
+        "failed_terminal",
+        "quarantine_pending",
+        "quarantined",
+    ]
 
 
 class RunFinalizerPort(Protocol):
@@ -390,6 +401,11 @@ class RunCoordinator:
 
     def enqueue(self, tick: Tick) -> str:
         tick_id = self._state.enqueue(tick, now_ms=self._clock_ms())
+        self.notify_enqueued(tick)
+        return tick_id
+
+    def notify_enqueued(self, tick: Tick) -> None:
+        """Signal priority after another module atomically persisted a Tick."""
         payload = tick.payload
         if payload.kind == "p0_user_chat":
             with self._active_lock:
@@ -398,7 +414,6 @@ class RunCoordinator:
                 active_user, active_kind, control = active
                 if active_user == payload.user_id and active_kind != "p0_user_chat":
                     control.request_preemption("p0_user_tick")
-        return tick_id
 
     def run_next(self, user_id: str) -> RunResult | None:
         if not self._invocation_lock.acquire(blocking=False):

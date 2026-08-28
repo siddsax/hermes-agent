@@ -14,6 +14,7 @@ from thine_harness.contracts.chat import (
     FinalReplyReceipt,
     QueueReceipt,
 )
+from thine_harness.contracts.control import HermesControlRequest
 from thine_harness.p0_chat import (
     BackendPrivateChatClient,
     P0ChatController,
@@ -88,6 +89,15 @@ class _AlwaysFailingSession:
         )
 
 
+class _CountingSession(_CompletingSession):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke(self, request, *, emit, control) -> AgentTurnResult:
+        self.calls += 1
+        return super().invoke(request, emit=emit, control=control)
+
+
 class _RetryingBackend:
     def __init__(self, store: P0ChatStore) -> None:
         self.store = store
@@ -149,6 +159,58 @@ class _HookStatusRuntime(HermesInvocationRuntime):
         return CONFIGURED_MODEL_TOKENIZER_LIMITATION
 
 
+class _FailOnceHookRuntime(HermesInvocationRuntime):
+    def __init__(self, trace: list[str]) -> None:
+        self.session = _CountingSession()
+        super().__init__(
+            session=self.session,
+            config=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+        )
+        self.trace = trace
+        self.finalized = 0
+
+    def finalize_working_memory(self, **kwargs) -> None:
+        self.finalized += 1
+        self.trace.append(f"hook:{self.finalized}")
+        if self.finalized == 1:
+            raise RuntimeError("injected hook failure")
+        kwargs["store"].mark_unchanged(
+            expected_version=kwargs["current"].version,
+            run_id=kwargs["run_id"],
+        )
+
+
+class _FailingHookRuntime(HermesInvocationRuntime):
+    def __init__(self) -> None:
+        self.session = _CountingSession()
+        self.hook_called = threading.Event()
+        super().__init__(
+            session=self.session,
+            config=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+        )
+
+    def finalize_working_memory(self, **_kwargs) -> None:
+        self.hook_called.set()
+        raise RuntimeError("injected hook failure")
+
+
+class _SuccessfulHookRuntime(HermesInvocationRuntime):
+    def __init__(self) -> None:
+        self.session = _CountingSession()
+        self.finalized = 0
+        super().__init__(
+            session=self.session,
+            config=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+        )
+
+    def finalize_working_memory(self, **kwargs) -> None:
+        self.finalized += 1
+        kwargs["store"].mark_unchanged(
+            expected_version=kwargs["current"].version,
+            run_id=kwargs["run_id"],
+        )
+
+
 class _SuccessfulBackend:
     def __init__(self) -> None:
         self.events: list[ChatEvent] = []
@@ -171,6 +233,16 @@ class _SuccessfulBackend:
         return _final_receipt(outbox)
 
 
+class _TracingBackend(_SuccessfulBackend):
+    def __init__(self, trace: list[str]) -> None:
+        super().__init__()
+        self.trace = trace
+
+    def persist_final_reply(self, outbox: FinalReplyOutbox) -> FinalReplyReceipt:
+        self.trace.append("reply_persisted")
+        return super().persist_final_reply(outbox)
+
+
 class _TerminalFailureBackend(_SuccessfulBackend):
     def __init__(self) -> None:
         super().__init__()
@@ -186,10 +258,12 @@ class _TerminalEventRetryingBackend(_SuccessfulBackend):
     def __init__(self) -> None:
         super().__init__()
         self.final_event_attempts = 0
+        self.final_event_ids: list[str] = []
 
     def publish_event(self, event: ChatEvent) -> None:
         if event.payload.kind == "final":
             self.final_event_attempts += 1
+            self.final_event_ids.append(event.payload.event_id)
             if self.final_event_attempts == 1:
                 raise OSError("event callback temporarily unavailable")
         super().publish_event(event)
@@ -403,6 +477,10 @@ def test_final_delivery_retries_from_the_durable_outbox_without_rerunning_infere
         assert backend.events[:3] == ["accepted", "started", "assistant_delta"]
         assert "heartbeat" in backend.events
         assert backend.events[-1] == "final"
+        assert [
+            (item.ordinal, item.status)
+            for item in store.run_state.diagnostics("firebase-user-1").attempts
+        ] == [(1, "succeeded")]
     finally:
         controller.close()
 
@@ -437,6 +515,7 @@ def test_terminal_event_retries_after_backend_persistence_without_rerunning_infe
 
         assert backend.persist_attempts == 1
         assert backend.final_event_attempts == 2
+        assert len(set(backend.final_event_ids)) == 1
     finally:
         controller.close()
 
@@ -520,6 +599,101 @@ def test_stop_hook_tokenizer_gap_is_visible_but_does_not_block_final_reply(
         assert backend.events[-1].payload.kind == "final"
     finally:
         controller.close()
+
+
+def test_stop_hook_failure_recovers_hook_only_after_reply_persistence(
+    tmp_path,
+) -> None:
+    trace: list[str] = []
+    store = P0ChatStore(tmp_path / "run-state.sqlite3")
+    backend = _TracingBackend(trace)
+    runtime = _FailOnceHookRuntime(trace)
+    controller = P0ChatController(
+        store=store,
+        backend=backend,
+        runtime=runtime,
+        now_ms=lambda: NOW_MS,
+        retry_delay_seconds=0,
+    )
+
+    try:
+        with TestClient(
+            create_private_service_app(_private_config(), p0_control=controller)
+        ) as client:
+            response = client.post(
+                "/v1/control",
+                headers=_headers(),
+                json=_submit_payload(),
+            )
+            assert response.status_code == 200
+            assert backend.final_published.wait(2)
+
+        assert runtime.session.calls == 1
+        assert runtime.finalized == 2
+        assert trace == ["reply_persisted", "hook:1", "hook:2"]
+        event_sequences = [
+            int(event.payload.event_id.rsplit(":", 1)[1]) for event in backend.events
+        ]
+        assert event_sequences == sorted(event_sequences)
+        assert backend.events[-1].payload.kind == "final"
+        assert backend.events[-1].payload.assistant_message_id is not None
+        assert backend.events[-1].payload.final_reply_receipt_id is not None
+        attempts = store.run_state.diagnostics("firebase-user-1").attempts
+        assert [(item.ordinal, item.status) for item in attempts] == [
+            (1, "failed_fault"),
+            (2, "succeeded"),
+        ]
+        receipt = store.receipt_for_run(
+            user_id="firebase-user-1",
+            logical_run_id=attempts[0].logical_run_id,
+        )
+        outbox = store.pending_final(receipt.receipt_id)
+        assert outbox is not None
+        assert outbox["finalization_phase"] == "completed"
+    finally:
+        controller.close()
+
+
+def test_restart_from_memory_pending_runs_only_the_stop_hook(
+    tmp_path,
+) -> None:
+    path = tmp_path / "run-state.sqlite3"
+    first_store = P0ChatStore(path)
+    backend = _SuccessfulBackend()
+    first_runtime = _FailingHookRuntime()
+    first = P0ChatController(
+        store=first_store,
+        backend=backend,
+        runtime=first_runtime,
+        now_ms=lambda: NOW_MS,
+        retry_delay_seconds=30,
+    )
+    with TestClient(
+        create_private_service_app(_private_config(), p0_control=first)
+    ) as client:
+        response = client.post(
+            "/v1/control", headers=_headers(), json=_submit_payload()
+        )
+        assert response.status_code == 200
+        assert first_runtime.hook_called.wait(2)
+    first.close()
+
+    recovered_runtime = _SuccessfulHookRuntime()
+    recovered = P0ChatController(
+        store=P0ChatStore(path),
+        backend=backend,
+        runtime=recovered_runtime,
+        now_ms=lambda: NOW_MS + 1,
+        retry_delay_seconds=0,
+    )
+    try:
+        assert backend.final_published.wait(2)
+        assert first_runtime.session.calls == 1
+        assert recovered_runtime.session.calls == 0
+        assert recovered_runtime.finalized == 1
+        assert backend.persist_attempts == 1
+    finally:
+        recovered.close()
 
 
 def test_backend_private_adapter_sends_only_frozen_receipts_events_and_outbox_refs() -> (
@@ -665,3 +839,75 @@ def test_product_runtime_is_one_long_lived_gpt_5_6_sol_medium_agent_without_proo
     assert "max_iterations" not in arguments
     assert "max_tokens" not in arguments
     assert "proof" not in str(arguments["ephemeral_system_prompt"]).lower()
+    assert (
+        "never send a notification" in str(arguments["ephemeral_system_prompt"]).lower()
+    )
+
+
+def test_p0_admission_is_the_same_durable_tick_owned_by_the_global_coordinator(
+    tmp_path,
+) -> None:
+    store = P0ChatStore(tmp_path / "run-state.sqlite3")
+    backend = _BlockedBackend()
+    controller = P0ChatController(
+        store=store,
+        backend=backend,
+        runtime=HermesInvocationRuntime(
+            session=_CompletingSession(),
+            config=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+        ),
+        now_ms=lambda: NOW_MS,
+    )
+
+    try:
+        response = controller.admit(
+            HermesControlRequest.from_dict(_submit_payload()),
+            authenticated_user_id="firebase-user-1",
+            transport_request_id="request-1",
+        )
+
+        receipt = controller.resolve_queue_receipt(
+            user_id="firebase-user-1",
+            result_ref=str(response.payload.result_ref),
+        )
+        queued = store.run_state.diagnostics("firebase-user-1").queue
+        assert [
+            (item.tick_id, item.logical_run_id, item.kind, item.state)
+            for item in queued
+        ] == [
+            (
+                receipt.payload.tick_id,
+                receipt.payload.logical_run_id,
+                "p0_user_chat",
+                "queued",
+            )
+        ]
+        assert not hasattr(controller, "_worker")
+    finally:
+        backend.release_resolve.set()
+        controller.close()
+
+
+def test_duplicate_p0_admission_reuses_the_original_tick_without_time_drift(
+    tmp_path,
+) -> None:
+    store = P0ChatStore(tmp_path / "run-state.sqlite3")
+
+    first = store.admit(
+        user_id="firebase-user-1",
+        user_message_id="user-msg-1",
+        idempotency_key="user-message:user-msg-1",
+        submission_ref="p0-submission:submission-1",
+        now_ms=NOW_MS,
+    )
+    replay = store.admit(
+        user_id="firebase-user-1",
+        user_message_id="user-msg-1",
+        idempotency_key="user-message:user-msg-1",
+        submission_ref="p0-submission:submission-1",
+        now_ms=NOW_MS + 60_000,
+    )
+
+    assert replay == first
+    queued = store.run_state.diagnostics("firebase-user-1").queue
+    assert len(queued) == 1

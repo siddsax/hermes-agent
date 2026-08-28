@@ -11,6 +11,7 @@ import uvicorn
 
 from .private_service import create_private_service_app
 from .home_state import HomeStateProjector
+from .input_pump import BackendTranscriptClient, TranscriptInputPump
 from .private_topology import (
     BackendPrivateConfig,
     PrivateServiceConfig,
@@ -25,6 +26,7 @@ from .p0_chat import (
     build_p0_runtime,
 )
 from .runtime import HermesInvocationRuntime
+from .transcript_agent import TranscriptAgentFinalizer, build_real_transcript_runtime
 
 
 def build_private_service_server(
@@ -69,11 +71,32 @@ def build_product_p0_controller(
         firebase_uid=backend_config.firebase_uid,
         timeout_seconds=backend_config.request_timeout_seconds,
     )
+    store = P0ChatStore(database_path)
+    transcript = BackendTranscriptClient(
+        origin=backend_config.origin,
+        credential=backend_config.credential,
+        firebase_uid=backend_config.firebase_uid,
+        timeout_seconds=backend_config.request_timeout_seconds,
+    )
+    transcript_runtime = build_real_transcript_runtime(
+        store.run_state,
+        firebase_uid=private_config.firebase_uid,
+    )
     return P0ChatController(
-        store=P0ChatStore(database_path),
+        store=store,
         backend=backend,
         runtime_factory=runtime_factory
         or (lambda: build_p0_runtime(firebase_uid=private_config.firebase_uid)),
+        background_runtime=transcript_runtime,
+        background_input=TranscriptInputPump(
+            store.run_state,
+            transcript_port=transcript,
+        ),
+        background_finalizer=TranscriptAgentFinalizer(
+            store.run_state,
+            transcript_port=transcript,
+        ),
+        extra_closables=(transcript,),
     )
 
 
@@ -94,7 +117,7 @@ def main() -> int:
         controller = build_product_p0_controller(
             private_config=config,
             backend_config=backend_config,
-            database_path=get_hermes_home() / "thine-harness" / "p0-chat.sqlite3",
+            database_path=get_hermes_home() / "thine-harness" / "run-state.sqlite3",
         )
         home_state = HomeStateProjector(
             get_hermes_home() / "thine-harness" / "home-state.sqlite3"
