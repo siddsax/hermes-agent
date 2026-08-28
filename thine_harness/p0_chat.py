@@ -1429,6 +1429,10 @@ class P0RunFinalizer:
         pending = self._store.next_pending_finalization(user_id)
         return None if pending is None else self._resume(pending)
 
+    def finalize_quarantine(self, user_id: str) -> RunFinalizationResult | None:
+        """P0 failures are terminal replies; transcript quarantine is background-only."""
+        return None
+
     def finalize(
         self,
         context: InvocationContext,
