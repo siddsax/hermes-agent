@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlparse
 
 
 class PrivateServiceConfigurationError(ValueError):
@@ -20,6 +21,16 @@ class PrivateServiceConfig:
     enabled: bool
     host: str
     port: int
+    firebase_uid: str
+    request_timeout_seconds: float
+    credential: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class BackendPrivateConfig:
+    """Explicit loopback callback target and its separate backend credential."""
+
+    origin: str
     firebase_uid: str
     request_timeout_seconds: float
     credential: str = field(repr=False)
@@ -148,8 +159,83 @@ def load_private_service_config(
     )
 
 
+def load_backend_private_config(
+    config: Mapping[str, object] | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> BackendPrivateConfig:
+    """Load the fixed backend-private resource/callback adapter configuration."""
+    if config is None:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    harness = _mapping(config.get("thine_harness", {}), path="thine_harness")
+    service = _mapping(
+        harness.get("private_service", {}),
+        path="thine_harness.private_service",
+    )
+    backend = _mapping(
+        harness.get("private_backend", {}),
+        path="thine_harness.private_backend",
+    )
+    firebase_uid = str(service.get("firebase_uid") or "").strip()
+    if not firebase_uid or len(firebase_uid) > 128:
+        raise PrivateServiceConfigurationError(
+            "backend private callbacks require the configured Firebase UID"
+        )
+    origin = str(backend.get("origin") or "http://127.0.0.1:8790").strip()
+    parsed = urlparse(origin)
+    try:
+        address = ipaddress.ip_address(parsed.hostname or "")
+    except ValueError as exc:
+        raise PrivateServiceConfigurationError(
+            "thine_harness.private_backend.origin must use a loopback IP literal"
+        ) from exc
+    if (
+        parsed.scheme != "http"
+        or not address.is_loopback
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise PrivateServiceConfigurationError(
+            "thine_harness.private_backend.origin must be loopback-only HTTP"
+        )
+    timeout = backend.get(
+        "request_timeout_seconds",
+        service.get("request_timeout_seconds", 5.0),
+    )
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise PrivateServiceConfigurationError(
+            "thine_harness.private_backend.request_timeout_seconds must be numeric"
+        )
+    timeout = float(timeout)
+    if not 0.1 <= timeout <= 120.0:
+        raise PrivateServiceConfigurationError(
+            "thine_harness.private_backend.request_timeout_seconds must be between 0.1 and 120"
+        )
+    credential_config = backend.get(
+        "credential",
+        {"env": "BACKEND_PRIVATE_TOKEN", "file": ""},
+    )
+    credential = _resolve_credential(
+        _mapping(credential_config, path="thine_harness.private_backend.credential"),
+        environ=environ,
+    )
+    return BackendPrivateConfig(
+        origin=origin.rstrip("/"),
+        firebase_uid=firebase_uid,
+        request_timeout_seconds=timeout,
+        credential=credential,
+    )
+
+
 __all__ = [
+    "BackendPrivateConfig",
     "PrivateServiceConfig",
     "PrivateServiceConfigurationError",
     "load_private_service_config",
+    "load_backend_private_config",
 ]

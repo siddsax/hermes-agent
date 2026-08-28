@@ -23,6 +23,7 @@ from thine_harness.private_server import build_private_service_server
 from thine_harness.private_service import create_private_service_app
 from thine_harness.private_topology import (
     PrivateServiceConfigurationError,
+    load_backend_private_config,
     load_private_service_config,
 )
 
@@ -57,6 +58,21 @@ def test_enabled_private_service_loads_behavior_from_config_and_secret_from_env(
     assert config.request_timeout_seconds == 5.0
     assert config.credential == "private-test-token"
     assert "private-test-token" not in repr(config)
+
+
+def test_backend_private_callback_config_defaults_to_the_fixed_loopback_bridge() -> (
+    None
+):
+    config = load_backend_private_config(
+        _enabled_config(),
+        environ={"BACKEND_PRIVATE_TOKEN": "backend-private-token"},
+    )
+
+    assert config.origin == "http://127.0.0.1:8790"
+    assert config.firebase_uid == "firebase-user-1"
+    assert config.request_timeout_seconds == 5.0
+    assert config.credential == "backend-private-token"
+    assert "backend-private-token" not in repr(config)
 
 
 def test_default_config_keeps_private_service_disabled_without_a_secret() -> None:
@@ -322,7 +338,8 @@ thine_harness:
         encoding="utf-8",
     )
     (hermes_home / ".env").write_text(
-        "HERMES_CONTROL_TOKEN=private-e2e-token\n",
+        "HERMES_CONTROL_TOKEN=private-e2e-token\n"
+        "BACKEND_PRIVATE_TOKEN=backend-e2e-token\n",
         encoding="utf-8",
     )
     environment = dict(os.environ)

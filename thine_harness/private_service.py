@@ -7,12 +7,18 @@ import hmac
 import time
 import uuid
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from .contracts.codec import ContractDecodeError
+from .contracts.control import HermesControlRequest
 from .private_topology import PrivateServiceConfig
+
+if TYPE_CHECKING:
+    from .p0_chat import P0ChatController
 
 
 @dataclass(frozen=True)
@@ -123,12 +129,13 @@ def create_private_service_app(
     *,
     process_instance_id: str | None = None,
     started_at_ms: int | None = None,
+    p0_control: "P0ChatController | None" = None,
 ) -> FastAPI:
     """Build the deliberately small private HTTP surface.
 
-    The only implemented operation is authenticated health. ``/v1/control``
-    is reserved for the typed ``HermesControlPort`` integration ticket and
-    intentionally has no generic dispatch behavior.
+    The surface is intentionally closed: authenticated health, typed P0
+    control, and two explicit semantic-resource resolvers. It has no generic
+    dispatch or arbitrary backend RPC behavior.
     """
 
     if not config.enabled or not config.credential or not config.firebase_uid:
@@ -177,9 +184,33 @@ def create_private_service_app(
         }
 
     @app.post("/v1/control")
-    async def reserved_control(
+    async def control(
+        request: Request,
+        background_tasks: BackgroundTasks,
         scope: PrivateRequestScope = Depends(request_scope),
     ) -> JSONResponse:
+        if p0_control is not None:
+            try:
+                decoded = HermesControlRequest.from_json(await request.body())
+            except ContractDecodeError as exc:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_control_request",
+                        "request_id": scope.request_id,
+                        "detail": str(exc),
+                    },
+                )
+            response = p0_control.admit(
+                decoded,
+                authenticated_user_id=scope.firebase_uid,
+                transport_request_id=scope.request_id,
+            )
+            if response.payload.result_ref is not None:
+                background_tasks.add_task(
+                    p0_control.activate, response.payload.result_ref
+                )
+            return JSONResponse(status_code=200, content=response.to_dict())
         return JSONResponse(
             status_code=501,
             content={
@@ -188,7 +219,109 @@ def create_private_service_app(
             },
         )
 
+    @app.post("/v1/chat/queue-receipts/resolve")
+    async def resolve_queue_receipt(
+        request: Request,
+        scope: PrivateRequestScope = Depends(request_scope),
+    ) -> JSONResponse:
+        if p0_control is None:
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "error": "control_not_implemented",
+                    "request_id": scope.request_id,
+                },
+            )
+        body = await _strict_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        if set(body) != {"user_id", "result_ref"} or not all(
+            isinstance(body.get(key), str) and body[key]
+            for key in ("user_id", "result_ref")
+        ):
+            return _invalid_resource_request(scope.request_id)
+        if body["user_id"] != scope.firebase_uid:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "uid_mismatch", "request_id": scope.request_id},
+            )
+        try:
+            receipt = p0_control.resolve_queue_receipt(
+                user_id=body["user_id"],
+                result_ref=body["result_ref"],
+            )
+        except (KeyError, ValueError):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "queue_receipt_not_found",
+                    "request_id": scope.request_id,
+                },
+            )
+        return JSONResponse(status_code=200, content=receipt.to_dict())
+
+    @app.post("/v1/chat/assistant-content/resolve")
+    async def resolve_assistant_content(
+        request: Request,
+        scope: PrivateRequestScope = Depends(request_scope),
+    ) -> JSONResponse:
+        if p0_control is None:
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "error": "control_not_implemented",
+                    "request_id": scope.request_id,
+                },
+            )
+        body = await _strict_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        if set(body) != {"user_id", "content_ref"} or not all(
+            isinstance(body.get(key), str) and body[key]
+            for key in ("user_id", "content_ref")
+        ):
+            return _invalid_resource_request(scope.request_id)
+        if body["user_id"] != scope.firebase_uid:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "uid_mismatch", "request_id": scope.request_id},
+            )
+        try:
+            text = p0_control.resolve_assistant_content(
+                user_id=body["user_id"],
+                content_ref=body["content_ref"],
+            )
+        except (KeyError, ValueError):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "assistant_content_not_found",
+                    "request_id": scope.request_id,
+                },
+            )
+        return JSONResponse(
+            status_code=200,
+            content={"content_ref": body["content_ref"], "text": text},
+        )
+
     return app
+
+
+async def _strict_json_object(request: Request) -> dict[str, object] | JSONResponse:
+    try:
+        body = await request.json()
+    except ValueError:
+        return _invalid_resource_request(request.headers.get("X-Request-ID", ""))
+    if not isinstance(body, dict):
+        return _invalid_resource_request(request.headers.get("X-Request-ID", ""))
+    return body
+
+
+def _invalid_resource_request(request_id: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={"error": "invalid_resource_request", "request_id": request_id},
+    )
 
 
 __all__ = [
