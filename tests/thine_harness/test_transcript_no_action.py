@@ -545,6 +545,10 @@ def test_real_gpt_transcript_path_commits_memory_then_loads_it_on_next_tick(
         state,
         agent=agent,
         binding=TranscriptClaimToolBinding(),
+        communication_context=lambda _user_id: {
+            "allowance": {"remaining": 1, "status": "available"},
+            "permission_stale": False,
+        },
     )
     coordinator = RunCoordinator(
         state,
@@ -566,6 +570,11 @@ def test_real_gpt_transcript_path_commits_memory_then_loads_it_on_next_tick(
     first = coordinator.run_next("daily-user")
 
     assert first is not None and first.status == "completed"
+    assert (
+        '<communication_context>\n{"allowance":{"remaining":1,"status":"available"},'
+        '"permission_stale":false}\n</communication_context>'
+        in agent.primary_prompts[0]
+    )
     memory = state.working_memory_snapshot("daily-user")
     assert memory.version == 1
     assert memory.token_count == 20

@@ -603,6 +603,10 @@ def test_real_gpt_mapping_path_uses_cached_stop_hook_and_inspection_helpers(
         state,
         agent=agent,
         binding=binding,
+        communication_context=lambda _user_id: {
+            "allowance": {"remaining": 0, "status": "consumed"},
+            "permission_stale": True,
+        },
     )
     coordinator = RunCoordinator(
         state,
@@ -621,6 +625,10 @@ def test_real_gpt_mapping_path_uses_cached_stop_hook_and_inspection_helpers(
     assert result is not None and result.status == "completed"
     assert '"old_name":null' in agent.primary_prompts[0]
     assert "never infer an identity" in agent.primary_prompts[0]
+    assert (
+        '<communication_context>\n{"allowance":{"remaining":0,"status":"consumed"},'
+        '"permission_stale":true}\n</communication_context>' in agent.primary_prompts[0]
+    )
     memory = state.working_memory_snapshot("daily-user")
     assert memory.version == 1
     assert "preserve Unknown attribution" in memory.markdown

@@ -7,7 +7,7 @@ Interaction input is deliberately never attached to another Tick kind.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
@@ -444,11 +444,13 @@ class RealInteractionAgentRuntime:
         agent: Any,
         binding: InteractionBatchToolBinding,
         config: RuntimeModelConfig | None = None,
+        communication_context: Callable[[str], Mapping[str, object]] | None = None,
     ) -> None:
         self._state = state
         self._agent = agent
         self._binding = binding
         self._config = config or RuntimeModelConfig.openai_gpt_5_6_sol_medium()
+        self._communication_context = communication_context
         self._session = HermesAIAgentSession(agent=agent, expected=self._config)
 
     def invoke(
@@ -466,7 +468,13 @@ class RealInteractionAgentRuntime:
         prepared = context.prepared_input
         if not isinstance(prepared, PreparedInteractionInput):
             raise ValueError("real interaction inference requires one claimed range")
-        current = self._state.working_memory_snapshot(str(context.tick.payload.user_id))
+        user_id = str(context.tick.payload.user_id)
+        current = self._state.working_memory_snapshot(user_id)
+        communication_context = (
+            {}
+            if self._communication_context is None
+            else dict(self._communication_context(user_id))
+        )
         prompt = (
             "Process this app-wide semantic interaction Tick as historical context. "
             "It is separate from transcript and speaker inputs. Discover the "
@@ -483,6 +491,14 @@ class RealInteractionAgentRuntime:
                 separators=(",", ":"),
             )
             + "\n</input_gaps>\n"
+            + "<communication_context>\n"
+            + json.dumps(
+                communication_context,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n</communication_context>\n"
             + f"<logical_run_id>{context.tick.payload.logical_run_id}</logical_run_id>"
         )
         provider_control = ProviderInvocationControl()
@@ -1697,8 +1713,14 @@ class InteractionRunFinalizer:
 class BackgroundRuntimeRouter:
     """Route background kinds while retaining one coordinator/model boundary."""
 
-    def __init__(self, routes: dict[str, FakeInvocationPort]) -> None:
+    def __init__(
+        self,
+        routes: dict[str, FakeInvocationPort],
+        *,
+        context_bindings: tuple[object, ...] = (),
+    ) -> None:
         self._routes = dict(routes)
+        self._context_bindings = context_bindings
 
     def invoke(
         self, context: InvocationContext, *, tools: Any, control: Any
@@ -1710,7 +1732,10 @@ class BackgroundRuntimeRouter:
             raise RuntimeError(
                 f"background runtime is not configured for {kind}"
             ) from exc
-        return runtime.invoke(context, tools=tools, control=control)
+        with ExitStack() as stack:
+            for binding in self._context_bindings:
+                stack.enter_context(binding.activate(context))  # type: ignore[attr-defined]
+            return runtime.invoke(context, tools=tools, control=control)
 
 
 class BackgroundInputRouter:

@@ -28,7 +28,7 @@ from .contracts.transcripts import TranscriptAck, TranscriptClaim
 from .working_memory import WorkingMemorySnapshot
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class DurableStateError(RuntimeError):
@@ -740,6 +740,60 @@ class DurableRunState:
                     CREATE INDEX speaker_retries_by_quarantine
                         ON speaker_explicit_retries(user_id, quarantine_id, created_at_ms);
                     PRAGMA user_version = 6;
+                    COMMIT;
+                    """
+                )
+                version = 6
+            if version == 6:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE communication_actions (
+                        action_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL,
+                        tick_id TEXT NOT NULL,
+                        effect_ordinal INTEGER NOT NULL CHECK (effect_ordinal = 1),
+                        intent_fingerprint TEXT NOT NULL,
+                        assistant_message_id TEXT NOT NULL,
+                        message_text TEXT NOT NULL,
+                        action_intent_json TEXT NOT NULL,
+                        notification_intent_json TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        outcome_json TEXT,
+                        receipt_json TEXT,
+                        last_error_code TEXT,
+                        created_at_ms INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        UNIQUE(user_id, logical_run_id, effect_ordinal),
+                        UNIQUE(user_id, assistant_message_id),
+                        FOREIGN KEY(logical_run_id)
+                            REFERENCES queue_items(logical_run_id)
+                    );
+                    CREATE INDEX communication_actions_due
+                        ON communication_actions(user_id, state, updated_at_ms);
+
+                    CREATE TABLE communication_allowance_ledger (
+                        action_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        reserved_at_ms INTEGER NOT NULL,
+                        consumed_at_ms INTEGER,
+                        released_at_ms INTEGER,
+                        FOREIGN KEY(action_id)
+                            REFERENCES communication_actions(action_id)
+                    );
+                    CREATE INDEX communication_allowance_by_user
+                        ON communication_allowance_ledger(
+                            user_id, state, reserved_at_ms DESC
+                        );
+
+                    CREATE TABLE communication_permission_observations (
+                        user_id TEXT PRIMARY KEY,
+                        permission_json TEXT NOT NULL,
+                        observed_at_ms INTEGER NOT NULL
+                    );
+                    PRAGMA user_version = 7;
                     COMMIT;
                     """
                 )

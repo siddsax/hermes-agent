@@ -9,6 +9,8 @@ from typing import Callable
 
 import uvicorn
 
+from .action_dispatcher import ActionDispatcher
+from .communications import BackendCommunicationClient, CommunicationToolBinding
 from .private_service import create_private_service_app
 from .home_state import HomeStateProjector
 from .input_pump import BackendTranscriptClient, TranscriptInputPump
@@ -36,6 +38,7 @@ from .p0_chat import (
     P0ChatStore,
     build_p0_runtime,
 )
+from .run_coordinator import RunCoordinator
 from .runtime import HermesInvocationRuntime
 from .speaker_mappings import (
     BackendSpeakerMappingClient,
@@ -109,19 +112,31 @@ def build_product_p0_controller(
         firebase_uid=backend_config.firebase_uid,
         timeout_seconds=backend_config.request_timeout_seconds,
     )
+    communications = BackendCommunicationClient(
+        origin=backend_config.origin,
+        credential=backend_config.credential,
+        user_id=backend_config.firebase_uid,
+        timeout_seconds=backend_config.request_timeout_seconds,
+    )
     interaction_binding = InteractionBatchToolBinding()
     speaker_binding = SpeakerMappingToolBinding()
+    communication_binding = CommunicationToolBinding(
+        dispatcher=ActionDispatcher(store.run_state),
+        backend=communications,
+    )
     transcript_runtime = build_real_transcript_runtime(
         store.run_state,
         firebase_uid=private_config.firebase_uid,
         additional_tool_bindings=(
             interaction_binding,
             speaker_binding,
+            communication_binding,
             SpeakerMappingInspectionToolBinding(
                 state=store.run_state,
                 user_id=private_config.firebase_uid,
             ),
         ),
+        communication_context=communication_binding.prompt_context,
     )
     transcript_input = TranscriptInputPump(
         store.run_state,
@@ -136,24 +151,34 @@ def build_product_p0_controller(
         source=interactions,
         timezone_name="Asia/Kolkata",
     )
+
+    def scan_background(user_id: str, coordinator: RunCoordinator) -> object:
+        communication_binding.reconcile_due(user_id)
+        return speaker_input.enqueue_next(user_id, coordinator=coordinator)
+
     controller = P0ChatController(
         store=store,
         backend=backend,
         runtime_factory=runtime_factory
         or (lambda: build_p0_runtime(firebase_uid=private_config.firebase_uid)),
-        background_runtime=BackgroundRuntimeRouter({
-            "p1_transcript": transcript_runtime,
-            "p1_interaction": RealInteractionAgentRuntime(
-                store.run_state,
-                agent=transcript_runtime.agent,
-                binding=interaction_binding,
-            ),
-            "p1_speaker": RealSpeakerMappingAgentRuntime(
-                store.run_state,
-                agent=transcript_runtime.agent,
-                binding=speaker_binding,
-            ),
-        }),
+        background_runtime=BackgroundRuntimeRouter(
+            {
+                "p1_transcript": transcript_runtime,
+                "p1_interaction": RealInteractionAgentRuntime(
+                    store.run_state,
+                    agent=transcript_runtime.agent,
+                    binding=interaction_binding,
+                    communication_context=communication_binding.prompt_context,
+                ),
+                "p1_speaker": RealSpeakerMappingAgentRuntime(
+                    store.run_state,
+                    agent=transcript_runtime.agent,
+                    binding=speaker_binding,
+                    communication_context=communication_binding.prompt_context,
+                ),
+            },
+            context_bindings=(communication_binding,),
+        ),
         background_input=BackgroundInputRouter({
             "p1_transcript": transcript_input,
             "p1_interaction": interaction_input,
@@ -173,10 +198,8 @@ def build_product_p0_controller(
                 speaker_port=speakers,
             ),
         }),
-        background_scan=lambda user_id, coordinator: speaker_input.enqueue_next(
-            user_id, coordinator=coordinator
-        ),
-        extra_closables=(transcript, interactions, speakers),
+        background_scan=scan_background,
+        extra_closables=(transcript, interactions, speakers, communications),
     )
     controller.add_closable(
         HalfHourInteractionDriver(

@@ -505,11 +505,13 @@ class RealSpeakerMappingAgentRuntime:
         agent: Any,
         binding: SpeakerMappingToolBinding,
         config: RuntimeModelConfig | None = None,
+        communication_context: Callable[[str], Mapping[str, object]] | None = None,
     ) -> None:
         self._state = state
         self._agent = agent
         self._binding = binding
         self._config = config or RuntimeModelConfig.openai_gpt_5_6_sol_medium()
+        self._communication_context = communication_context
         self._session = HermesAIAgentSession(agent=agent, expected=self._config)
         self.invocations: list[InvocationContext] = []
 
@@ -530,6 +532,11 @@ class RealSpeakerMappingAgentRuntime:
             raise ValueError("real speaker inference requires one retained mapping")
         payload = context.tick.payload
         current = self._state.working_memory_snapshot(str(payload.user_id))
+        communication_context = (
+            {}
+            if self._communication_context is None
+            else dict(self._communication_context(str(payload.user_id)))
+        )
         prompt = (
             "Process the ordered speaker-mapping event for this Logical Run. "
             f"Discover and call {INSPECT_ACTIVE_MAPPING_TOOL_NAME} through the "
@@ -567,6 +574,14 @@ class RealSpeakerMappingAgentRuntime:
                 else prepared.explicit_retry.to_json()
             )
             + "\n</explicit_retry>\n"
+            + "<communication_context>\n"
+            + json.dumps(
+                communication_context,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n</communication_context>\n"
             f"<logical_run_id>{payload.logical_run_id}</logical_run_id>"
         )
         provider_control = ProviderInvocationControl()

@@ -51,6 +51,10 @@ _SYSTEM_PROMPT = (
     "durable background Tick at a time, including transcript and ordered speaker "
     "mapping Ticks. Discover Thine helpers through tool_search "
     "and tool_describe; their schemas are intentionally not eagerly loaded. It is "
+    "your choice whether a proactive message is warranted; discover the "
+    "communications namespace when it is. Its send helper persists one assistant "
+    "message and automatically requests a push with the exact same text, so never "
+    "make a second notification decision. It is "
     "valid to call no tool and choose no user-visible action. Never imply an effect "
     "unless a tool receipt proves it. The final prose is a private run trace, not a "
     "message to the user. Working Memory is recent operational continuity only; "
@@ -247,11 +251,13 @@ class RealTranscriptAgentRuntime:
         agent: Any,
         binding: TranscriptClaimToolBinding,
         config: RuntimeModelConfig | None = None,
+        communication_context: Callable[[str], Mapping[str, object]] | None = None,
     ) -> None:
         self._state = state
         self._agent = agent
         self._binding = binding
         self._config = config or RuntimeModelConfig.openai_gpt_5_6_sol_medium()
+        self._communication_context = communication_context
         self._session = HermesAIAgentSession(agent=agent, expected=self._config)
         self.invocations: list[InvocationContext] = []
 
@@ -277,6 +283,11 @@ class RealTranscriptAgentRuntime:
             raise ValueError("real transcript inference requires one durable claim")
         payload = context.tick.payload
         current = self._state.working_memory_snapshot(str(payload.user_id))
+        communication_context = (
+            {}
+            if self._communication_context is None
+            else dict(self._communication_context(str(payload.user_id)))
+        )
         prompt = (
             "Process the claimed transcript for this Logical Run. First discover "
             f"the {INSPECT_CLAIM_TOOL_NAME} helper through the transcript namespace "
@@ -300,6 +311,14 @@ class RealTranscriptAgentRuntime:
                 else prepared.explicit_retry.to_json()
             )
             + "\n</explicit_retry>\n"
+            + "<communication_context>\n"
+            + json.dumps(
+                communication_context,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n</communication_context>\n"
             f"<logical_run_id>{payload.logical_run_id}</logical_run_id>"
         )
         provider_control = ProviderInvocationControl()
@@ -492,6 +511,7 @@ def build_real_transcript_runtime(
     token_loader: Callable[[], dict[str, Any] | None] = _load_codex_cli_token,
     agent_factory: Callable[..., Any] = _aiagent_factory,
     additional_tool_bindings: tuple[Any, ...] = (),
+    communication_context: Callable[[str], Mapping[str, object]] | None = None,
 ) -> RealTranscriptAgentRuntime:
     """Build the maintained-fork GPT-5.6 SOL medium background adapter."""
     credentials = token_loader()
@@ -531,6 +551,7 @@ def build_real_transcript_runtime(
         agent=agent,
         binding=binding,
         config=config,
+        communication_context=communication_context,
     )
 
 
