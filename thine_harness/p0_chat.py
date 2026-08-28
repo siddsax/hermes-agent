@@ -1081,7 +1081,7 @@ class P0ChatStore:
             )
             return "memory_finalization_pending"
 
-    def mark_terminal_event_delivered(self, *, receipt_id: str, now_ms: int) -> None:
+    def mark_reply_suffix_completed(self, *, receipt_id: str, now_ms: int) -> None:
         receipt = self.load_receipt(receipt_id)
         with self.run_state._transaction() as connection:
             connection.execute(
@@ -1091,9 +1091,10 @@ class P0ChatStore:
             connection.execute(
                 """
                 UPDATE p0_final_reply_outbox
-                SET finalization_phase = 'completed' WHERE queue_receipt_id = ?
+                SET finalization_phase = 'completed', updated_at_ms = ?
+                WHERE queue_receipt_id = ?
                 """,
-                (receipt_id,),
+                (now_ms, receipt_id),
             )
             connection.execute(
                 """
@@ -1365,6 +1366,7 @@ class P0CoordinatorRuntime:
         final_reply_receipt_id: str | None = None,
         best_effort: bool = False,
         sequence: int | None = None,
+        emitted_at_ms: int | None = None,
     ) -> None:
         event_sequence = (
             self._store.next_event_sequence(receipt.receipt_id)
@@ -1385,7 +1387,9 @@ class P0CoordinatorRuntime:
             "safe_display_text": text[:1000],
             "ephemeral": mapped_kind not in {"final", "failed", "interrupted"},
             "origin": "user_initiated_chat",
-            "emitted_at_ms": self._now_ms(),
+            "emitted_at_ms": (
+                self._now_ms() if emitted_at_ms is None else emitted_at_ms
+            ),
             "heartbeat_max_silence_ms": 5000,
             "extensions": {},
         })
@@ -1570,18 +1574,23 @@ class P0RunFinalizer:
             if outbox is None or outbox["backend_receipt_id"] is None:
                 raise DurableStateError("terminal event requires backend reply receipt")
             try:
+                # The final reply is already canonical in the backend. This is a
+                # receipt-correlated lifecycle marker, not another content frame.
+                # Its sequence and timestamp come from durable suffix state so an
+                # ambiguous publish or process restart replays the exact event.
                 self._events.publish(
                     receipt,
                     kind="final",
                     phase="final",
-                    text=pending.text,
+                    text="",
                     assistant_message_id=pending.assistant_message_id,
                     final_reply_receipt_id=str(outbox["backend_receipt_id"]),
                     sequence=int(outbox["terminal_sequence"]),
+                    emitted_at_ms=int(outbox["updated_at_ms"]),
                 )
             except Exception:
                 return self._result(pending, "terminal_event_pending")
-            self._store.mark_terminal_event_delivered(
+            self._store.mark_reply_suffix_completed(
                 receipt_id=receipt.receipt_id, now_ms=self._now_ms()
             )
             return self._result(pending, "completed")
