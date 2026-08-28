@@ -357,6 +357,60 @@ class HomeStateProjector:
                 "extensions": {},
             })
 
+    def maintenance_snapshot(self, user_id: str) -> dict[str, int]:
+        """Return authoritative Home row counts without creating default state."""
+        normalized_user_id = _bounded_identity(user_id, field="user_id")
+        with self._connect() as connection:
+            revision_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM home_revisions WHERE user_id = ?",
+                    (normalized_user_id,),
+                ).fetchone()[0]
+            )
+            action_receipt_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM home_action_receipts WHERE user_id = ?",
+                    (normalized_user_id,),
+                ).fetchone()[0]
+            )
+            has_current = (
+                connection.execute(
+                    "SELECT 1 FROM home_current WHERE user_id = ?",
+                    (normalized_user_id,),
+                ).fetchone()
+                is not None
+            )
+        return {
+            "current_rows": int(has_current),
+            "revision_rows": revision_count,
+            "action_receipt_rows": action_receipt_count,
+        }
+
+    def reset_to_default(self, *, user_id: str, reset_id: str) -> HomeRevision:
+        """Publish an empty Home revision while retaining immutable action history."""
+        normalized_user_id = _bounded_identity(user_id, field="user_id")
+        normalized_reset_id = _bounded_identity(reset_id, field="reset_id")
+        action_id = f"maintenance:{normalized_reset_id}:home-default"
+        with self._connect() as connection:
+            existing = self._action_receipt(connection, normalized_user_id, action_id)
+        if existing is not None:
+            if existing["mutation_kind"] != "replace":
+                raise HomeActionConflict(
+                    "reset action_id was already used for a different Home operation"
+                )
+            return HomeRevision.from_json(existing["result_json"])
+        current = self.current(normalized_user_id)
+        return self.replace_current(
+            user_id=normalized_user_id,
+            expected_revision=int(current.payload.revision),
+            nodes=[],
+            reason="Operator-confirmed Hermes state reset.",
+            originating_run_id=f"maintenance:{normalized_reset_id}",
+            source_tick_id=f"maintenance:{normalized_reset_id}",
+            author="local_operator",
+            action_id=action_id,
+        )
+
     def replace_current(
         self,
         *,

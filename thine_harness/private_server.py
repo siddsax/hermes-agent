@@ -14,6 +14,7 @@ from .communications import BackendCommunicationClient, CommunicationToolBinding
 from .private_service import create_private_service_app
 from .home_state import HomeStateProjector
 from .input_pump import BackendTranscriptClient, TranscriptInputPump
+from .maintenance import AuthoritativeReadToolBinding, AuthoritativeStateReader
 from .interactions import (
     BackendInteractionClient,
     BackgroundFinalizerRouter,
@@ -157,6 +158,16 @@ def build_product_p0_controller(
         service=schedules,
         user_id=private_config.firebase_uid,
     )
+    authoritative_reader = AuthoritativeStateReader(
+        store.run_state,
+        home=HomeStateProjector(database_path.parent / "home-state.sqlite3"),
+        topics=topic_service,
+        schedules=schedules,
+    )
+    authoritative_binding = AuthoritativeReadToolBinding(
+        authoritative_reader,
+        user_id=private_config.firebase_uid,
+    )
     transcript_runtime = build_real_transcript_runtime(
         store.run_state,
         firebase_uid=private_config.firebase_uid,
@@ -167,6 +178,7 @@ def build_product_p0_controller(
             notification_binding,
             topic_binding,
             schedule_binding,
+            authoritative_binding,
             SpeakerMappingInspectionToolBinding(
                 state=store.run_state,
                 user_id=private_config.firebase_uid,

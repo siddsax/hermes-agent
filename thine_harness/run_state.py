@@ -28,7 +28,7 @@ from .contracts.transcripts import TranscriptAck, TranscriptClaim
 from .working_memory import WorkingMemorySnapshot
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 class DurableStateError(RuntimeError):
@@ -1041,6 +1041,46 @@ class DurableRunState:
                     """
                 )
                 version = 10
+            if version == 10:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE IF NOT EXISTS maintenance_plans (
+                        reset_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        scope TEXT NOT NULL CHECK (scope IN (
+                            'working_memory_topics',
+                            'queues_schedules_receipts',
+                            'home_state',
+                            'all_hermes_state'
+                        )),
+                        plan_json TEXT NOT NULL,
+                        preference_revision INTEGER NOT NULL
+                            CHECK (preference_revision >= 1),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'planned', 'executing', 'completed', 'superseded'
+                        )),
+                        created_at_ms INTEGER NOT NULL,
+                        completed_at_ms INTEGER
+                    );
+                    CREATE INDEX IF NOT EXISTS maintenance_plans_by_user
+                        ON maintenance_plans(user_id, created_at_ms DESC);
+
+                    CREATE TABLE IF NOT EXISTS maintenance_events (
+                        event_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        event_kind TEXT NOT NULL,
+                        subject_id TEXT NOT NULL,
+                        details_json TEXT NOT NULL,
+                        recorded_at_ms INTEGER NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS maintenance_events_by_user
+                        ON maintenance_events(user_id, recorded_at_ms DESC);
+                    PRAGMA user_version = 11;
+                    COMMIT;
+                    """
+                )
+                version = 11
         except BaseException:
             connection.rollback()
             raise
