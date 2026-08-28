@@ -180,6 +180,7 @@ def test_priority_and_fifo_choose_p0_then_p1_then_p2(tmp_path: Path):
         _tick("p1-first", queued_at_ms=1),
         _tick("p2", kind="p2_scheduled", queued_at_ms=2),
         _tick("p1-second", kind="p1_speaker", queued_at_ms=3),
+        _tick("p1-interaction", kind="p1_interaction", queued_at_ms=3),
         _tick("p0-first", kind="p0_user_chat", queued_at_ms=4),
         _tick("p0-second", kind="p0_user_chat", queued_at_ms=5),
     ):
@@ -188,7 +189,14 @@ def test_priority_and_fifo_choose_p0_then_p1_then_p2(tmp_path: Path):
     while coordinator.run_next("daily-user") is not None:
         pass
 
-    assert runtime.order == ["p0-first", "p0-second", "p1-first", "p1-second", "p2"]
+    assert runtime.order == [
+        "p0-first",
+        "p0-second",
+        "p1-first",
+        "p1-second",
+        "p1-interaction",
+        "p2",
+    ]
 
 
 def test_duplicate_tick_enqueue_is_idempotent_across_json_member_order(tmp_path: Path):

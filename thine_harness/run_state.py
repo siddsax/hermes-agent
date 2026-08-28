@@ -19,6 +19,7 @@ import uuid
 
 from hermes_constants import get_hermes_home
 
+from .contracts.interactions import InteractionBatch
 from .contracts.runtime import Tick
 from .contracts.recovery import ExplicitRetry, InputGap, QuarantineRecord
 from .contracts.runtime import InputReceipt, RunFinalization, RunReceipt
@@ -26,7 +27,7 @@ from .contracts.transcripts import TranscriptAck, TranscriptClaim
 from .working_memory import WorkingMemorySnapshot
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class DurableStateError(RuntimeError):
@@ -198,6 +199,42 @@ class AgentRunInspection:
     memory_version: int
     memory_token_count: int | None
     recorded_at_ms: int
+
+
+@dataclass(frozen=True)
+class StoredInteractionClaim:
+    user_id: str
+    tick_id: str
+    logical_run_id: str
+    claim_request_id: str
+    boundary_start_ms: int
+    boundary_end_ms: int
+    batch: InteractionBatch | None
+    state: str
+
+
+@dataclass(frozen=True)
+class PendingInteractionAck:
+    user_id: str
+    tick_id: str
+    logical_run_id: str
+    attempt_ordinal: int
+    batch: InteractionBatch
+    memory_version: int
+    working_memory_outcome: str
+    finalization_id: str
+
+
+@dataclass(frozen=True)
+class PendingInteractionQuarantine:
+    user_id: str
+    tick_id: str
+    logical_run_id: str
+    attempt_ordinal: int
+    batch: InteractionBatch
+    quarantine_id: str
+    failure_code: str
+    quarantined_at_ms: int
 
 
 def default_database_path() -> Path:
@@ -533,6 +570,80 @@ class DurableRunState:
                     CREATE INDEX transcript_retries_by_quarantine
                         ON transcript_explicit_retries(user_id, quarantine_id, created_at_ms);
                     PRAGMA user_version = 4;
+                    COMMIT;
+                    """
+                )
+                version = 4
+            if version == 4:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE interaction_clock_state (
+                        user_id TEXT PRIMARY KEY,
+                        timezone_name TEXT NOT NULL,
+                        last_boundary_ms INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL
+                    );
+
+                    CREATE TABLE interaction_claims (
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL PRIMARY KEY,
+                        tick_id TEXT NOT NULL UNIQUE,
+                        claim_request_id TEXT NOT NULL UNIQUE,
+                        boundary_start_ms INTEGER NOT NULL,
+                        boundary_end_ms INTEGER NOT NULL,
+                        batch_id TEXT,
+                        batch_json TEXT,
+                        state TEXT NOT NULL,
+                        memory_version INTEGER,
+                        working_memory_outcome TEXT,
+                        finalization_id TEXT,
+                        consumption_receipt_json TEXT,
+                        created_at_ms INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        FOREIGN KEY(logical_run_id) REFERENCES queue_items(logical_run_id)
+                    );
+                    CREATE INDEX interaction_claim_state
+                        ON interaction_claims(user_id, state, updated_at_ms);
+
+                    CREATE TABLE interaction_quarantines (
+                        quarantine_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        original_logical_run_id TEXT NOT NULL UNIQUE,
+                        batch_id TEXT NOT NULL UNIQUE,
+                        first_cursor INTEGER NOT NULL,
+                        last_cursor INTEGER NOT NULL,
+                        failure_code TEXT NOT NULL,
+                        quarantined_at_ms INTEGER NOT NULL,
+                        sync_state TEXT NOT NULL,
+                        record_json TEXT,
+                        input_gap_json TEXT,
+                        gap_delivery_run_id TEXT,
+                        synchronized_at_ms INTEGER,
+                        FOREIGN KEY(quarantine_id) REFERENCES quarantines(quarantine_id),
+                        FOREIGN KEY(original_logical_run_id)
+                            REFERENCES queue_items(logical_run_id),
+                        FOREIGN KEY(gap_delivery_run_id)
+                            REFERENCES queue_items(logical_run_id)
+                    );
+                    CREATE INDEX interaction_quarantine_sync
+                        ON interaction_quarantines(user_id, sync_state, quarantined_at_ms);
+
+                    CREATE TABLE interaction_explicit_retries (
+                        retry_run_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        quarantine_id TEXT NOT NULL,
+                        retry_request_id TEXT NOT NULL UNIQUE,
+                        state TEXT NOT NULL,
+                        created_at_ms INTEGER NOT NULL,
+                        completed_at_ms INTEGER,
+                        FOREIGN KEY(retry_run_id) REFERENCES queue_items(logical_run_id),
+                        FOREIGN KEY(quarantine_id)
+                            REFERENCES interaction_quarantines(quarantine_id)
+                    );
+                    CREATE INDEX interaction_retries_by_quarantine
+                        ON interaction_explicit_retries(user_id, quarantine_id, created_at_ms);
+                    PRAGMA user_version = 5;
                     COMMIT;
                     """
                 )
@@ -2184,6 +2295,15 @@ class DurableRunState:
                     failure_code=failure_code,
                     quarantined_at_ms=now_ms,
                 )
+            if state == "quarantined" and item["kind"] == "p1_interaction":
+                self._insert_pending_interaction_quarantine_locked(
+                    connection,
+                    user_id=user_id,
+                    logical_run_id=logical_run_id,
+                    quarantine_id=quarantine_id,
+                    failure_code=failure_code,
+                    quarantined_at_ms=now_ms,
+                )
             connection.execute(
                 """
                 UPDATE queue_items
@@ -2507,6 +2627,15 @@ class DurableRunState:
                         failure_code="crash_discarded_uncheckpointed_inference",
                         quarantined_at_ms=now_ms,
                     )
+                if item["kind"] == "p1_interaction":
+                    self._insert_pending_interaction_quarantine_locked(
+                        connection,
+                        user_id=user_id,
+                        logical_run_id=str(item["logical_run_id"]),
+                        quarantine_id=f"{item['logical_run_id']}:quarantine",
+                        failure_code="crash_discarded_uncheckpointed_inference",
+                        quarantined_at_ms=now_ms,
+                    )
             connection.execute(
                 """
                 UPDATE queue_items
@@ -2655,6 +2784,55 @@ class DurableRunState:
             (user_id, logical_run_id),
         ).fetchall()
         return tuple(self._receipt_from_row(row) for row in rows)
+
+    @staticmethod
+    def _insert_pending_interaction_quarantine_locked(
+        connection: sqlite3.Connection,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        quarantine_id: str,
+        failure_code: str,
+        quarantined_at_ms: int,
+    ) -> None:
+        claim = connection.execute(
+            """
+            SELECT * FROM interaction_claims
+            WHERE user_id = ? AND logical_run_id = ?
+            """,
+            (user_id, logical_run_id),
+        ).fetchone()
+        if claim is None or claim["batch_json"] is None:
+            raise DurableStateError(
+                "third interaction fault has no durable claimed range"
+            )
+        batch = InteractionBatch.from_json(str(claim["batch_json"])).payload
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO interaction_quarantines (
+                quarantine_id, user_id, original_logical_run_id, batch_id,
+                first_cursor, last_cursor, failure_code, quarantined_at_ms,
+                sync_state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+            """,
+            (
+                quarantine_id,
+                user_id,
+                logical_run_id,
+                batch.batch_id,
+                batch.first_cursor,
+                batch.last_cursor,
+                failure_code,
+                quarantined_at_ms,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE interaction_claims SET state = 'quarantine_pending', updated_at_ms = ?
+            WHERE user_id = ? AND logical_run_id = ?
+            """,
+            (quarantined_at_ms, user_id, logical_run_id),
+        )
 
     @staticmethod
     def _checkpoint_from_row(row: sqlite3.Row) -> CheckpointRecord:

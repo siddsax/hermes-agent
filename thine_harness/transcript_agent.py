@@ -247,6 +247,11 @@ class RealTranscriptAgentRuntime:
         self._session = HermesAIAgentSession(agent=agent, expected=self._config)
         self.invocations: list[InvocationContext] = []
 
+    @property
+    def agent(self) -> Any:
+        """Share the one long-lived agent with other background Tick adapters."""
+        return self._agent
+
     def invoke(
         self,
         context: InvocationContext,
@@ -475,6 +480,7 @@ def build_real_transcript_runtime(
     firebase_uid: str,
     token_loader: Callable[[], dict[str, Any] | None] = _load_codex_cli_token,
     agent_factory: Callable[..., Any] = _aiagent_factory,
+    additional_tool_registrars: tuple[Callable[[], None], ...] = (),
 ) -> RealTranscriptAgentRuntime:
     """Build the maintained-fork GPT-5.6 SOL medium background adapter."""
     credentials = token_loader()
@@ -486,6 +492,8 @@ def build_real_transcript_runtime(
     binding = TranscriptClaimToolBinding()
     binding.register()
     RunInspectionToolBinding(state=state, user_id=firebase_uid).register()
+    for register in additional_tool_registrars:
+        register()
     config = RuntimeModelConfig.openai_gpt_5_6_sol_medium()
     agent = agent_factory(
         base_url=CODEX_BASE_URL,

@@ -207,6 +207,7 @@ class RunFinalizationResult:
     status: Literal[
         "completed",
         "awaiting_audio_ack",
+        "awaiting_interaction_ack",
         "awaiting_reply_persistence",
         "memory_finalization_pending",
         "terminal_event_pending",
@@ -422,7 +423,15 @@ class RunCoordinator:
             return None
         try:
             if self._finalizer is not None:
-                resumed = self._finalizer.resume_pending(user_id)
+                queued_p0 = self._state.has_queued_p0(user_id)
+                resume_p0 = getattr(self._finalizer, "resume_p0_pending", None)
+                resumed = (
+                    resume_p0(user_id)
+                    if queued_p0 and callable(resume_p0)
+                    else (
+                        None if queued_p0 else self._finalizer.resume_pending(user_id)
+                    )
+                )
                 if resumed is not None:
                     return RunResult(
                         tick_id=resumed.tick_id,

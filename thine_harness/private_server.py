@@ -12,6 +12,17 @@ import uvicorn
 from .private_service import create_private_service_app
 from .home_state import HomeStateProjector
 from .input_pump import BackendTranscriptClient, TranscriptInputPump
+from .interactions import (
+    BackendInteractionClient,
+    BackgroundFinalizerRouter,
+    BackgroundInputRouter,
+    BackgroundRuntimeRouter,
+    HalfHourInteractionDriver,
+    InteractionBatchToolBinding,
+    InteractionInputPump,
+    InteractionRunFinalizer,
+    RealInteractionAgentRuntime,
+)
 from .private_topology import (
     BackendPrivateConfig,
     PrivateServiceConfig,
@@ -78,26 +89,64 @@ def build_product_p0_controller(
         firebase_uid=backend_config.firebase_uid,
         timeout_seconds=backend_config.request_timeout_seconds,
     )
+    interactions = BackendInteractionClient(
+        origin=backend_config.origin,
+        credential=backend_config.credential,
+        firebase_uid=backend_config.firebase_uid,
+        timeout_seconds=backend_config.request_timeout_seconds,
+    )
+    interaction_binding = InteractionBatchToolBinding()
     transcript_runtime = build_real_transcript_runtime(
         store.run_state,
         firebase_uid=private_config.firebase_uid,
+        additional_tool_registrars=(interaction_binding.register,),
     )
-    return P0ChatController(
+    transcript_input = TranscriptInputPump(
+        store.run_state,
+        transcript_port=transcript,
+    )
+    interaction_input = InteractionInputPump(
+        store.run_state,
+        source=interactions,
+        timezone_name="Asia/Kolkata",
+    )
+    controller = P0ChatController(
         store=store,
         backend=backend,
         runtime_factory=runtime_factory
         or (lambda: build_p0_runtime(firebase_uid=private_config.firebase_uid)),
-        background_runtime=transcript_runtime,
-        background_input=TranscriptInputPump(
-            store.run_state,
-            transcript_port=transcript,
-        ),
-        background_finalizer=TranscriptAgentFinalizer(
-            store.run_state,
-            transcript_port=transcript,
-        ),
-        extra_closables=(transcript,),
+        background_runtime=BackgroundRuntimeRouter({
+            "p1_transcript": transcript_runtime,
+            "p1_interaction": RealInteractionAgentRuntime(
+                store.run_state,
+                agent=transcript_runtime.agent,
+                binding=interaction_binding,
+            ),
+        }),
+        background_input=BackgroundInputRouter({
+            "p1_transcript": transcript_input,
+            "p1_interaction": interaction_input,
+        }),
+        background_finalizer=BackgroundFinalizerRouter({
+            "p1_transcript": TranscriptAgentFinalizer(
+                store.run_state,
+                transcript_port=transcript,
+            ),
+            "p1_interaction": InteractionRunFinalizer(
+                store.run_state,
+                source=interactions,
+            ),
+        }),
+        extra_closables=(transcript, interactions),
     )
+    controller.add_closable(
+        HalfHourInteractionDriver(
+            pump=interaction_input,
+            user_id=private_config.firebase_uid,
+            wake_coordinator=controller.wake_background,
+        )
+    )
+    return controller
 
 
 def main() -> int:

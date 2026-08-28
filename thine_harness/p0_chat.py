@@ -1189,6 +1189,10 @@ class HarnessFinalizerDispatcher:
             return None
         return self._background.resume_pending(user_id)
 
+    def resume_p0_pending(self, user_id: str) -> RunFinalizationResult | None:
+        """Let queued user chat bypass only background acknowledgement suffixes."""
+        return self._p0.resume_pending(user_id)
+
     def finalize(
         self,
         context: InvocationContext,
@@ -1630,6 +1634,9 @@ class HarnessCoordinatorDriver:
             "awaiting_reply_persistence",
             "memory_finalization_pending",
             "terminal_event_pending",
+            "awaiting_audio_ack",
+            "awaiting_interaction_ack",
+            "quarantine_pending",
         }
         while not self._closed.is_set():
             self._wake.wait()
@@ -1679,7 +1686,7 @@ class P0ChatController:
         self._runtime = runtime
         self._runtime_factory = runtime_factory
         self._now_ms = now_ms or (lambda: int(time.time() * 1000))
-        self._extra_closables = extra_closables
+        self._extra_closables = list(extra_closables)
 
         def load_runtime() -> HermesInvocationRuntime:
             if self._runtime is None:
@@ -1831,9 +1838,17 @@ class P0ChatController:
             content_ref=content_ref,
         )
 
+    def wake_background(self) -> None:
+        """Wake the one global driver after a background pump persisted a Tick."""
+        self._driver.wake()
+
+    def add_closable(self, value: object) -> None:
+        """Register one runtime-owned adapter/driver for orderly shutdown."""
+        self._extra_closables.append(value)
+
     def close(self) -> None:
         self._driver.close()
-        for item in self._extra_closables:
+        for item in reversed(self._extra_closables):
             close = getattr(item, "close", None)
             if callable(close):
                 close()
