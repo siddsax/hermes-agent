@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import re
 import threading
 import time
-from typing import Any, Callable, Literal, Mapping, Protocol
+from typing import Any, Callable, cast, Literal, Mapping, Protocol
 
 from .contracts.runtime import Tick
 from .contracts.tool_metadata import PRODUCT_TOOL_NAMESPACES
@@ -83,6 +83,7 @@ class InvocationContext:
     attempt_ordinal: int
     checkpoint: CheckpointRecord | None
     acknowledged_receipts: tuple[ToolReceiptRecord, ...]
+    prepared_input: Any | None = None
 
 
 OutcomeStatus = Literal[
@@ -101,10 +102,15 @@ class InvocationOutcome:
     status: OutcomeStatus
     remaining_work: str = ""
     failure_code: str | None = None
+    decision_outcome: Literal["no_action"] | None = None
 
     @classmethod
     def completed(cls) -> "InvocationOutcome":
         return cls("completed")
+
+    @classmethod
+    def no_action(cls) -> "InvocationOutcome":
+        return cls("completed", decision_outcome="no_action")
 
     @classmethod
     def checkpointed(
@@ -161,6 +167,51 @@ class FakeInvocationPort(Protocol):
         tools: "DurableFeatureTools",
         control: InvocationControl,
     ) -> InvocationOutcome: ...
+
+
+@dataclass(frozen=True)
+class ActiveRunLease:
+    """Coordinator-owned acquisition passed only to trusted deep modules."""
+
+    user_id: str
+    logical_run_id: str
+    owner: str
+    attempt_id: str
+    attempt_ordinal: int
+    lease_token: str
+
+
+class RunInputPort(Protocol):
+    """Prepare kind-specific input only after the queue lease is durable."""
+
+    def prepare(
+        self,
+        context: InvocationContext,
+        *,
+        lease: ActiveRunLease,
+    ) -> Any | None: ...
+
+
+@dataclass(frozen=True)
+class RunFinalizationResult:
+    tick_id: str
+    logical_run_id: str
+    attempt_ordinal: int
+    status: Literal["completed", "awaiting_audio_ack"]
+
+
+class RunFinalizerPort(Protocol):
+    """Commit kind-specific finalization and resume acknowledgement suffixes."""
+
+    def resume_pending(self, user_id: str) -> RunFinalizationResult | None: ...
+
+    def finalize(
+        self,
+        context: InvocationContext,
+        outcome: InvocationOutcome,
+        *,
+        lease: ActiveRunLease,
+    ) -> RunFinalizationResult: ...
 
 
 @dataclass(frozen=True)
@@ -224,7 +275,7 @@ class HarnessDiagnostics:
         return self.state.quarantines
 
     def as_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = diagnostics_as_dict(self.state)
+        result = cast(dict[str, Any], diagnostics_as_dict(self.state))
         runtime = asdict(self.runtime)
         runtime["tool_namespaces"] = list(self.runtime.tool_namespaces)
         result["runtime"] = runtime
@@ -311,12 +362,16 @@ class RunCoordinator:
         runtime: FakeInvocationPort,
         feature_port: FakeFeaturePort,
         runtime_configuration: HarnessRuntimeConfiguration | None = None,
+        input_port: RunInputPort | None = None,
+        finalizer: RunFinalizerPort | None = None,
         clock_ms: Callable[[], int] | None = None,
         lease_owner: str = "local-harness",
     ) -> None:
         self._state = state
         self._runtime = runtime
         self._feature_port = feature_port
+        self._input_port = input_port
+        self._finalizer = finalizer
         self._runtime_configuration = runtime_configuration or (
             HarnessRuntimeConfiguration.from_model_config(
                 RuntimeModelConfig.openai_gpt_5_6_sol_medium()
@@ -344,6 +399,15 @@ class RunCoordinator:
         if not self._invocation_lock.acquire(blocking=False):
             return None
         try:
+            if self._finalizer is not None:
+                resumed = self._finalizer.resume_pending(user_id)
+                if resumed is not None:
+                    return RunResult(
+                        tick_id=resumed.tick_id,
+                        logical_run_id=resumed.logical_run_id,
+                        attempt_ordinal=resumed.attempt_ordinal,
+                        status=resumed.status,
+                    )
             leased = self._state.lease_next(
                 user_id,
                 owner=self._lease_owner,
@@ -393,6 +457,14 @@ class RunCoordinator:
                 checkpoint=leased.checkpoint,
                 acknowledged_receipts=leased.acknowledged_receipts,
             )
+            active_lease = ActiveRunLease(
+                user_id=user_id,
+                logical_run_id=str(payload.logical_run_id),
+                owner=self._lease_owner,
+                attempt_id=leased.attempt_id,
+                attempt_ordinal=leased.attempt_ordinal,
+                lease_token=leased.lease_token,
+            )
             tools = DurableFeatureTools(
                 state=self._state,
                 feature_port=self._feature_port,
@@ -404,6 +476,14 @@ class RunCoordinator:
                 clock_ms=self._clock_ms,
             )
             try:
+                if self._input_port is not None:
+                    context = replace(
+                        context,
+                        prepared_input=self._input_port.prepare(
+                            context,
+                            lease=active_lease,
+                        ),
+                    )
                 outcome = self._runtime.invoke(context, tools=tools, control=control)
             except Exception as exc:
                 outcome = InvocationOutcome.fault(
@@ -415,6 +495,37 @@ class RunCoordinator:
                 with self._active_lock:
                     self._active = None
             if outcome.status == "completed":
+                if self._finalizer is not None:
+                    try:
+                        finalized = self._finalizer.finalize(
+                            context,
+                            outcome,
+                            lease=active_lease,
+                        )
+                    except Exception as exc:
+                        status = self._state.record_fault(
+                            user_id=user_id,
+                            logical_run_id=str(payload.logical_run_id),
+                            owner=self._lease_owner,
+                            attempt_id=leased.attempt_id,
+                            lease_token=leased.lease_token,
+                            failure_code=(
+                                f"finalization_exception:{type(exc).__name__}"
+                            ),
+                            now_ms=self._clock_ms(),
+                        )
+                        return RunResult(
+                            tick_id=str(payload.tick_id),
+                            logical_run_id=str(payload.logical_run_id),
+                            attempt_ordinal=leased.attempt_ordinal,
+                            status=status,
+                        )
+                    return RunResult(
+                        tick_id=finalized.tick_id,
+                        logical_run_id=finalized.logical_run_id,
+                        attempt_ordinal=finalized.attempt_ordinal,
+                        status=finalized.status,
+                    )
                 self._state.complete(
                     user_id=user_id,
                     logical_run_id=str(payload.logical_run_id),
@@ -489,6 +600,7 @@ class RunCoordinator:
 
 
 __all__ = [
+    "ActiveRunLease",
     "DurableFeatureTools",
     "FakeFeatureAcknowledgement",
     "FakeFeatureCommand",
@@ -499,6 +611,9 @@ __all__ = [
     "InvocationContext",
     "InvocationControl",
     "InvocationOutcome",
+    "RunFinalizationResult",
+    "RunFinalizerPort",
+    "RunInputPort",
     "RunCoordinator",
     "RunResult",
 ]
