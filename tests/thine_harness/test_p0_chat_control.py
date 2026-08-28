@@ -82,6 +82,24 @@ class _CompletingSession:
         return AgentTurnResult(final_output=f"Reply to: {request.prompt}")
 
 
+class _ProgressSession:
+    def invoke(self, request, *, emit, control) -> AgentTurnResult:
+        emit(InvocationEvent.progress("assistant_delta", "A safe visible delta"))
+        return AgentTurnResult(final_output=f"Reply to: {request.prompt}")
+
+
+class _AdvancingClock:
+    def __init__(self, start_ms: int) -> None:
+        self._now_ms = start_ms
+        self._lock = threading.Lock()
+
+    def __call__(self) -> int:
+        with self._lock:
+            value = self._now_ms
+            self._now_ms += 10
+            return value
+
+
 class _AlwaysFailingSession:
     def __init__(self) -> None:
         self.calls = 0
@@ -507,6 +525,81 @@ def test_final_delivery_retries_from_the_durable_outbox_without_rerunning_infere
         ] == [(1, "succeeded")]
     finally:
         controller.close()
+
+
+def test_p0_retains_redacted_latency_milestones_for_local_diagnostics(
+    tmp_path,
+) -> None:
+    backend = _SuccessfulBackend()
+    clock = _AdvancingClock(NOW_MS)
+    store = P0ChatStore(tmp_path / "p0-chat.sqlite3")
+    controller = P0ChatController(
+        store=store,
+        backend=backend,
+        runtime=HermesInvocationRuntime(
+            session=_ProgressSession(),
+            config=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+        ),
+        now_ms=clock,
+        retry_delay_seconds=0,
+    )
+
+    try:
+        with TestClient(
+            create_private_service_app(_private_config(), p0_control=controller)
+        ) as client:
+            response = client.post(
+                "/v1/control",
+                headers=_headers(),
+                json=_submit_payload(),
+            )
+            assert response.status_code == 200
+            result_ref = str(response.json()["result_ref"])
+            receipt_id = result_ref.removeprefix("queue-receipt:")
+            _wait_for_completed_outbox(store, receipt_id)
+
+        trace = controller.latency_trace(result_ref)
+
+        assert trace.time_to_first_progress_ms is not None
+        assert trace.time_to_first_model_output_ms is not None
+        assert trace.time_to_reply_persisted_ms is not None
+        assert trace.time_to_terminal_event_ms is not None
+        assert trace.time_to_first_progress_ms <= trace.time_to_first_model_output_ms
+        assert trace.time_to_first_model_output_ms <= trace.time_to_reply_persisted_ms
+        assert trace.time_to_reply_persisted_ms <= trace.time_to_terminal_event_ms
+        assert trace.milestone_phases["first_model_output"] == "assistant_delta"
+        assert "stop_hook_completed" in trace.milestones_ms
+        assert "Hello Hermes" not in repr(trace.as_dict())
+        assert "A safe visible delta" not in repr(trace.as_dict())
+    finally:
+        controller.close()
+
+
+def test_p0_latency_diagnostics_keep_only_latest_50_completed_turns(tmp_path: Path):
+    store = P0ChatStore(tmp_path / "p0.sqlite3")
+    receipt_ids: list[str] = []
+    for index in range(51):
+        receipt = store.admit(
+            user_id="firebase-user-1",
+            user_message_id=f"message-{index:02d}",
+            idempotency_key=f"key-{index:02d}",
+            submission_ref=f"p0-submission:message-{index:02d}",
+            now_ms=index,
+        )
+        receipt_ids.append(receipt.receipt_id)
+        store.record_latency_milestone(
+            receipt.receipt_id,
+            milestone="first_progress",
+            phase="test",
+            occurred_at_ms=index + 1,
+        )
+        store.mark_reply_suffix_completed(
+            receipt_id=receipt.receipt_id, now_ms=index + 2
+        )
+
+    assert store.latency_trace(receipt_ids[0]).milestones_ms == {}
+    assert store.latency_trace(receipt_ids[1]).milestones_ms["first_progress"] == 2
+    assert store.latency_trace(receipt_ids[-1]).milestones_ms["first_progress"] == 51
 
 
 def test_ambiguous_terminal_marker_replays_exactly_without_reply_content(

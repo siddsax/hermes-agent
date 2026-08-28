@@ -60,6 +60,7 @@ _VERSION = {"major": 1, "minor": 0}
 _USER_MESSAGE_KEY_PREFIX = "user-message:"
 _SUBMISSION_REF_PREFIX = "p0-submission:"
 _QUEUE_RECEIPT_REF_PREFIX = "queue-receipt:"
+_P0_LATENCY_TRACE_HISTORY_LIMIT = 50
 _P0_SYSTEM_PROMPT = (
     "You are Hermes controlling the user's local Thine daily-driver. This is a "
     "user-initiated chat turn, so answer the user directly while using available "
@@ -117,6 +118,25 @@ class PendingP0Finalization:
     text: str
     terminal_sequence: int
     artifact: P0FinalizationArtifact
+
+
+@dataclass(frozen=True)
+class P0LatencyTrace:
+    """Redacted milestone timings for one user-authored chat turn."""
+
+    receipt_id: str
+    logical_run_id: str
+    enqueued_at_ms: int
+    milestones_ms: dict[str, int]
+    milestone_phases: dict[str, str]
+    milestone_offsets_ms: dict[str, int]
+    time_to_first_progress_ms: int | None
+    time_to_first_model_output_ms: int | None
+    time_to_reply_persisted_ms: int | None
+    time_to_terminal_event_ms: int | None
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 class BackendPrivateChatPort(Protocol):
@@ -392,6 +412,16 @@ class P0ChatStore:
                     updated_at_ms INTEGER NOT NULL,
                     FOREIGN KEY(queue_receipt_id) REFERENCES p0_queue_receipts(receipt_id)
                 );
+                CREATE TABLE IF NOT EXISTS p0_latency_milestones (
+                    receipt_id TEXT NOT NULL,
+                    milestone TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    occurred_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY(receipt_id, milestone),
+                    FOREIGN KEY(receipt_id) REFERENCES p0_queue_receipts(receipt_id)
+                );
+                CREATE INDEX IF NOT EXISTS p0_latency_by_time
+                    ON p0_latency_milestones(receipt_id, occurred_at_ms, milestone);
                 """
             )
             self._ensure_column(
@@ -555,6 +585,13 @@ class P0ChatStore:
                 tick=tick,
                 now_ms=persisted_at_ms,
             )
+            self._record_latency_locked(
+                connection,
+                receipt_id=receipt_id,
+                milestone="admitted",
+                phase="queue",
+                occurred_at_ms=persisted_at_ms,
+            )
         if row is None:
             raise RuntimeError(
                 "durable P0 queue receipt was not readable after admission"
@@ -616,6 +653,102 @@ class P0ChatStore:
                 """,
                 (now_ms, receipt_id),
             )
+            self._record_latency_locked(
+                connection,
+                receipt_id=receipt_id,
+                milestone="submission_resolved",
+                phase="input",
+                occurred_at_ms=now_ms,
+            )
+
+    @staticmethod
+    def _record_latency_locked(
+        connection: sqlite3.Connection,
+        *,
+        receipt_id: str,
+        milestone: str,
+        phase: str,
+        occurred_at_ms: int,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO p0_latency_milestones (
+                receipt_id, milestone, phase, occurred_at_ms
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (receipt_id, milestone, phase, occurred_at_ms),
+        )
+
+    def record_latency_milestone(
+        self,
+        receipt_id: str,
+        *,
+        milestone: str,
+        phase: str,
+        occurred_at_ms: int,
+    ) -> None:
+        """Persist only the first occurrence of one bounded diagnostic milestone."""
+        with self._connect() as connection:
+            self._record_latency_locked(
+                connection,
+                receipt_id=receipt_id,
+                milestone=milestone,
+                phase=phase,
+                occurred_at_ms=occurred_at_ms,
+            )
+
+    @staticmethod
+    def _prune_completed_latency_traces_locked(
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Retain diagnostics for the latest 50 delivered P0 turns."""
+        connection.execute(
+            """
+            DELETE FROM p0_latency_milestones
+            WHERE receipt_id IN (
+                SELECT receipt_id FROM p0_queue_receipts
+                WHERE state = 'delivered'
+                ORDER BY enqueued_at_ms DESC, receipt_id DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (_P0_LATENCY_TRACE_HISTORY_LIMIT,),
+        )
+
+    def latency_trace(self, receipt_id: str) -> P0LatencyTrace:
+        receipt = self.load_receipt(receipt_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT milestone, phase, occurred_at_ms
+                FROM p0_latency_milestones
+                WHERE receipt_id = ?
+                ORDER BY occurred_at_ms, milestone
+                """,
+                (receipt_id,),
+            ).fetchall()
+        milestones = {str(row["milestone"]): int(row["occurred_at_ms"]) for row in rows}
+        phases = {str(row["milestone"]): str(row["phase"]) for row in rows}
+        offsets = {
+            milestone: max(occurred_at_ms - receipt.enqueued_at_ms, 0)
+            for milestone, occurred_at_ms in milestones.items()
+        }
+
+        def offset(milestone: str) -> int | None:
+            return offsets.get(milestone)
+
+        return P0LatencyTrace(
+            receipt_id=receipt.receipt_id,
+            logical_run_id=receipt.logical_run_id,
+            enqueued_at_ms=receipt.enqueued_at_ms,
+            milestones_ms=milestones,
+            milestone_phases=phases,
+            milestone_offsets_ms=offsets,
+            time_to_first_progress_ms=offset("first_progress"),
+            time_to_first_model_output_ms=offset("first_model_output"),
+            time_to_reply_persisted_ms=offset("reply_persisted"),
+            time_to_terminal_event_ms=offset("terminal_event_published"),
+        )
 
     def load_receipt(self, receipt_id: str) -> _QueueReceipt:
         with self._connect() as connection:
@@ -914,6 +1047,13 @@ class P0ChatStore:
                 """,
                 (receipt_id,),
             )
+            self._record_latency_locked(
+                connection,
+                receipt_id=receipt_id,
+                milestone="reply_persisted",
+                phase="reply_delivery",
+                occurred_at_ms=now_ms,
+            )
 
     def mark_memory_finalization_pending(self, receipt_id: str, *, now_ms: int) -> None:
         with self.run_state._transaction() as connection:
@@ -1057,6 +1197,13 @@ class P0ChatStore:
                 """,
                 (now_ms, receipt.user_id, receipt.logical_run_id),
             )
+            self._record_latency_locked(
+                connection,
+                receipt_id=receipt.receipt_id,
+                milestone="stop_hook_completed",
+                phase="working_memory",
+                occurred_at_ms=now_ms,
+            )
 
     def record_hook_failure(
         self,
@@ -1142,6 +1289,7 @@ class P0ChatStore:
                     receipt.logical_run_id,
                 ),
             )
+            self._prune_completed_latency_traces_locked(connection)
 
 
 class _NoopFeaturePort:
@@ -1389,6 +1537,19 @@ class P0CoordinatorRuntime:
             return InvocationOutcome.fault(
                 result.failure_reason or "Hermes P0 invocation did not complete"
             )
+        completed_at_ms = self._now_ms()
+        self._store.record_latency_milestone(
+            receipt.receipt_id,
+            milestone="first_model_output",
+            phase="model",
+            occurred_at_ms=completed_at_ms,
+        )
+        self._store.record_latency_milestone(
+            receipt.receipt_id,
+            milestone="model_completed",
+            phase="model",
+            occurred_at_ms=completed_at_ms,
+        )
         runtime = self._runtime_loader()
         cache_identity: CacheIdentity | None = None
         if isinstance(runtime, ProductP0Runtime):
@@ -1452,6 +1613,40 @@ class P0CoordinatorRuntime:
         except Exception:
             if not best_effort:
                 raise
+            return
+        if mapped_kind in {
+            "started",
+            "safe_status",
+            "tool_progress",
+            "assistant_delta",
+        }:
+            self._store.record_latency_milestone(
+                receipt.receipt_id,
+                milestone="first_progress",
+                phase=event.payload.phase,
+                occurred_at_ms=event.payload.emitted_at_ms,
+            )
+        if mapped_kind in {"accepted", "started"}:
+            self._store.record_latency_milestone(
+                receipt.receipt_id,
+                milestone=f"{mapped_kind}_published",
+                phase=event.payload.phase,
+                occurred_at_ms=event.payload.emitted_at_ms,
+            )
+        if mapped_kind == "assistant_delta":
+            self._store.record_latency_milestone(
+                receipt.receipt_id,
+                milestone="first_model_output",
+                phase=event.payload.phase,
+                occurred_at_ms=event.payload.emitted_at_ms,
+            )
+        if mapped_kind == "final":
+            self._store.record_latency_milestone(
+                receipt.receipt_id,
+                milestone="terminal_event_published",
+                phase=event.payload.phase,
+                occurred_at_ms=self._now_ms(),
+            )
 
     def publish_terminal_failure(self, logical_run_id: str, user_id: str) -> None:
         receipt = self._store.receipt_for_run(
@@ -1656,7 +1851,7 @@ class P0RunFinalizer:
             tick_id=pending.receipt.tick_id,
             logical_run_id=pending.receipt.logical_run_id,
             attempt_ordinal=pending.attempt_ordinal,
-            status=status,  # type: ignore[arg-type]
+            status=cast(Any, status),
         )
 
 
@@ -1866,7 +2061,7 @@ class P0ChatController:
             user_id=payload.user_id,
             user_message_id=user_message_id,
             idempotency_key=idempotency_key,
-            submission_ref=payload.payload_ref,
+            submission_ref=cast(str, payload.payload_ref),
             now_ms=self._now_ms(),
         )
         tick = self._tick_for_receipt(receipt)
@@ -1901,8 +2096,11 @@ class P0ChatController:
             return "timed_out", "deadline_expired"
         if payload.operation != "submit_p0":
             return "rejected", "unsupported_operation"
-        if not payload.payload_ref.startswith(_SUBMISSION_REF_PREFIX) or not (
-            payload.payload_ref.removeprefix(_SUBMISSION_REF_PREFIX)
+        payload_ref = payload.payload_ref
+        if (
+            not isinstance(payload_ref, str)
+            or not payload_ref.startswith(_SUBMISSION_REF_PREFIX)
+            or not (payload_ref.removeprefix(_SUBMISSION_REF_PREFIX))
         ):
             return "rejected", "invalid_payload_ref"
         if not payload.idempotency_key.startswith(_USER_MESSAGE_KEY_PREFIX) or not (
@@ -1935,6 +2133,13 @@ class P0ChatController:
             user_id=user_id,
             content_ref=content_ref,
         )
+
+    def latency_trace(self, receipt_ref: str) -> P0LatencyTrace:
+        """Return redacted local timing evidence for one queue receipt."""
+        receipt_id = receipt_ref.removeprefix(_QUEUE_RECEIPT_REF_PREFIX)
+        if not receipt_ref.startswith(_QUEUE_RECEIPT_REF_PREFIX) or not receipt_id:
+            raise ValueError("invalid queue receipt reference")
+        return self._store.latency_trace(receipt_id)
 
     def wake_background(self) -> None:
         """Wake the one global driver after a background pump persisted a Tick."""
@@ -1985,6 +2190,7 @@ __all__ = [
     "HarnessCoordinatorDriver",
     "P0ChatController",
     "P0ChatStore",
+    "P0LatencyTrace",
     "P0CoordinatorRuntime",
     "P0RunFinalizer",
     "ProductP0Runtime",
