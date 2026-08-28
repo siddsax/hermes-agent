@@ -89,4 +89,3 @@ class TranscriptNoActionFinalizer:
 
 
 __all__ = ["TranscriptNoActionFinalizer"]
-

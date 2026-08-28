@@ -161,10 +161,9 @@ def create_private_service_app(
         openapi_url=None,
     )
     app.add_middleware(
-        # Starlette accepts callable ASGI middleware classes here; ty's
-        # variadic middleware-factory protocol does not recognize the class.
+        # Middleware constructor options are forwarded as keywords by Starlette.
         _RequestDeadlineMiddleware,
-        config.request_timeout_seconds,
+        timeout_seconds=config.request_timeout_seconds,
     )
 
     @app.exception_handler(_PrivateRequestRejected)
