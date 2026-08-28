@@ -1431,7 +1431,7 @@ class InteractionRunFinalizer:
                 tick_id=pending.tick_id,
                 logical_run_id=pending.logical_run_id,
                 attempt_ordinal=pending.attempt_ordinal,
-                status="awaiting_interaction_ack",  # type: ignore[arg-type]
+                status="awaiting_interaction_ack",
             )
         self._complete_ack(pending, receipt)
         return RunFinalizationResult(

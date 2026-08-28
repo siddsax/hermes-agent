@@ -11,7 +11,12 @@ from typing import Any, Callable, Iterator, Mapping
 
 from .contracts.ports import ClaimId, MemoryVersion, RunId, TranscriptPort
 from .input_pump import PreparedTranscriptInput
-from .probe import CODEX_BASE_URL, CodexCredentialUnavailable, _aiagent_factory, _load_codex_cli_token
+from .probe import (
+    CODEX_BASE_URL,
+    CodexCredentialUnavailable,
+    _aiagent_factory,
+    _load_codex_cli_token,
+)
 from .run_coordinator import (
     ActiveRunLease,
     InvocationContext,
@@ -43,7 +48,8 @@ INSPECT_CLAIM_TOOL_NAME = "thine_transcripts_inspect_claimed_batch"
 INSPECT_RUN_TOOL_NAME = "thine_run_inspect_receipts"
 _SYSTEM_PROMPT = (
     "You are Hermes controlling the user's local Thine daily-driver. Process one "
-    "durable transcript Tick at a time. Discover Thine helpers through tool_search "
+    "durable background Tick at a time, including transcript and ordered speaker "
+    "mapping Ticks. Discover Thine helpers through tool_search "
     "and tool_describe; their schemas are intentionally not eagerly loaded. It is "
     "valid to call no tool and choose no user-visible action. Never imply an effect "
     "unless a tool receipt proves it. The final prose is a private run trace, not a "
@@ -221,7 +227,9 @@ def _cache_identity(agent: Any) -> CacheIdentity:
     cache_scope = _cache_scope_from_session_id(
         resolve_prompt_cache_scope(agent) or str(agent.session_id)
     )
-    prompt_cache_key = _content_cache_key(system_prompt, wire_tools, cache_scope) or cache_scope
+    prompt_cache_key = (
+        _content_cache_key(system_prompt, wire_tools, cache_scope) or cache_scope
+    )
     return CacheIdentity.from_request(
         session_id=str(agent.session_id),
         prompt_cache_key=prompt_cache_key,
@@ -249,7 +257,7 @@ class RealTranscriptAgentRuntime:
 
     @property
     def agent(self) -> Any:
-        """Share the one long-lived agent with other background Tick adapters."""
+        """The one cached AIAgent shared by all background Tick adapters."""
         return self._agent
 
     def invoke(
@@ -360,7 +368,9 @@ class _StagedMemoryStore:
         self.markdown: str | None = None
         self.token_count: int | None = None
 
-    def commit(self, *, expected_version: int, markdown: str, token_count: int, run_id: str) -> int:
+    def commit(
+        self, *, expected_version: int, markdown: str, token_count: int, run_id: str
+    ) -> int:
         del run_id
         self.markdown = markdown
         self.token_count = token_count
@@ -431,7 +441,8 @@ class TranscriptAgentFinalizer:
             memory_markdown=staged.markdown,
             memory_token_count=staged.token_count,
             tokenizer_status=(
-                "exact" if hook.kind is StopHookOutcomeKind.COMMITTED
+                "exact"
+                if hook.kind is StopHookOutcomeKind.COMMITTED
                 else "unresolved_fail_closed"
             ),
             agent_inspection={
@@ -480,7 +491,7 @@ def build_real_transcript_runtime(
     firebase_uid: str,
     token_loader: Callable[[], dict[str, Any] | None] = _load_codex_cli_token,
     agent_factory: Callable[..., Any] = _aiagent_factory,
-    additional_tool_registrars: tuple[Callable[[], None], ...] = (),
+    additional_tool_bindings: tuple[Any, ...] = (),
 ) -> RealTranscriptAgentRuntime:
     """Build the maintained-fork GPT-5.6 SOL medium background adapter."""
     credentials = token_loader()
@@ -492,8 +503,8 @@ def build_real_transcript_runtime(
     binding = TranscriptClaimToolBinding()
     binding.register()
     RunInspectionToolBinding(state=state, user_id=firebase_uid).register()
-    for register in additional_tool_registrars:
-        register()
+    for additional_binding in additional_tool_bindings:
+        additional_binding.register()
     config = RuntimeModelConfig.openai_gpt_5_6_sol_medium()
     agent = agent_factory(
         base_url=CODEX_BASE_URL,

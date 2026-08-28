@@ -1607,11 +1607,17 @@ class HarnessCoordinatorDriver:
         user_id: str,
         retry_delay_seconds: float,
         result_callback: Callable[[str, str, str], None],
+        background_scan: Callable[[str, RunCoordinator], object] | None = None,
+        background_scan_interval_seconds: float = 5.0,
     ) -> None:
+        if background_scan_interval_seconds <= 0:
+            raise ValueError("background scan interval must be positive")
         self._coordinator = coordinator
         self._user_id = user_id
         self._retry_delay_seconds = retry_delay_seconds
         self._result_callback = result_callback
+        self._background_scan = background_scan
+        self._background_scan_interval_seconds = background_scan_interval_seconds
         self._wake = threading.Event()
         self._closed = threading.Event()
         self._thread = threading.Thread(
@@ -1636,11 +1642,24 @@ class HarnessCoordinatorDriver:
             "terminal_event_pending",
             "awaiting_audio_ack",
             "awaiting_interaction_ack",
+            "awaiting_speaker_cursor_ack",
             "quarantine_pending",
         }
         while not self._closed.is_set():
-            self._wake.wait()
+            timeout = (
+                None
+                if self._background_scan is None
+                else self._background_scan_interval_seconds
+            )
+            self._wake.wait(timeout=timeout)
             self._wake.clear()
+            if self._background_scan is not None:
+                try:
+                    self._background_scan(self._user_id, self._coordinator)
+                except Exception:
+                    # Availability is advisory. The next bounded scan retries it;
+                    # no Logical Run exists yet, so this is not an execution fault.
+                    pass
             while not self._closed.is_set():
                 result = self._coordinator.run_next(self._user_id)
                 if result is None:
@@ -1648,6 +1667,14 @@ class HarnessCoordinatorDriver:
                 self._result_callback(
                     result.logical_run_id, result.status, self._user_id
                 )
+                if self._background_scan is not None and result.status in {
+                    "completed",
+                    "quarantined",
+                }:
+                    try:
+                        self._background_scan(self._user_id, self._coordinator)
+                    except Exception:
+                        pass
                 if result.status in waiting:
                     if self._closed.wait(self._retry_delay_seconds):
                         return
@@ -1670,6 +1697,8 @@ class P0ChatController:
         background_runtime: FakeInvocationPort | None = None,
         background_input: RunInputPort | None = None,
         background_finalizer: RunFinalizerPort | None = None,
+        background_scan: Callable[[str, RunCoordinator], object] | None = None,
+        background_scan_interval_seconds: float = 5.0,
         feature_port: FakeFeaturePort | None = None,
         extra_closables: tuple[object, ...] = (),
     ) -> None:
@@ -1730,8 +1759,10 @@ class P0ChatController:
             user_id=self._infer_user_id(),
             retry_delay_seconds=retry_delay_seconds,
             result_callback=self._on_result,
+            background_scan=background_scan,
+            background_scan_interval_seconds=background_scan_interval_seconds,
         )
-        if self._store.has_recoverable_work():
+        if self._store.has_recoverable_work() or background_scan is not None:
             self._driver.wake()
 
     def admit(

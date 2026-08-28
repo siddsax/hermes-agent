@@ -37,6 +37,14 @@ from .p0_chat import (
     build_p0_runtime,
 )
 from .runtime import HermesInvocationRuntime
+from .speaker_mappings import (
+    BackendSpeakerMappingClient,
+    RealSpeakerMappingAgentRuntime,
+    SpeakerMappingFinalizer,
+    SpeakerMappingInputPump,
+    SpeakerMappingInspectionToolBinding,
+    SpeakerMappingToolBinding,
+)
 from .transcript_agent import TranscriptAgentFinalizer, build_real_transcript_runtime
 
 
@@ -95,15 +103,33 @@ def build_product_p0_controller(
         firebase_uid=backend_config.firebase_uid,
         timeout_seconds=backend_config.request_timeout_seconds,
     )
+    speakers = BackendSpeakerMappingClient(
+        origin=backend_config.origin,
+        credential=backend_config.credential,
+        firebase_uid=backend_config.firebase_uid,
+        timeout_seconds=backend_config.request_timeout_seconds,
+    )
     interaction_binding = InteractionBatchToolBinding()
+    speaker_binding = SpeakerMappingToolBinding()
     transcript_runtime = build_real_transcript_runtime(
         store.run_state,
         firebase_uid=private_config.firebase_uid,
-        additional_tool_registrars=(interaction_binding.register,),
+        additional_tool_bindings=(
+            interaction_binding,
+            speaker_binding,
+            SpeakerMappingInspectionToolBinding(
+                state=store.run_state,
+                user_id=private_config.firebase_uid,
+            ),
+        ),
     )
     transcript_input = TranscriptInputPump(
         store.run_state,
         transcript_port=transcript,
+    )
+    speaker_input = SpeakerMappingInputPump(
+        store.run_state,
+        speaker_port=speakers,
     )
     interaction_input = InteractionInputPump(
         store.run_state,
@@ -122,10 +148,16 @@ def build_product_p0_controller(
                 agent=transcript_runtime.agent,
                 binding=interaction_binding,
             ),
+            "p1_speaker": RealSpeakerMappingAgentRuntime(
+                store.run_state,
+                agent=transcript_runtime.agent,
+                binding=speaker_binding,
+            ),
         }),
         background_input=BackgroundInputRouter({
             "p1_transcript": transcript_input,
             "p1_interaction": interaction_input,
+            "p1_speaker": speaker_input,
         }),
         background_finalizer=BackgroundFinalizerRouter({
             "p1_transcript": TranscriptAgentFinalizer(
@@ -136,8 +168,15 @@ def build_product_p0_controller(
                 store.run_state,
                 source=interactions,
             ),
+            "p1_speaker": SpeakerMappingFinalizer(
+                store.run_state,
+                speaker_port=speakers,
+            ),
         }),
-        extra_closables=(transcript, interactions),
+        background_scan=lambda user_id, coordinator: speaker_input.enqueue_next(
+            user_id, coordinator=coordinator
+        ),
+        extra_closables=(transcript, interactions, speakers),
     )
     controller.add_closable(
         HalfHourInteractionDriver(

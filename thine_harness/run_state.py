@@ -23,11 +23,12 @@ from .contracts.interactions import InteractionBatch
 from .contracts.runtime import Tick
 from .contracts.recovery import ExplicitRetry, InputGap, QuarantineRecord
 from .contracts.runtime import InputReceipt, RunFinalization, RunReceipt
+from .contracts.speakers import SpeakerCursorOutcome, SpeakerMappingEvent
 from .contracts.transcripts import TranscriptAck, TranscriptClaim
 from .working_memory import WorkingMemorySnapshot
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class DurableStateError(RuntimeError):
@@ -226,6 +227,40 @@ class PendingInteractionAck:
 
 
 @dataclass(frozen=True)
+class PreparedSpeakerMappingRecord:
+    user_id: str
+    tick_id: str
+    logical_run_id: str
+    event: SpeakerMappingEvent
+    explicit_retry: ExplicitRetry | None
+
+
+@dataclass(frozen=True)
+class PendingSpeakerAck:
+    user_id: str
+    tick_id: str
+    logical_run_id: str
+    attempt_ordinal: int
+    event_id: str
+    cursor: int
+    finalization_id: str
+    working_memory_outcome: Literal["unchanged", "written"]
+
+
+@dataclass(frozen=True)
+class PendingSpeakerQuarantine:
+    user_id: str
+    tick_id: str
+    logical_run_id: str
+    attempt_ordinal: int
+    event_id: str
+    cursor: int
+    quarantine_id: str
+    failure_code: str
+    quarantined_at_ms: int
+
+
+@dataclass(frozen=True)
 class PendingInteractionQuarantine:
     user_id: str
     tick_id: str
@@ -235,6 +270,18 @@ class PendingInteractionQuarantine:
     quarantine_id: str
     failure_code: str
     quarantined_at_ms: int
+
+
+@dataclass(frozen=True)
+class SpeakerMappingInspection:
+    event: SpeakerMappingEvent
+    state: str
+    logical_run_id: str
+    normal_cursor: int
+    quarantine_id: str | None
+    quarantine_record: QuarantineRecord | None
+    acknowledgement: SpeakerCursorOutcome | None
+    retry_run_ids: tuple[str, ...]
 
 
 def default_database_path() -> Path:
@@ -647,6 +694,55 @@ class DurableRunState:
                     COMMIT;
                     """
                 )
+                version = 5
+            if version == 5:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE speaker_cursors (
+                        user_id TEXT PRIMARY KEY,
+                        normal_cursor INTEGER NOT NULL CHECK (normal_cursor >= 0),
+                        updated_at_ms INTEGER NOT NULL
+                    );
+
+                    CREATE TABLE speaker_mapping_inputs (
+                        event_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        cursor INTEGER NOT NULL CHECK (cursor >= 1),
+                        original_logical_run_id TEXT NOT NULL UNIQUE,
+                        event_json TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        quarantine_id TEXT,
+                        quarantine_record_json TEXT,
+                        ack_json TEXT,
+                        created_at_ms INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        UNIQUE(user_id, cursor),
+                        FOREIGN KEY(original_logical_run_id)
+                            REFERENCES queue_items(logical_run_id),
+                        FOREIGN KEY(quarantine_id) REFERENCES quarantines(quarantine_id)
+                    );
+                    CREATE INDEX speaker_mapping_inputs_state
+                        ON speaker_mapping_inputs(user_id, state, cursor);
+
+                    CREATE TABLE speaker_explicit_retries (
+                        retry_run_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        quarantine_id TEXT NOT NULL,
+                        event_id TEXT NOT NULL,
+                        explicit_retry_json TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        created_at_ms INTEGER NOT NULL,
+                        completed_at_ms INTEGER,
+                        FOREIGN KEY(retry_run_id) REFERENCES queue_items(logical_run_id),
+                        FOREIGN KEY(event_id) REFERENCES speaker_mapping_inputs(event_id)
+                    );
+                    CREATE INDEX speaker_retries_by_quarantine
+                        ON speaker_explicit_retries(user_id, quarantine_id, created_at_ms);
+                    PRAGMA user_version = 6;
+                    COMMIT;
+                    """
+                )
         except BaseException:
             connection.rollback()
             raise
@@ -688,6 +784,125 @@ class DurableRunState:
                 return str(existing["tick_id"])
             self._insert_tick_locked(connection, tick=tick, now_ms=now_ms)
         return str(payload.tick_id)
+
+    def speaker_cursor(self, user_id: str) -> int:
+        """Return the durable normal mapping cursor without creating state."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT normal_cursor FROM speaker_cursors WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        return 0 if row is None else int(row["normal_cursor"])
+
+    def enqueue_speaker_mapping(
+        self,
+        *,
+        event: SpeakerMappingEvent,
+        tick: Tick,
+        now_ms: int,
+    ) -> str:
+        """Atomically retain one ordered mapping and its P1 Tick."""
+        mapping = event.payload
+        payload = tick.payload
+        if (
+            payload.kind != "p1_speaker"
+            or str(payload.user_id) != mapping.user_id
+            or str(payload.source_ref.id) != mapping.event_id
+            or str(payload.payload.reference_id) != mapping.event_id
+        ):
+            raise DurableStateError("speaker Tick does not match its mapping event")
+        with self._transaction() as connection:
+            replay = connection.execute(
+                "SELECT event_json, original_logical_run_id FROM speaker_mapping_inputs WHERE event_id = ? AND user_id = ?",
+                (mapping.event_id, mapping.user_id),
+            ).fetchone()
+            if replay is not None:
+                if json.loads(str(replay["event_json"])) != event.to_dict() or str(
+                    replay["original_logical_run_id"]
+                ) != str(payload.logical_run_id):
+                    raise DurableStateError(
+                        "speaker event identity was reused with different content"
+                    )
+                return str(payload.tick_id)
+            outstanding = connection.execute(
+                """
+                SELECT 1 FROM speaker_mapping_inputs
+                WHERE user_id = ? AND state IN (
+                    'queued', 'awaiting_ack', 'quarantine_pending'
+                ) LIMIT 1
+                """,
+                (mapping.user_id,),
+            ).fetchone()
+            if outstanding is not None:
+                raise DurableStateError(
+                    "only one normal speaker mapping may be outstanding"
+                )
+            cursor_row = connection.execute(
+                "SELECT normal_cursor FROM speaker_cursors WHERE user_id = ?",
+                (mapping.user_id,),
+            ).fetchone()
+            normal_cursor = 0 if cursor_row is None else int(cursor_row[0])
+            if int(mapping.cursor) != normal_cursor + 1:
+                raise DurableStateError(
+                    "speaker mapping cursor must be the next contiguous cursor"
+                )
+            self._insert_tick_locked(connection, tick=tick, now_ms=now_ms)
+            connection.execute(
+                """
+                INSERT INTO speaker_mapping_inputs (
+                    event_id, user_id, cursor, original_logical_run_id,
+                    event_json, state, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)
+                """,
+                (
+                    mapping.event_id,
+                    mapping.user_id,
+                    mapping.cursor,
+                    payload.logical_run_id,
+                    event.to_json(),
+                    now_ms,
+                    now_ms,
+                ),
+            )
+        return str(payload.tick_id)
+
+    def prepared_speaker_mapping(
+        self, *, user_id: str, logical_run_id: str
+    ) -> PreparedSpeakerMappingRecord:
+        """Load the exact retained mapping for a leased normal or retry run."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT s.event_json, q.tick_id, q.logical_run_id,
+                       r.explicit_retry_json
+                FROM queue_items q
+                LEFT JOIN speaker_explicit_retries r
+                  ON r.user_id = q.user_id AND r.retry_run_id = q.logical_run_id
+                JOIN speaker_mapping_inputs s
+                  ON s.user_id = q.user_id
+                 AND (
+                    s.original_logical_run_id = q.logical_run_id
+                    OR s.event_id = r.event_id
+                 )
+                WHERE q.user_id = ? AND q.logical_run_id = ?
+                  AND q.kind = 'p1_speaker'
+                """,
+                (user_id, logical_run_id),
+            ).fetchone()
+        if row is None:
+            raise DurableStateError("speaker run has no retained mapping input")
+        retry = (
+            None
+            if row["explicit_retry_json"] is None
+            else ExplicitRetry.from_json(str(row["explicit_retry_json"]))
+        )
+        return PreparedSpeakerMappingRecord(
+            user_id=user_id,
+            tick_id=str(row["tick_id"]),
+            logical_run_id=str(row["logical_run_id"]),
+            event=SpeakerMappingEvent.from_json(str(row["event_json"])),
+            explicit_retry=retry,
+        )
 
     @staticmethod
     def _insert_tick_locked(
@@ -1548,6 +1763,901 @@ class DurableRunState:
             ),
         )
 
+    @staticmethod
+    def _insert_agent_inspection(
+        connection: sqlite3.Connection,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        attempt_id: str,
+        memory_version: int,
+        memory_token_count: int | None,
+        recorded_at_ms: int,
+        agent_inspection: dict[str, Any] | None,
+    ) -> None:
+        if agent_inspection is None:
+            return
+        required = {
+            "provider",
+            "model",
+            "api_mode",
+            "reasoning_effort",
+            "final_output",
+            "tool_discoveries",
+            "usage",
+            "stop_hook_outcome",
+            "stop_hook_cache_identity",
+        }
+        if set(agent_inspection) != required:
+            raise DurableStateError("agent inspection fields are incomplete")
+        connection.execute(
+            """
+            INSERT INTO agent_run_inspections (
+                user_id, logical_run_id, attempt_id, provider, model,
+                api_mode, reasoning_effort, decision_outcome, final_output,
+                tool_discoveries_json, usage_json, stop_hook_outcome,
+                stop_hook_cache_identity_json, memory_version,
+                memory_token_count, recorded_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'no_action', ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                logical_run_id,
+                attempt_id,
+                str(agent_inspection["provider"]),
+                str(agent_inspection["model"]),
+                str(agent_inspection["api_mode"]),
+                str(agent_inspection["reasoning_effort"]),
+                str(agent_inspection["final_output"]),
+                json.dumps(agent_inspection["tool_discoveries"], separators=(",", ":")),
+                json.dumps(
+                    agent_inspection["usage"], separators=(",", ":"), sort_keys=True
+                ),
+                str(agent_inspection["stop_hook_outcome"]),
+                json.dumps(
+                    agent_inspection["stop_hook_cache_identity"],
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                memory_version,
+                memory_token_count,
+                recorded_at_ms,
+            ),
+        )
+
+    def finalize_speaker_mapping_no_action(
+        self,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        owner: str,
+        attempt_id: str,
+        lease_token: str,
+        now_ms: int,
+        expected_memory_version: int | None = None,
+        memory_markdown: str | None = None,
+        memory_token_count: int | None = None,
+        tokenizer_status: str = "unresolved_fail_closed",
+        agent_inspection: dict[str, Any] | None = None,
+    ) -> PendingSpeakerAck | None:
+        """Commit Stop Hook memory before the speaker ack-only suffix.
+
+        A normal mapping returns a pending Dataplane acknowledgement. An
+        explicit retry completes against the immutable original quarantine
+        receipt and never contacts or rewinds the normal cursor.
+        """
+        with self._transaction() as connection:
+            item = self._require_active_owner(
+                connection,
+                user_id=user_id,
+                logical_run_id=logical_run_id,
+                owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
+                now_ms=now_ms,
+            )
+            if item["kind"] != "p1_speaker":
+                raise DurableStateError("speaker finalizer received another Tick kind")
+            mapping = connection.execute(
+                """
+                SELECT s.*, r.explicit_retry_json, r.quarantine_id AS retry_quarantine_id
+                FROM queue_items q
+                LEFT JOIN speaker_explicit_retries r
+                  ON r.user_id = q.user_id AND r.retry_run_id = q.logical_run_id
+                JOIN speaker_mapping_inputs s
+                  ON s.user_id = q.user_id
+                 AND (
+                    s.original_logical_run_id = q.logical_run_id
+                    OR s.event_id = r.event_id
+                 )
+                WHERE q.user_id = ? AND q.logical_run_id = ?
+                """,
+                (user_id, logical_run_id),
+            ).fetchone()
+            if mapping is None:
+                raise DurableStateError("speaker run has no retained mapping")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO working_memory_state (
+                    user_id, version, markdown, token_count, last_run_id
+                ) VALUES (?, 0, '', NULL, NULL)
+                """,
+                (user_id,),
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO working_memory_versions (
+                    user_id, version, markdown, configured_model_token_count,
+                    tokenizer_status, logical_run_id, committed_at_ms
+                ) VALUES (?, 0, '', NULL, 'unresolved_fail_closed', NULL, 0)
+                """,
+                (user_id,),
+            )
+            memory = connection.execute(
+                "SELECT version, markdown, token_count FROM working_memory_state WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if memory is None:
+                raise DurableStateError("working memory singleton is missing")
+            memory_version = int(memory["version"])
+            if memory_markdown is None:
+                memory_token_count = (
+                    None
+                    if memory["token_count"] is None
+                    else int(memory["token_count"])
+                )
+            if (
+                expected_memory_version is not None
+                and memory_version != expected_memory_version
+            ):
+                raise DurableStateError(
+                    "working memory version changed during the Stop Hook"
+                )
+            memory_outcome = "unchanged"
+            if memory_markdown is not None:
+                if tokenizer_status != "exact" or memory_token_count is None:
+                    raise DurableStateError(
+                        "changed working memory requires exact configured-model tokens"
+                    )
+                if memory_token_count < 0 or memory_token_count > 16_000:
+                    raise DurableStateError(
+                        "changed working memory exceeds the 16K-token contract"
+                    )
+                memory_version += 1
+                connection.execute(
+                    """
+                    INSERT INTO working_memory_versions (
+                        user_id, version, markdown, configured_model_token_count,
+                        tokenizer_status, logical_run_id, committed_at_ms
+                    ) VALUES (?, ?, ?, ?, 'exact', ?, ?)
+                    """,
+                    (
+                        user_id,
+                        memory_version,
+                        memory_markdown,
+                        memory_token_count,
+                        logical_run_id,
+                        now_ms,
+                    ),
+                )
+                updated = connection.execute(
+                    """
+                    UPDATE working_memory_state
+                    SET version = ?, markdown = ?, token_count = ?, last_run_id = ?
+                    WHERE user_id = ? AND version = ?
+                    """,
+                    (
+                        memory_version,
+                        memory_markdown,
+                        memory_token_count,
+                        logical_run_id,
+                        user_id,
+                        memory_version - 1,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise DurableStateError(
+                        "working memory version changed during finalization"
+                    )
+                memory_outcome = "written"
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO working_memory_unchanged (
+                        marker_id, user_id, logical_run_id, expected_version,
+                        recorded_at_ms
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"memory-unchanged:{logical_run_id}",
+                        user_id,
+                        logical_run_id,
+                        memory_version,
+                        now_ms,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE working_memory_state SET last_run_id = ?
+                    WHERE user_id = ? AND version = ?
+                    """,
+                    (logical_run_id, user_id, memory_version),
+                )
+            connection.execute(
+                """
+                INSERT INTO decision_outcomes (
+                    decision_receipt_id, user_id, logical_run_id, outcome,
+                    visible_action_intent_count, recorded_at_ms
+                ) VALUES (?, ?, ?, 'no_action', 0, ?)
+                """,
+                (
+                    f"decision-receipt:{logical_run_id}",
+                    user_id,
+                    logical_run_id,
+                    now_ms,
+                ),
+            )
+            attempt_ordinal = int(
+                connection.execute(
+                    "SELECT ordinal FROM attempts WHERE attempt_id = ?",
+                    (attempt_id,),
+                ).fetchone()[0]
+            )
+            retry_payload = mapping["explicit_retry_json"]
+            if retry_payload is not None:
+                original_ack = (
+                    None
+                    if mapping["ack_json"] is None
+                    else SpeakerCursorOutcome.from_json(str(mapping["ack_json"]))
+                )
+                if (
+                    original_ack is None
+                    or original_ack.payload.outcome != "quarantined_and_advanced"
+                ):
+                    raise DurableStateError(
+                        "speaker retry is missing its immutable quarantine receipt"
+                    )
+                finalization_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"thine-speaker-retry-finalization:{logical_run_id}",
+                    )
+                )
+                finalization = RunFinalization.from_dict({
+                    "schema_version": {"major": 1, "minor": 0},
+                    "finalization_id": finalization_id,
+                    "logical_run_id": logical_run_id,
+                    "tick_id": str(item["tick_id"]),
+                    "tick_kind": "p1_speaker",
+                    "phase": "completed",
+                    "source_ack_id": original_ack.payload.ack_id,
+                    "final_reply_receipt_id": None,
+                    "recovery_mode": "ack_only",
+                    "inference_allowed": False,
+                    "restream_allowed": False,
+                    "working_memory_outcome": memory_outcome,
+                    "finalized_at_ms": now_ms,
+                    "extensions": {},
+                })
+                run_receipt = RunReceipt.from_dict({
+                    "schema_version": {"major": 1, "minor": 0},
+                    "receipt_id": f"run-receipt:{logical_run_id}",
+                    "logical_run_id": logical_run_id,
+                    "tick_id": str(item["tick_id"]),
+                    "outcome": "completed",
+                    "attempts_total": attempt_ordinal,
+                    "finalization_id": finalization_id,
+                    "recorded_at_ms": now_ms,
+                    "extensions": {},
+                })
+                connection.execute(
+                    """
+                    INSERT INTO run_finalizations (
+                        finalization_id, user_id, logical_run_id, tick_id, phase,
+                        working_memory_outcome, source_ack_id, finalization_json,
+                        updated_at_ms
+                    ) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?)
+                    """,
+                    (
+                        finalization_id,
+                        user_id,
+                        logical_run_id,
+                        item["tick_id"],
+                        memory_outcome,
+                        original_ack.payload.ack_id,
+                        finalization.to_json(),
+                        now_ms,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO run_receipts (
+                        receipt_id, user_id, logical_run_id, receipt_json,
+                        recorded_at_ms
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_receipt.payload.receipt_id,
+                        user_id,
+                        logical_run_id,
+                        run_receipt.to_json(),
+                        now_ms,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE attempts SET status = 'succeeded', finished_at_ms = ? WHERE attempt_id = ? AND status = 'running'",
+                    (now_ms, attempt_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE queue_items
+                    SET state = 'completed', completed_at_ms = ?,
+                        lease_owner = NULL, lease_token = NULL,
+                        lease_expires_at_ms = NULL, updated_at_ms = ?
+                    WHERE user_id = ? AND logical_run_id = ?
+                    """,
+                    (now_ms, now_ms, user_id, logical_run_id),
+                )
+                connection.execute(
+                    "UPDATE speaker_explicit_retries SET state = 'completed', completed_at_ms = ? WHERE retry_run_id = ?",
+                    (now_ms, logical_run_id),
+                )
+                self._insert_agent_inspection(
+                    connection,
+                    user_id=user_id,
+                    logical_run_id=logical_run_id,
+                    attempt_id=attempt_id,
+                    memory_version=memory_version,
+                    memory_token_count=memory_token_count,
+                    recorded_at_ms=now_ms,
+                    agent_inspection=agent_inspection,
+                )
+                return None
+            if mapping["state"] != "queued":
+                raise DurableStateError(
+                    "normal speaker mapping is not ready for finalization"
+                )
+            finalization_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"thine-speaker-finalization:{logical_run_id}",
+                )
+            )
+            finalization = RunFinalization.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "finalization_id": finalization_id,
+                "logical_run_id": logical_run_id,
+                "tick_id": str(item["tick_id"]),
+                "tick_kind": "p1_speaker",
+                "phase": "awaiting_speaker_cursor_ack",
+                "source_ack_id": None,
+                "final_reply_receipt_id": None,
+                "recovery_mode": "ack_only",
+                "inference_allowed": False,
+                "restream_allowed": False,
+                "working_memory_outcome": memory_outcome,
+                "finalized_at_ms": None,
+                "extensions": {},
+            })
+            connection.execute(
+                """
+                INSERT INTO run_finalizations (
+                    finalization_id, user_id, logical_run_id, tick_id, phase,
+                    working_memory_outcome, source_ack_id, finalization_json,
+                    updated_at_ms
+                ) VALUES (?, ?, ?, ?, 'awaiting_speaker_cursor_ack',
+                          ?, NULL, ?, ?)
+                """,
+                (
+                    finalization_id,
+                    user_id,
+                    logical_run_id,
+                    item["tick_id"],
+                    memory_outcome,
+                    finalization.to_json(),
+                    now_ms,
+                ),
+            )
+            connection.execute(
+                "UPDATE speaker_mapping_inputs SET state = 'awaiting_ack', updated_at_ms = ? WHERE event_id = ?",
+                (now_ms, mapping["event_id"]),
+            )
+            connection.execute(
+                "UPDATE attempts SET status = 'succeeded', finished_at_ms = ? WHERE attempt_id = ? AND status = 'running'",
+                (now_ms, attempt_id),
+            )
+            connection.execute(
+                """
+                UPDATE queue_items
+                SET state = 'awaiting_speaker_cursor_ack', lease_owner = NULL,
+                    lease_token = NULL, lease_expires_at_ms = NULL,
+                    updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (now_ms, user_id, logical_run_id),
+            )
+            self._insert_agent_inspection(
+                connection,
+                user_id=user_id,
+                logical_run_id=logical_run_id,
+                attempt_id=attempt_id,
+                memory_version=memory_version,
+                memory_token_count=memory_token_count,
+                recorded_at_ms=now_ms,
+                agent_inspection=agent_inspection,
+            )
+            return PendingSpeakerAck(
+                user_id=user_id,
+                tick_id=str(item["tick_id"]),
+                logical_run_id=logical_run_id,
+                attempt_ordinal=attempt_ordinal,
+                event_id=str(mapping["event_id"]),
+                cursor=int(mapping["cursor"]),
+                finalization_id=finalization_id,
+                working_memory_outcome=memory_outcome,
+            )
+
+    def next_pending_speaker_ack(self, user_id: str) -> PendingSpeakerAck | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT q.tick_id, q.logical_run_id, s.event_id, s.cursor,
+                       f.finalization_id, f.working_memory_outcome,
+                       MAX(a.ordinal) AS attempt_ordinal
+                FROM queue_items q
+                JOIN speaker_mapping_inputs s
+                  ON s.user_id = q.user_id
+                 AND s.original_logical_run_id = q.logical_run_id
+                JOIN run_finalizations f
+                  ON f.user_id = q.user_id
+                 AND f.logical_run_id = q.logical_run_id
+                JOIN attempts a
+                  ON a.user_id = q.user_id
+                 AND a.logical_run_id = q.logical_run_id
+                WHERE q.user_id = ?
+                  AND q.state = 'awaiting_speaker_cursor_ack'
+                  AND s.state = 'awaiting_ack'
+                GROUP BY q.tick_id, q.logical_run_id, s.event_id, s.cursor,
+                         f.finalization_id, f.working_memory_outcome,
+                         q.enqueue_sequence
+                ORDER BY q.enqueue_sequence LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return PendingSpeakerAck(
+            user_id=user_id,
+            tick_id=str(row["tick_id"]),
+            logical_run_id=str(row["logical_run_id"]),
+            attempt_ordinal=int(row["attempt_ordinal"]),
+            event_id=str(row["event_id"]),
+            cursor=int(row["cursor"]),
+            finalization_id=str(row["finalization_id"]),
+            working_memory_outcome=str(row["working_memory_outcome"]),  # type: ignore[arg-type]
+        )
+
+    def complete_speaker_ack(
+        self,
+        *,
+        pending: PendingSpeakerAck,
+        acknowledgement: SpeakerCursorOutcome,
+    ) -> None:
+        ack = acknowledgement.payload
+        if (
+            ack.event_id != pending.event_id
+            or int(ack.cursor) != pending.cursor
+            or ack.outcome != "acknowledged"
+            or ack.quarantine_id is not None
+            or int(ack.normal_cursor) != pending.cursor
+        ):
+            raise DurableStateError("speaker acknowledgement identity mismatch")
+        recorded_at_ms = int(ack.acknowledged_at_ms)
+        input_receipt = InputReceipt.from_dict({
+            "schema_version": {"major": 1, "minor": 0},
+            "receipt_id": f"input-receipt:{ack.ack_id}",
+            "source_kind": "speaker_mapping",
+            "source_identity": pending.event_id,
+            "logical_run_id": pending.logical_run_id,
+            "ack_id": ack.ack_id,
+            "disposition": "acknowledged",
+            "recorded_at_ms": recorded_at_ms,
+            "extensions": {},
+        })
+        finalization = RunFinalization.from_dict({
+            "schema_version": {"major": 1, "minor": 0},
+            "finalization_id": pending.finalization_id,
+            "logical_run_id": pending.logical_run_id,
+            "tick_id": pending.tick_id,
+            "tick_kind": "p1_speaker",
+            "phase": "completed",
+            "source_ack_id": ack.ack_id,
+            "final_reply_receipt_id": None,
+            "recovery_mode": "ack_only",
+            "inference_allowed": False,
+            "restream_allowed": False,
+            "working_memory_outcome": pending.working_memory_outcome,
+            "finalized_at_ms": recorded_at_ms,
+            "extensions": {},
+        })
+        with self._transaction() as connection:
+            current = connection.execute(
+                """
+                SELECT q.state AS queue_state, s.state AS input_state
+                FROM queue_items q JOIN speaker_mapping_inputs s
+                  ON s.user_id = q.user_id
+                 AND s.original_logical_run_id = q.logical_run_id
+                WHERE q.user_id = ? AND q.logical_run_id = ?
+                """,
+                (pending.user_id, pending.logical_run_id),
+            ).fetchone()
+            if current is None:
+                raise DurableStateError("speaker ack targets an unknown run")
+            if current["queue_state"] == "completed":
+                return
+            if (
+                current["queue_state"] != "awaiting_speaker_cursor_ack"
+                or current["input_state"] != "awaiting_ack"
+            ):
+                raise DurableStateError("speaker run is not awaiting acknowledgement")
+            cursor_row = connection.execute(
+                "SELECT normal_cursor FROM speaker_cursors WHERE user_id = ?",
+                (pending.user_id,),
+            ).fetchone()
+            current_cursor = 0 if cursor_row is None else int(cursor_row[0])
+            if pending.cursor != current_cursor + 1:
+                raise DurableStateError("speaker acknowledgement would skip a cursor")
+            attempts_total = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM attempts WHERE user_id = ? AND logical_run_id = ?",
+                    (pending.user_id, pending.logical_run_id),
+                ).fetchone()[0]
+            )
+            run_receipt = RunReceipt.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "receipt_id": f"run-receipt:{pending.logical_run_id}",
+                "logical_run_id": pending.logical_run_id,
+                "tick_id": pending.tick_id,
+                "outcome": "completed",
+                "attempts_total": attempts_total,
+                "finalization_id": pending.finalization_id,
+                "recorded_at_ms": recorded_at_ms,
+                "extensions": {},
+            })
+            connection.execute(
+                """
+                INSERT INTO speaker_cursors (user_id, normal_cursor, updated_at_ms)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    normal_cursor = excluded.normal_cursor,
+                    updated_at_ms = excluded.updated_at_ms
+                """,
+                (pending.user_id, pending.cursor, recorded_at_ms),
+            )
+            connection.execute(
+                "INSERT INTO input_receipts (receipt_id, user_id, logical_run_id, ack_id, receipt_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    input_receipt.payload.receipt_id,
+                    pending.user_id,
+                    pending.logical_run_id,
+                    ack.ack_id,
+                    input_receipt.to_json(),
+                    recorded_at_ms,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO run_receipts (receipt_id, user_id, logical_run_id, receipt_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?)",
+                (
+                    run_receipt.payload.receipt_id,
+                    pending.user_id,
+                    pending.logical_run_id,
+                    run_receipt.to_json(),
+                    recorded_at_ms,
+                ),
+            )
+            connection.execute(
+                "UPDATE run_finalizations SET phase = 'completed', source_ack_id = ?, finalization_json = ?, updated_at_ms = ? WHERE user_id = ? AND logical_run_id = ?",
+                (
+                    ack.ack_id,
+                    finalization.to_json(),
+                    recorded_at_ms,
+                    pending.user_id,
+                    pending.logical_run_id,
+                ),
+            )
+            connection.execute(
+                "UPDATE speaker_mapping_inputs SET state = 'acknowledged', ack_json = ?, updated_at_ms = ? WHERE event_id = ?",
+                (acknowledgement.to_json(), recorded_at_ms, pending.event_id),
+            )
+            connection.execute(
+                "UPDATE queue_items SET state = 'completed', completed_at_ms = ?, updated_at_ms = ? WHERE user_id = ? AND logical_run_id = ?",
+                (
+                    recorded_at_ms,
+                    recorded_at_ms,
+                    pending.user_id,
+                    pending.logical_run_id,
+                ),
+            )
+
+    def next_pending_speaker_quarantine(
+        self, user_id: str
+    ) -> PendingSpeakerQuarantine | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT q.tick_id, q.logical_run_id, s.event_id, s.cursor,
+                       s.quarantine_id, z.failure_code, z.quarantined_at_ms,
+                       MAX(a.ordinal) AS attempt_ordinal
+                FROM queue_items q
+                JOIN speaker_mapping_inputs s
+                  ON s.user_id = q.user_id
+                 AND s.original_logical_run_id = q.logical_run_id
+                JOIN quarantines z
+                  ON z.user_id = q.user_id
+                 AND z.logical_run_id = q.logical_run_id
+                JOIN attempts a
+                  ON a.user_id = q.user_id
+                 AND a.logical_run_id = q.logical_run_id
+                WHERE q.user_id = ? AND q.state = 'quarantined'
+                  AND s.state = 'quarantine_pending'
+                GROUP BY q.tick_id, q.logical_run_id, s.event_id, s.cursor,
+                         s.quarantine_id, z.failure_code, z.quarantined_at_ms,
+                         q.enqueue_sequence
+                ORDER BY q.enqueue_sequence LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return PendingSpeakerQuarantine(
+            user_id=user_id,
+            tick_id=str(row["tick_id"]),
+            logical_run_id=str(row["logical_run_id"]),
+            attempt_ordinal=int(row["attempt_ordinal"]),
+            event_id=str(row["event_id"]),
+            cursor=int(row["cursor"]),
+            quarantine_id=str(row["quarantine_id"]),
+            failure_code=str(row["failure_code"]),
+            quarantined_at_ms=int(row["quarantined_at_ms"]),
+        )
+
+    def complete_speaker_quarantine(
+        self,
+        *,
+        pending: PendingSpeakerQuarantine,
+        acknowledgement: SpeakerCursorOutcome,
+    ) -> None:
+        ack = acknowledgement.payload
+        if (
+            ack.event_id != pending.event_id
+            or int(ack.cursor) != pending.cursor
+            or ack.outcome != "quarantined_and_advanced"
+            or ack.quarantine_id != pending.quarantine_id
+            or int(ack.normal_cursor) != pending.cursor
+        ):
+            raise DurableStateError("speaker quarantine acknowledgement mismatch")
+        recorded_at_ms = int(ack.acknowledged_at_ms)
+        record = QuarantineRecord.from_dict({
+            "schema_version": {"major": 1, "minor": 0},
+            "quarantine_id": pending.quarantine_id,
+            "source_kind": "speaker_mapping",
+            "source_identity": pending.event_id,
+            "immutable_range": {
+                "range_kind": "speaker_mapping_event",
+                "mapping_event_id": pending.event_id,
+            },
+            "logical_run_id": pending.logical_run_id,
+            "fault_attempts_total": 3,
+            "normal_cursor_advanced": True,
+            "created_at_ms": pending.quarantined_at_ms,
+            "extensions": {},
+        })
+        input_receipt = InputReceipt.from_dict({
+            "schema_version": {"major": 1, "minor": 0},
+            "receipt_id": f"input-receipt:{ack.ack_id}",
+            "source_kind": "speaker_mapping",
+            "source_identity": pending.event_id,
+            "logical_run_id": pending.logical_run_id,
+            "ack_id": ack.ack_id,
+            "disposition": "quarantined",
+            "recorded_at_ms": recorded_at_ms,
+            "extensions": {},
+        })
+        run_receipt = RunReceipt.from_dict({
+            "schema_version": {"major": 1, "minor": 0},
+            "receipt_id": f"run-receipt:{pending.logical_run_id}",
+            "logical_run_id": pending.logical_run_id,
+            "tick_id": pending.tick_id,
+            "outcome": "quarantined",
+            "attempts_total": 3,
+            "finalization_id": None,
+            "recorded_at_ms": recorded_at_ms,
+            "extensions": {},
+        })
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT state FROM speaker_mapping_inputs WHERE user_id = ? AND event_id = ?",
+                (pending.user_id, pending.event_id),
+            ).fetchone()
+            if row is None:
+                raise DurableStateError("speaker quarantine targets an unknown event")
+            if row["state"] == "quarantined":
+                return
+            if row["state"] != "quarantine_pending":
+                raise DurableStateError("speaker event is not quarantine-pending")
+            cursor_row = connection.execute(
+                "SELECT normal_cursor FROM speaker_cursors WHERE user_id = ?",
+                (pending.user_id,),
+            ).fetchone()
+            current_cursor = 0 if cursor_row is None else int(cursor_row[0])
+            if pending.cursor != current_cursor + 1:
+                raise DurableStateError("speaker quarantine would skip a cursor")
+            connection.execute(
+                """
+                INSERT INTO speaker_cursors (user_id, normal_cursor, updated_at_ms)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    normal_cursor = excluded.normal_cursor,
+                    updated_at_ms = excluded.updated_at_ms
+                """,
+                (pending.user_id, pending.cursor, recorded_at_ms),
+            )
+            connection.execute(
+                "INSERT INTO input_receipts (receipt_id, user_id, logical_run_id, ack_id, receipt_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    input_receipt.payload.receipt_id,
+                    pending.user_id,
+                    pending.logical_run_id,
+                    ack.ack_id,
+                    input_receipt.to_json(),
+                    recorded_at_ms,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO run_receipts (receipt_id, user_id, logical_run_id, receipt_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?)",
+                (
+                    run_receipt.payload.receipt_id,
+                    pending.user_id,
+                    pending.logical_run_id,
+                    run_receipt.to_json(),
+                    recorded_at_ms,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE speaker_mapping_inputs
+                SET state = 'quarantined', quarantine_record_json = ?,
+                    ack_json = ?, updated_at_ms = ?
+                WHERE user_id = ? AND event_id = ?
+                """,
+                (
+                    record.to_json(),
+                    acknowledgement.to_json(),
+                    recorded_at_ms,
+                    pending.user_id,
+                    pending.event_id,
+                ),
+            )
+
+    def enqueue_speaker_retry(
+        self,
+        *,
+        user_id: str,
+        quarantine_id: str,
+        tick: Tick,
+        now_ms: int,
+    ) -> str:
+        payload = tick.payload
+        with self._transaction() as connection:
+            source = connection.execute(
+                """
+                SELECT event_id, original_logical_run_id, quarantine_record_json
+                FROM speaker_mapping_inputs
+                WHERE user_id = ? AND quarantine_id = ? AND state = 'quarantined'
+                """,
+                (user_id, quarantine_id),
+            ).fetchone()
+            if source is None or source["quarantine_record_json"] is None:
+                raise DurableStateError("speaker quarantine is not retryable")
+            replay = connection.execute(
+                "SELECT explicit_retry_json FROM speaker_explicit_retries WHERE retry_run_id = ?",
+                (payload.logical_run_id,),
+            ).fetchone()
+            if replay is not None:
+                return str(payload.tick_id)
+            receipt_rows = connection.execute(
+                "SELECT receipt_id FROM tool_receipts WHERE user_id = ? AND logical_run_id = ? ORDER BY acknowledged_at_ms, receipt_id",
+                (user_id, source["original_logical_run_id"]),
+            ).fetchall()
+            retry = ExplicitRetry.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "retry_run_id": str(payload.logical_run_id),
+                "quarantine_id": quarantine_id,
+                "source_identity": str(source["event_id"]),
+                "preserved_receipt_ids": [
+                    str(row["receipt_id"]) for row in receipt_rows
+                ],
+                "created_at_ms": now_ms,
+                "rewinds_normal_cursor": False,
+                "extensions": {},
+            })
+            self._insert_tick_locked(connection, tick=tick, now_ms=now_ms)
+            connection.execute(
+                """
+                INSERT INTO speaker_explicit_retries (
+                    retry_run_id, user_id, quarantine_id, event_id,
+                    explicit_retry_json, state, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, 'queued', ?)
+                """,
+                (
+                    payload.logical_run_id,
+                    user_id,
+                    quarantine_id,
+                    source["event_id"],
+                    retry.to_json(),
+                    now_ms,
+                ),
+            )
+        return str(payload.tick_id)
+
+    def inspect_speaker_mapping(
+        self, *, user_id: str, event_id: str
+    ) -> SpeakerMappingInspection:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT s.*, COALESCE(c.normal_cursor, 0) AS normal_cursor
+                FROM speaker_mapping_inputs s
+                LEFT JOIN speaker_cursors c ON c.user_id = s.user_id
+                WHERE s.user_id = ? AND s.event_id = ?
+                """,
+                (user_id, event_id),
+            ).fetchone()
+            retries = connection.execute(
+                """
+                SELECT retry_run_id FROM speaker_explicit_retries
+                WHERE user_id = ? AND event_id = ?
+                ORDER BY created_at_ms, retry_run_id
+                """,
+                (user_id, event_id),
+            ).fetchall()
+        if row is None:
+            raise KeyError(event_id)
+        return SpeakerMappingInspection(
+            event=SpeakerMappingEvent.from_json(str(row["event_json"])),
+            state=str(row["state"]),
+            logical_run_id=str(row["original_logical_run_id"]),
+            normal_cursor=int(row["normal_cursor"]),
+            quarantine_id=(
+                None if row["quarantine_id"] is None else str(row["quarantine_id"])
+            ),
+            quarantine_record=(
+                None
+                if row["quarantine_record_json"] is None
+                else QuarantineRecord.from_json(str(row["quarantine_record_json"]))
+            ),
+            acknowledgement=(
+                None
+                if row["ack_json"] is None
+                else SpeakerCursorOutcome.from_json(str(row["ack_json"]))
+            ),
+            retry_run_ids=tuple(str(item["retry_run_id"]) for item in retries),
+        )
+
+    def inspect_speaker_quarantine(
+        self, *, user_id: str, quarantine_id: str
+    ) -> SpeakerMappingInspection:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT event_id FROM speaker_mapping_inputs WHERE user_id = ? AND quarantine_id = ? AND state = 'quarantined'",
+                (user_id, quarantine_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(quarantine_id)
+        return self.inspect_speaker_mapping(
+            user_id=user_id, event_id=str(row["event_id"])
+        )
+
     def finalize_transcript_no_action(
         self,
         *,
@@ -2304,6 +3414,16 @@ class DurableRunState:
                     failure_code=failure_code,
                     quarantined_at_ms=now_ms,
                 )
+            if state == "quarantined" and item["kind"] == "p1_speaker":
+                connection.execute(
+                    """
+                    UPDATE speaker_mapping_inputs
+                    SET state = 'quarantine_pending', quarantine_id = ?,
+                        updated_at_ms = ?
+                    WHERE user_id = ? AND original_logical_run_id = ?
+                    """,
+                    (quarantine_id, now_ms, user_id, logical_run_id),
+                )
             connection.execute(
                 """
                 UPDATE queue_items
@@ -2636,6 +3756,21 @@ class DurableRunState:
                         failure_code="crash_discarded_uncheckpointed_inference",
                         quarantined_at_ms=now_ms,
                     )
+                if item["kind"] == "p1_speaker":
+                    connection.execute(
+                        """
+                        UPDATE speaker_mapping_inputs
+                        SET state = 'quarantine_pending', quarantine_id = ?,
+                            updated_at_ms = ?
+                        WHERE user_id = ? AND original_logical_run_id = ?
+                        """,
+                        (
+                            f"{item['logical_run_id']}:quarantine",
+                            now_ms,
+                            user_id,
+                            item["logical_run_id"],
+                        ),
+                    )
             connection.execute(
                 """
                 UPDATE queue_items
@@ -2899,12 +4034,16 @@ __all__ = [
     "LeasedRun",
     "PendingTranscriptAck",
     "PendingTranscriptQuarantine",
+    "PendingSpeakerAck",
+    "PendingSpeakerQuarantine",
+    "PreparedSpeakerMappingRecord",
     "QueueDiagnostic",
     "QuarantineDiagnostic",
     "ReceiptConflict",
     "SCHEMA_VERSION",
     "StateDiagnostics",
     "StoredTranscriptClaim",
+    "SpeakerMappingInspection",
     "TranscriptRunRecord",
     "TranscriptQuarantineInspection",
     "ToolReceiptRecord",

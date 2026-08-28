@@ -208,6 +208,7 @@ class RunFinalizationResult:
         "completed",
         "awaiting_audio_ack",
         "awaiting_interaction_ack",
+        "awaiting_speaker_cursor_ack",
         "awaiting_reply_persistence",
         "memory_finalization_pending",
         "terminal_event_pending",
