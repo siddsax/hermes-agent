@@ -10,6 +10,7 @@ from typing import Callable
 import uvicorn
 
 from .private_service import create_private_service_app
+from .home_state import HomeStateProjector
 from .private_topology import (
     BackendPrivateConfig,
     PrivateServiceConfig,
@@ -30,11 +31,16 @@ def build_private_service_server(
     config: PrivateServiceConfig,
     *,
     p0_control: P0ChatController | None = None,
+    home_state: HomeStateProjector | None = None,
 ) -> uvicorn.Server:
     """Create a bounded Uvicorn server from validated topology config."""
 
     timeout_seconds = max(1, math.ceil(config.request_timeout_seconds))
-    app = create_private_service_app(config, p0_control=p0_control)
+    app = create_private_service_app(
+        config,
+        p0_control=p0_control,
+        home_state=home_state,
+    )
     uvicorn_config = uvicorn.Config(
         app,
         host=config.host,
@@ -90,8 +96,15 @@ def main() -> int:
             backend_config=backend_config,
             database_path=get_hermes_home() / "thine-harness" / "p0-chat.sqlite3",
         )
+        home_state = HomeStateProjector(
+            get_hermes_home() / "thine-harness" / "home-state.sqlite3"
+        )
         try:
-            build_private_service_server(config, p0_control=controller).run()
+            build_private_service_server(
+                config,
+                p0_control=controller,
+                home_state=home_state,
+            ).run()
         finally:
             controller.close()
     except KeyboardInterrupt:

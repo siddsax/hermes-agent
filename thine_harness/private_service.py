@@ -7,7 +7,7 @@ import hmac
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -18,6 +18,7 @@ from .contracts.control import HermesControlRequest
 from .private_topology import PrivateServiceConfig
 
 if TYPE_CHECKING:
+    from .home_state import HomeStateProjector
     from .p0_chat import P0ChatController
 
 
@@ -130,11 +131,12 @@ def create_private_service_app(
     process_instance_id: str | None = None,
     started_at_ms: int | None = None,
     p0_control: "P0ChatController | None" = None,
+    home_state: "HomeStateProjector | None" = None,
 ) -> FastAPI:
     """Build the deliberately small private HTTP surface.
 
     The surface is intentionally closed: authenticated health, typed P0
-    control, and two explicit semantic-resource resolvers. It has no generic
+    control, and explicit semantic-resource resolvers. It has no generic
     dispatch or arbitrary backend RPC behavior.
     """
 
@@ -144,6 +146,13 @@ def create_private_service_app(
     if not instance_id:
         raise ValueError("process_instance_id must not be empty")
     start_ms = int(time.time() * 1000) if started_at_ms is None else started_at_ms
+    if home_state is not None:
+        from .home_state import HomeProjectionControl, register_home_state_tools
+
+        home_control = HomeProjectionControl(home_state)
+        register_home_state_tools(home_state, user_id=config.firebase_uid)
+    else:
+        home_control = None
 
     app = FastAPI(
         title="Hermes private control boundary",
@@ -154,7 +163,7 @@ def create_private_service_app(
     app.add_middleware(
         # Starlette accepts callable ASGI middleware classes here; ty's
         # variadic middleware-factory protocol does not recognize the class.
-        _RequestDeadlineMiddleware,  # ty: ignore[invalid-argument-type]
+        _RequestDeadlineMiddleware,
         config.request_timeout_seconds,
     )
 
@@ -189,7 +198,7 @@ def create_private_service_app(
         background_tasks: BackgroundTasks,
         scope: PrivateRequestScope = Depends(request_scope),
     ) -> JSONResponse:
-        if p0_control is not None:
+        if p0_control is not None or home_control is not None:
             try:
                 decoded = HermesControlRequest.from_json(await request.body())
             except ContractDecodeError as exc:
@@ -201,12 +210,39 @@ def create_private_service_app(
                         "detail": str(exc),
                     },
                 )
-            response = p0_control.admit(
-                decoded,
-                authenticated_user_id=scope.firebase_uid,
-                transport_request_id=scope.request_id,
-            )
-            if response.payload.result_ref is not None:
+            if decoded.payload.operation == "get_home":
+                if home_control is None:
+                    return JSONResponse(
+                        status_code=501,
+                        content={
+                            "error": "home_state_not_implemented",
+                            "request_id": scope.request_id,
+                        },
+                    )
+                response = home_control.handle(
+                    decoded,
+                    authenticated_user_id=scope.firebase_uid,
+                    transport_request_id=scope.request_id,
+                )
+            elif p0_control is not None:
+                response = p0_control.admit(
+                    decoded,
+                    authenticated_user_id=scope.firebase_uid,
+                    transport_request_id=scope.request_id,
+                )
+            else:
+                return JSONResponse(
+                    status_code=501,
+                    content={
+                        "error": "control_not_implemented",
+                        "request_id": scope.request_id,
+                    },
+                )
+            if (
+                p0_control is not None
+                and decoded.payload.operation == "submit_p0"
+                and response.payload.result_ref is not None
+            ):
                 background_tasks.add_task(
                     p0_control.activate, response.payload.result_ref
                 )
@@ -247,8 +283,8 @@ def create_private_service_app(
             )
         try:
             receipt = p0_control.resolve_queue_receipt(
-                user_id=body["user_id"],
-                result_ref=body["result_ref"],
+                user_id=cast(str, body["user_id"]),
+                result_ref=cast(str, body["result_ref"]),
             )
         except (KeyError, ValueError):
             return JSONResponse(
@@ -288,8 +324,8 @@ def create_private_service_app(
             )
         try:
             text = p0_control.resolve_assistant_content(
-                user_id=body["user_id"],
-                content_ref=body["content_ref"],
+                user_id=cast(str, body["user_id"]),
+                content_ref=cast(str, body["content_ref"]),
             )
         except (KeyError, ValueError):
             return JSONResponse(
@@ -303,6 +339,47 @@ def create_private_service_app(
             status_code=200,
             content={"content_ref": body["content_ref"], "text": text},
         )
+
+    @app.post("/v1/home/state/resolve")
+    async def resolve_home_state(
+        request: Request,
+        scope: PrivateRequestScope = Depends(request_scope),
+    ) -> JSONResponse:
+        if home_control is None:
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "error": "home_state_not_implemented",
+                    "request_id": scope.request_id,
+                },
+            )
+        body = await _strict_json_object(request)
+        if isinstance(body, JSONResponse):
+            return body
+        if set(body) != {"user_id", "result_ref"} or not all(
+            isinstance(body.get(key), str) and body[key]
+            for key in ("user_id", "result_ref")
+        ):
+            return _invalid_resource_request(scope.request_id)
+        if body["user_id"] != scope.firebase_uid:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "uid_mismatch", "request_id": scope.request_id},
+            )
+        try:
+            state = home_control.resolve(
+                user_id=cast(str, body["user_id"]),
+                result_ref=cast(str, body["result_ref"]),
+            )
+        except (KeyError, ValueError):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "home_state_not_found",
+                    "request_id": scope.request_id,
+                },
+            )
+        return JSONResponse(status_code=200, content=state.to_dict())
 
     return app
 
