@@ -9,6 +9,7 @@ import pytest
 from thine_harness.runtime import (
     AgentTurnResult,
     BackgroundCheckpoint,
+    BackgroundCheckpointPayload,
     HermesInvocationRuntime,
     HermesAIAgentSession,
     InvocationEvent,
@@ -19,7 +20,11 @@ from thine_harness.runtime import (
     RuntimeModelConfig,
     RuntimeSelectionError,
     SAFE_BOUNDARY_RESUME_PROMPT,
+    build_background_invocation_request,
 )
+from thine_harness.contracts.runtime import Tick
+from thine_harness.run_coordinator import InvocationOutcome, RunCoordinator
+from thine_harness.run_state import DurableRunState
 
 
 class _CheckpointStore:
@@ -705,6 +710,7 @@ def test_real_aiagent_persists_tool_result_before_safe_boundary_interrupt(
     tool_started = threading.Event()
     release_tool = threading.Event()
     interrupt_observed = threading.Event()
+    tool_calls = 0
     db_path = tmp_path / "state.db"
     session_id = "thine-real-safe-boundary"
     schema = {
@@ -717,6 +723,8 @@ def test_real_aiagent_persists_tool_result_before_safe_boundary_interrupt(
     }
 
     def blocking_handler(_args, **_kwargs):
+        nonlocal tool_calls
+        tool_calls += 1
         tool_started.set()
         assert release_tool.wait(2)
         return "durable-tool-result"
@@ -800,10 +808,17 @@ def test_real_aiagent_persists_tool_result_before_safe_boundary_interrupt(
         session = HermesAIAgentSession(agent=agent, expected=expected)
         control = InvocationControl()
         results: list[AgentTurnResult] = []
+        request = InvocationRequest(
+            "real-safe-boundary",
+            InvocationKind.BACKGROUND,
+            "run",
+            resume_token="real-safe-boundary",
+            original_input="run",
+        )
         worker = threading.Thread(
             target=lambda: results.append(
                 session.invoke(
-                    InvocationRequest("real-safe-boundary", InvocationKind.USER_CHAT, "run"),
+                    request,
                     emit=lambda event: None,
                     control=control,
                 )
@@ -829,6 +844,84 @@ def test_real_aiagent_persists_tool_result_before_safe_boundary_interrupt(
             }
         ]
         assert results[0].successful_action_receipts == []
+        checkpoint_payload = BackgroundCheckpointPayload.from_turn(request, results[0])
+
+        tick = Tick.from_dict({
+            "schema_version": {"major": 1, "minor": 0},
+            "tick_id": "real-background",
+            "user_id": "daily-user",
+            "logical_run_id": "run:real-background",
+            "kind": "p1_transcript",
+            "priority": "p1",
+            "occurred_at_ms": 1,
+            "received_at_ms": 1,
+            "queued_at_ms": 1,
+            "source_ref": {"kind": "transcript_availability", "id": "source-1"},
+            "causation_id": None,
+            "correlation_id": "correlation:real-background",
+            "attempt_ordinal": 1,
+            "lease": None,
+            "communication_allowance_snapshot": None,
+            "payload": {
+                "payload_kind": "transcript_availability",
+                "reference_id": "source-1",
+            },
+            "extensions": {},
+        })
+
+        class _CapturedInterruptedTurn:
+            def invoke(self, context, *, tools, control):
+                return InvocationOutcome.preempted(
+                    remaining_work=checkpoint_payload.remaining_work,
+                    checkpoint_payload=checkpoint_payload,
+                )
+
+        run_state_path = tmp_path / "run-state.sqlite3"
+        coordinator = RunCoordinator(
+            DurableRunState(run_state_path),
+            runtime=_CapturedInterruptedTurn(),
+            feature_port=MagicMock(),
+            clock_ms=lambda: 100,
+        )
+        coordinator.enqueue(tick)
+        checkpointed = coordinator.run_next("daily-user")
+        assert checkpointed is not None and checkpointed.status == "checkpointed"
+
+        class _ResumeFromDurableCheckpoint:
+            def invoke(self, context, *, tools, control):
+                assert context.checkpoint is not None
+                resumed = build_background_invocation_request(
+                    logical_run_id="run:real-background",
+                    initial_prompt="run",
+                    checkpoint=context.checkpoint,
+                    newest_working_memory=(
+                        "# Working Memory\n\n- The intervening P0 turn completed."
+                    ),
+                )
+                assert any(
+                    message.get("role") == "tool"
+                    and message.get("content") == "durable-tool-result"
+                    for message in resumed.context_messages
+                )
+                assert resumed.completed_tool_results[0]["content"] == (
+                    "durable-tool-result"
+                )
+                assert "intervening P0 turn completed" in resumed.prompt
+                return InvocationOutcome.completed()
+
+        restarted = RunCoordinator(
+            DurableRunState(run_state_path),
+            runtime=_ResumeFromDurableCheckpoint(),
+            feature_port=MagicMock(),
+            clock_ms=lambda: 200,
+        )
+        resumed = restarted.run_next("daily-user")
+        assert resumed is not None and resumed.status == "completed"
+        assert tool_calls == 1
+        assert [
+            (attempt.ordinal, attempt.status)
+            for attempt in restarted.diagnostics("daily-user").attempts
+        ] == [(1, "succeeded")]
     finally:
         db.close()
         registry.deregister(tool_name)

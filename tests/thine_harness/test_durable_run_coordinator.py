@@ -24,7 +24,7 @@ from thine_harness.run_state import (
     SCHEMA_VERSION,
     default_database_path,
 )
-from thine_harness.runtime import RuntimeModelConfig
+from thine_harness.runtime import BackgroundCheckpointPayload, RuntimeModelConfig
 
 
 def _tick(
@@ -102,6 +102,30 @@ class _CheckpointAfterFeature:
         )
         return InvocationOutcome.checkpointed(
             remaining_work="finish after restart",
+            checkpoint_payload=BackgroundCheckpointPayload(
+                original_input="process the original transcript",
+                remaining_work="finish after restart",
+                context_messages=(
+                    {"role": "user", "content": "process the original transcript"},
+                    {
+                        "role": "tool",
+                        "tool_call_id": "tool-1",
+                        "name": "write_record",
+                        "content": "stored-once",
+                    },
+                ),
+                completed_tool_results=(
+                    {
+                        "tool_call_id": "tool-1",
+                        "name": "write_record",
+                        "content": "stored-once",
+                    },
+                ),
+                successful_action_receipts=(
+                    {"tool_call_id": "tool-1", "status": "applied"},
+                ),
+                partial_visible_assistant_output="Saved the first record.",
+            ),
         )
 
 
@@ -113,6 +137,16 @@ class _ResumeAndComplete:
         self.contexts.append(context)
         assert context.checkpoint is not None
         assert context.checkpoint.remaining_work == "finish after restart"
+        assert context.checkpoint.original_input == "process the original transcript"
+        assert context.checkpoint.context_messages[-1]["role"] == "tool"
+        assert context.checkpoint.completed_tool_results[0]["tool_call_id"] == "tool-1"
+        assert context.checkpoint.successful_action_receipts == (
+            {"tool_call_id": "tool-1", "status": "applied"},
+        )
+        assert (
+            context.checkpoint.partial_visible_assistant_output
+            == "Saved the first record."
+        )
         assert len(context.acknowledged_receipts) == 1
         replay = tools.execute_once(
             FakeFeatureCommand(
@@ -390,6 +424,73 @@ class _PreemptThenComplete:
             return InvocationOutcome.preempted(remaining_work="resume background")
         assert context.checkpoint is not None
         return InvocationOutcome.completed()
+
+
+class _OnlyP0MayPreempt:
+    def __init__(self) -> None:
+        self.background_started = threading.Event()
+        self.non_p0_enqueued = threading.Event()
+        self.non_p0_observed = threading.Event()
+        self.order: list[str] = []
+
+    def invoke(self, context, *, tools, control):
+        tick_id = str(context.tick.payload.tick_id)
+        self.order.append(tick_id)
+        if tick_id != "background-first" or context.checkpoint is not None:
+            return InvocationOutcome.completed()
+        self.background_started.set()
+        assert self.non_p0_enqueued.wait(2)
+        assert control.preemption_requested is False
+        self.non_p0_observed.set()
+        assert control.wait_for_preemption(2)
+        assert control.reason == "p0_user_tick"
+        return InvocationOutcome.preempted(remaining_work="resume original FIFO item")
+
+
+def test_non_p0_inputs_only_queue_while_p0_preempts_and_original_fifo_resumes(
+    tmp_path: Path,
+):
+    runtime = _OnlyP0MayPreempt()
+    coordinator = RunCoordinator(
+        DurableRunState(tmp_path / "state.sqlite3"),
+        runtime=runtime,
+        feature_port=_RecordingFeature(),
+        clock_ms=lambda: 100,
+    )
+    coordinator.enqueue(_tick("background-first"))
+    first_result: list[RunResult | None] = []
+    worker = threading.Thread(
+        target=lambda: first_result.append(coordinator.run_next("daily-user"))
+    )
+    worker.start()
+    assert runtime.background_started.wait(2)
+
+    coordinator.enqueue(_tick("background-later", kind="p1_speaker", queued_at_ms=2))
+    runtime.non_p0_enqueued.set()
+    assert runtime.non_p0_observed.wait(2)
+    coordinator.enqueue(_tick("chat", kind="p0_user_chat", queued_at_ms=3))
+    worker.join(2)
+
+    assert first_result[0] is not None
+    assert first_result[0].status == "checkpointed"
+    assert _require_result(coordinator).tick_id == "chat"
+    assert _require_result(coordinator).tick_id == "background-first"
+    assert _require_result(coordinator).tick_id == "background-later"
+    assert runtime.order == [
+        "background-first",
+        "chat",
+        "background-first",
+        "background-later",
+    ]
+    attempts = coordinator.diagnostics("daily-user").attempts
+    assert [
+        (attempt.logical_run_id, attempt.ordinal, attempt.status)
+        for attempt in attempts
+    ] == [
+        ("run:background-first", 1, "succeeded"),
+        ("run:background-later", 1, "succeeded"),
+        ("run:chat", 1, "succeeded"),
+    ]
 
 
 class _LeaseBarrierState(DurableRunState):

@@ -17,7 +17,7 @@ from .run_state import (
     ToolReceiptRecord,
     diagnostics_as_dict,
 )
-from .runtime import RuntimeModelConfig
+from .runtime import BackgroundCheckpointPayload, RuntimeModelConfig
 
 
 _FINGERPRINT = re.compile(r"^[a-f0-9]{64}$")
@@ -104,6 +104,7 @@ class InvocationOutcome:
     failure_code: str | None = None
     decision_outcome: Literal["no_action"] | None = None
     finalization_context: Any | None = None
+    checkpoint_payload: BackgroundCheckpointPayload | None = None
 
     @classmethod
     def completed(cls) -> "InvocationOutcome":
@@ -124,40 +125,53 @@ class InvocationOutcome:
         cls,
         *,
         remaining_work: str,
+        checkpoint_payload: BackgroundCheckpointPayload | None = None,
     ) -> "InvocationOutcome":
-        return cls("checkpointed", remaining_work)
+        return cls(
+            "checkpointed",
+            remaining_work,
+            checkpoint_payload=checkpoint_payload,
+        )
 
     @classmethod
     def cancelled(
         cls,
         *,
         remaining_work: str,
+        checkpoint_payload: BackgroundCheckpointPayload | None = None,
     ) -> "InvocationOutcome":
-        return cls("cancelled", remaining_work)
+        return cls("cancelled", remaining_work, checkpoint_payload=checkpoint_payload)
 
     @classmethod
     def preempted(
         cls,
         *,
         remaining_work: str,
+        checkpoint_payload: BackgroundCheckpointPayload | None = None,
     ) -> "InvocationOutcome":
-        return cls("preempted", remaining_work)
+        return cls("preempted", remaining_work, checkpoint_payload=checkpoint_payload)
 
     @classmethod
     def yielded(
         cls,
         *,
         remaining_work: str,
+        checkpoint_payload: BackgroundCheckpointPayload | None = None,
     ) -> "InvocationOutcome":
-        return cls("yielded", remaining_work)
+        return cls("yielded", remaining_work, checkpoint_payload=checkpoint_payload)
 
     @classmethod
     def continuation(
         cls,
         *,
         remaining_work: str,
+        checkpoint_payload: BackgroundCheckpointPayload | None = None,
     ) -> "InvocationOutcome":
-        return cls("continuation", remaining_work)
+        return cls(
+            "continuation",
+            remaining_work,
+            checkpoint_payload=checkpoint_payload,
+        )
 
     @classmethod
     def fault(cls, failure_code: str) -> "InvocationOutcome":
@@ -629,6 +643,7 @@ class RunCoordinator:
                         logical_run_id=str(payload.logical_run_id),
                     )
                 )
+                checkpoint_payload = outcome.checkpoint_payload
                 checkpoint = self._state.save_checkpoint_and_requeue(
                     user_id=user_id,
                     logical_run_id=str(payload.logical_run_id),
@@ -638,6 +653,31 @@ class RunCoordinator:
                     cause=outcome.status,
                     remaining_work=outcome.remaining_work,
                     completed_receipt_ids=persisted_receipts,
+                    original_input=(
+                        ""
+                        if checkpoint_payload is None
+                        else checkpoint_payload.original_input
+                    ),
+                    context_messages=(
+                        ()
+                        if checkpoint_payload is None
+                        else checkpoint_payload.context_messages
+                    ),
+                    completed_tool_results=(
+                        ()
+                        if checkpoint_payload is None
+                        else checkpoint_payload.completed_tool_results
+                    ),
+                    successful_action_receipts=(
+                        ()
+                        if checkpoint_payload is None
+                        else checkpoint_payload.successful_action_receipts
+                    ),
+                    partial_visible_assistant_output=(
+                        ""
+                        if checkpoint_payload is None
+                        else checkpoint_payload.partial_visible_assistant_output
+                    ),
                     now_ms=self._clock_ms(),
                 )
                 return RunResult(
