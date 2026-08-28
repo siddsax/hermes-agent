@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Callable, cast
 import uuid
 
 from .contracts.dashboard import DashboardReadModel, DashboardSnapshot
@@ -70,33 +70,33 @@ class DashboardReadModelService:
 
     @staticmethod
     def _counts(snapshot: dict[str, object]) -> dict[str, int]:
-        queue_state = snapshot["queue_state"]
+        queue_state = cast(dict[str, object], snapshot["queue_state"])
         assert isinstance(queue_state, dict)
-        working_memory = snapshot["working_memory"]
+        working_memory = cast(dict[str, object], snapshot["working_memory"])
         assert isinstance(working_memory, dict)
-        topics = snapshot["topics_preferences"]
+        topics = cast(dict[str, object], snapshot["topics_preferences"])
         assert isinstance(topics, dict)
-        counts = snapshot["authoritative_counts"]
+        counts = cast(dict[str, object], snapshot["authoritative_counts"])
         assert isinstance(counts, dict)
         return {
-            "queue": len(queue_state["queue"]),
-            "current_run": len(queue_state["leases"]),
-            "transcripts": int(counts["transcript_claims"]),
-            "memory": int(counts["working_memory_versions"]),
-            "actions": int(counts["tool_receipts"])
-            + int(counts["communication_actions"]),
-            "communications": int(counts["communication_allowance"]),
+            "queue": len(cast_list(queue_state["queue"])),
+            "current_run": len(cast_list(queue_state["leases"])),
+            "transcripts": cast(int, counts["transcript_claims"]),
+            "memory": cast(int, counts["working_memory_versions"]),
+            "actions": cast(int, counts["tool_receipts"])
+            + cast(int, counts["communication_actions"]),
+            "communications": cast(int, counts["communication_allowance"]),
             "home": 1,
             "schedules": len(cast_list(snapshot["schedules"])),
-            "failures": len(queue_state["quarantines"]),
+            "failures": len(cast_list(queue_state["quarantines"])),
             "topics": len(cast_list(topics["topics"])),
             "interactions": int(snapshot["interaction_clock"] is not None),
-            "debug_timeline": int(counts["agent_run_inspections"]),
+            "debug_timeline": cast(int, counts["agent_run_inspections"]),
         }
 
 
 def cast_list(value: object) -> list[object]:
-    return value if isinstance(value, list) else []
+    return cast(list[object], value) if isinstance(value, list) else []
 
 
 __all__ = ["DashboardReadModelService"]
