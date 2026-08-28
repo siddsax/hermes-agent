@@ -2,21 +2,39 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import ipaddress
-import queue
+import json
 import sqlite3
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, cast, Protocol
 from urllib.parse import urlparse
 
 import httpx
 
+from .contracts import JSONValue
 from .contracts.chat import ChatEvent, FinalReplyOutbox, FinalReplyReceipt, QueueReceipt
 from .contracts.control import HermesControlRequest, HermesControlResponse
+from .contracts.runtime import Tick
+from .run_coordinator import (
+    ActiveRunLease,
+    DurableFeatureTools,
+    FakeFeatureAcknowledgement,
+    FakeFeatureCommand,
+    FakeFeaturePort,
+    FakeInvocationPort,
+    InvocationContext,
+    InvocationControl as CoordinatorInvocationControl,
+    InvocationOutcome,
+    RunCoordinator,
+    RunFinalizationResult,
+    RunFinalizerPort,
+    RunInputPort,
+)
+from .run_state import DurableRunState, DurableStateError
 from .runtime import (
     AgentTurnResult,
     HermesAIAgentSession,
@@ -33,7 +51,7 @@ from .working_memory import (
     HermesCachedStopHookContext,
     StopHookRunner,
     WorkingMemorySnapshot,
-    WorkingMemoryTokenizerUnavailable,
+    StopHookOutcomeKind,
 )
 
 
@@ -45,6 +63,8 @@ _P0_SYSTEM_PROMPT = (
     "You are Hermes controlling the user's local Thine daily-driver. This is a "
     "user-initiated chat turn, so answer the user directly while using available "
     "tools whenever they are needed. Keep user-visible progress factual and concise. "
+    "Never send a notification for this user-initiated reply; chat persistence is "
+    "the only delivery path. "
     "Treat Thine backend resources as authoritative, preserve prompt-cache stability, "
     "and leave durable Working Memory updates to the same-context Stop Hook."
 )
@@ -54,6 +74,27 @@ _P0_SYSTEM_PROMPT = (
 class ResolvedSubmission:
     user_message_id: str
     text: str
+
+
+@dataclass(frozen=True)
+class P0FinalizationArtifact:
+    """Restart-safe visible invocation context for the hook-only suffix."""
+
+    context_messages: tuple[dict[str, Any], ...]
+    cache_identity: CacheIdentity | None
+    current_memory: WorkingMemorySnapshot
+
+
+@dataclass(frozen=True)
+class PendingP0Finalization:
+    receipt: "_QueueReceipt"
+    attempt_id: str
+    attempt_ordinal: int
+    phase: str
+    assistant_message_id: str
+    text: str
+    terminal_sequence: int
+    artifact: P0FinalizationArtifact
 
 
 class BackendPrivateChatPort(Protocol):
@@ -134,7 +175,7 @@ class BackendPrivateChatClient:
         body = self._post("/v1/chat/submissions/final", outbox.to_dict())
         return FinalReplyReceipt.from_dict(body)
 
-    def _post(self, path: str, body: dict[str, object]) -> dict[str, object]:
+    def _post(self, path: str, body: dict[str, JSONValue]) -> dict[str, JSONValue]:
         request_id = str(uuid.uuid4())
         response = self._client.post(
             path,
@@ -149,10 +190,10 @@ class BackendPrivateChatClient:
         response.raise_for_status()
         if response.status_code == 204 or not response.content:
             return {}
-        payload = response.json()
+        payload: object = response.json()
         if not isinstance(payload, dict):
             raise ValueError("backend private response must be a JSON object")
-        return payload
+        return cast(dict[str, JSONValue], payload)
 
 
 class ProductP0Runtime(HermesInvocationRuntime):
@@ -203,16 +244,13 @@ class ProductP0Runtime(HermesInvocationRuntime):
                 tools=wire_tools,
             ),
         )
-        try:
-            StopHookRunner().finalize(
-                run_id=run_id,
-                current=current,
-                context=context,
-                store=store,
-                interrupted=result.interrupted,
-            )
-        except WorkingMemoryTokenizerUnavailable:
-            return CONFIGURED_MODEL_TOKENIZER_LIMITATION
+        StopHookRunner().finalize(
+            run_id=run_id,
+            current=current,
+            context=context,
+            store=store,
+            interrupted=result.interrupted,
+        )
         return None
 
 
@@ -273,11 +311,13 @@ class _QueueReceipt:
 
 
 class P0ChatStore:
-    """Profile-local SQLite queue receipts and final reply outbox."""
+    """P0 receipts and suffix state stored beside the global durable queue."""
 
     def __init__(self, path: Path):
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self.run_state = DurableRunState(self._path)
+        self._staged_memory: tuple[int, str | None, int | None, str] | None = None
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -301,6 +341,9 @@ class P0ChatStore:
                     enqueued_at_ms INTEGER NOT NULL,
                     state TEXT NOT NULL DEFAULT 'queued',
                     attempt_count INTEGER NOT NULL DEFAULT 0,
+                    event_sequence INTEGER NOT NULL DEFAULT 0,
+                    request_received_at_ms INTEGER,
+                    accepted_published INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(user_id, user_message_id, idempotency_key)
                 );
                 CREATE TABLE IF NOT EXISTS p0_final_reply_outbox (
@@ -315,40 +358,70 @@ class P0ChatStore:
                     status TEXT NOT NULL,
                     backend_receipt_id TEXT,
                     backend_message_id TEXT,
+                    hook_context_json TEXT,
+                    memory_version INTEGER,
+                    memory_markdown TEXT,
+                    memory_token_count INTEGER,
+                    finalization_phase TEXT NOT NULL DEFAULT 'inference_complete',
                     created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL,
                     FOREIGN KEY(queue_receipt_id) REFERENCES p0_queue_receipts(receipt_id)
                 );
-                CREATE TABLE IF NOT EXISTS p0_working_memory (
-                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                    version INTEGER NOT NULL,
-                    markdown TEXT NOT NULL,
-                    token_count INTEGER,
-                    last_run_id TEXT
-                );
-                INSERT OR IGNORE INTO p0_working_memory (
-                    singleton, version, markdown, token_count, last_run_id
-                ) VALUES (1, 0, '', NULL, NULL);
                 """
             )
+            self._ensure_column(
+                connection,
+                "p0_queue_receipts",
+                "event_sequence",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection, "p0_queue_receipts", "request_received_at_ms", "INTEGER"
+            )
+            self._ensure_column(
+                connection,
+                "p0_queue_receipts",
+                "accepted_published",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection, "p0_final_reply_outbox", "hook_context_json", "TEXT"
+            )
+            self._ensure_column(
+                connection, "p0_final_reply_outbox", "memory_version", "INTEGER"
+            )
+            self._ensure_column(
+                connection, "p0_final_reply_outbox", "memory_markdown", "TEXT"
+            )
+            self._ensure_column(
+                connection, "p0_final_reply_outbox", "memory_token_count", "INTEGER"
+            )
+            self._ensure_column(
+                connection,
+                "p0_final_reply_outbox",
+                "finalization_phase",
+                "TEXT NOT NULL DEFAULT 'inference_complete'",
+            )
+
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        declaration: str,
+    ) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def working_memory_snapshot(self) -> WorkingMemorySnapshot:
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT version, markdown, token_count
-                FROM p0_working_memory WHERE singleton = 1
-                """
-            ).fetchone()
-        if row is None:
-            raise RuntimeError("working memory singleton is missing")
-        return WorkingMemorySnapshot(
-            version=int(row["version"]),
-            markdown=str(row["markdown"]),
-            token_count=(
-                None if row["token_count"] is None else int(row["token_count"])
-            ),
-        )
+        raise RuntimeError("working_memory_snapshot requires a user_id")
+
+    def working_memory_snapshot_for_user(self, user_id: str) -> WorkingMemorySnapshot:
+        return self.run_state.working_memory_snapshot(user_id)
 
     def commit(
         self,
@@ -358,31 +431,11 @@ class P0ChatStore:
         token_count: int,
         run_id: str,
     ) -> int:
-        next_version = expected_version + 1
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE p0_working_memory
-                SET version = ?, markdown = ?, token_count = ?, last_run_id = ?
-                WHERE singleton = 1 AND version = ?
-                """,
-                (next_version, markdown, token_count, run_id, expected_version),
-            )
-        if cursor.rowcount != 1:
-            raise RuntimeError("working memory version changed during Stop Hook")
-        return next_version
+        self._staged_memory = (expected_version, markdown, token_count, run_id)
+        return expected_version + 1
 
     def mark_unchanged(self, *, expected_version: int, run_id: str) -> None:
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE p0_working_memory SET last_run_id = ?
-                WHERE singleton = 1 AND version = ?
-                """,
-                (run_id, expected_version),
-            )
-        if cursor.rowcount != 1:
-            raise RuntimeError("working memory version changed during Stop Hook")
+        self._staged_memory = (expected_version, None, None, run_id)
 
     def admit(
         self,
@@ -398,6 +451,22 @@ class P0ChatStore:
         logical_run_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"thine-p0-run:{identity}"))
         tick_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"thine-p0-tick:{identity}"))
         with self._connect() as connection:
+            replay = connection.execute(
+                """
+                SELECT receipt_id, user_id, user_message_id, idempotency_key,
+                       submission_ref, logical_run_id, tick_id, enqueued_at_ms
+                FROM p0_queue_receipts
+                WHERE user_id = ? AND user_message_id = ? AND idempotency_key = ?
+                """,
+                (user_id, user_message_id, idempotency_key),
+            ).fetchone()
+        if replay is not None:
+            if str(replay["submission_ref"]) != submission_ref:
+                raise DurableStateError(
+                    "P0 idempotency identity was reused with another submission"
+                )
+            return _QueueReceipt(**dict(replay))
+        with self.run_state._transaction() as connection:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO p0_queue_receipts (
@@ -425,11 +494,103 @@ class P0ChatStore:
                 """,
                 (user_id, user_message_id, idempotency_key),
             ).fetchone()
+            if row is None:
+                raise RuntimeError(
+                    "durable P0 queue receipt was not readable after admission"
+                )
+            if str(row["submission_ref"]) != submission_ref:
+                raise DurableStateError(
+                    "P0 idempotency identity was reused with another submission"
+                )
+            persisted_at_ms = int(row["enqueued_at_ms"])
+            tick = Tick.from_dict({
+                "schema_version": _VERSION,
+                "tick_id": tick_id,
+                "user_id": user_id,
+                "logical_run_id": logical_run_id,
+                "kind": "p0_user_chat",
+                "priority": "p0",
+                "occurred_at_ms": persisted_at_ms,
+                "received_at_ms": persisted_at_ms,
+                "queued_at_ms": persisted_at_ms,
+                "source_ref": {"kind": "user_message", "id": user_message_id},
+                "causation_id": None,
+                "correlation_id": receipt_id,
+                "attempt_ordinal": 1,
+                "lease": None,
+                "communication_allowance_snapshot": None,
+                "payload": {
+                    "payload_kind": "user_message",
+                    "reference_id": user_message_id,
+                },
+                "extensions": {},
+            })
+            self.run_state._insert_tick_locked(
+                connection,
+                tick=tick,
+                now_ms=persisted_at_ms,
+            )
         if row is None:
             raise RuntimeError(
                 "durable P0 queue receipt was not readable after admission"
             )
         return _QueueReceipt(**dict(row))
+
+    def receipt_for_run(self, *, user_id: str, logical_run_id: str) -> _QueueReceipt:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT receipt_id, user_id, user_message_id, idempotency_key,
+                       submission_ref, logical_run_id, tick_id, enqueued_at_ms
+                FROM p0_queue_receipts
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (user_id, logical_run_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(logical_run_id)
+        return _QueueReceipt(**dict(row))
+
+    def next_event_sequence(self, receipt_id: str) -> int:
+        with self.run_state._transaction() as connection:
+            connection.execute(
+                """
+                UPDATE p0_queue_receipts
+                SET event_sequence = event_sequence + 1
+                WHERE receipt_id = ?
+                """,
+                (receipt_id,),
+            )
+            row = connection.execute(
+                "SELECT event_sequence FROM p0_queue_receipts WHERE receipt_id = ?",
+                (receipt_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(receipt_id)
+        return int(row["event_sequence"])
+
+    def claim_accepted_publication(self, receipt_id: str) -> bool:
+        with self.run_state._transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE p0_queue_receipts SET accepted_published = 1
+                WHERE receipt_id = ? AND accepted_published = 0
+                """,
+                (receipt_id,),
+            )
+        return cursor.rowcount == 1
+
+    def mark_request_received(self, receipt_id: str, *, now_ms: int) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE p0_queue_receipts
+                SET request_received_at_ms = COALESCE(request_received_at_ms, ?),
+                    state = 'request_received'
+                WHERE receipt_id = ?
+                """,
+                (now_ms, receipt_id),
+            )
 
     def load_receipt(self, receipt_id: str) -> _QueueReceipt:
         with self._connect() as connection:
@@ -449,19 +610,46 @@ class P0ChatStore:
         self,
         *,
         receipt: _QueueReceipt,
+        lease: ActiveRunLease,
         assistant_message_id: str,
         text: str,
         terminal_sequence: int,
+        artifact: P0FinalizationArtifact,
         now_ms: int,
-    ) -> None:
-        with self._connect() as connection:
+    ) -> PendingP0Finalization:
+        hook_context_json = json.dumps(
+            {
+                "context_messages": list(artifact.context_messages),
+                "cache_identity": (
+                    None
+                    if artifact.cache_identity is None
+                    else asdict(artifact.cache_identity)
+                ),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        with self.run_state._transaction() as connection:
+            self.run_state._require_active_owner(
+                connection,
+                user_id=lease.user_id,
+                logical_run_id=lease.logical_run_id,
+                owner=lease.owner,
+                attempt_id=lease.attempt_id,
+                lease_token=lease.lease_token,
+                now_ms=now_ms,
+            )
             connection.execute(
                 """
                 INSERT OR IGNORE INTO p0_final_reply_outbox (
                     outbox_id, queue_receipt_id, assistant_message_id,
                     user_message_id, idempotency_key, text, content_ref, status,
-                    terminal_sequence, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_backend_persistence', ?, ?, ?)
+                    terminal_sequence, hook_context_json, memory_version,
+                    memory_markdown, memory_token_count, finalization_phase,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_backend_persistence', ?, ?, ?, ?, ?,
+                          'awaiting_reply_persistence', ?, ?)
                 """,
                 (
                     f"outbox:{assistant_message_id}",
@@ -472,14 +660,29 @@ class P0ChatStore:
                     text,
                     f"assistant-content:{assistant_message_id}",
                     terminal_sequence,
+                    hook_context_json,
+                    artifact.current_memory.version,
+                    artifact.current_memory.markdown,
+                    artifact.current_memory.token_count,
                     now_ms,
                     now_ms,
                 ),
             )
             connection.execute(
-                "UPDATE p0_queue_receipts SET state = 'inference_complete' WHERE receipt_id = ?",
+                "UPDATE p0_queue_receipts SET state = 'awaiting_reply_persistence' WHERE receipt_id = ?",
                 (receipt.receipt_id,),
             )
+            connection.execute(
+                """
+                UPDATE queue_items
+                SET state = 'awaiting_reply_persistence', lease_owner = NULL,
+                    lease_token = NULL, lease_expires_at_ms = NULL,
+                    updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (now_ms, lease.user_id, lease.logical_run_id),
+            )
+        return self.pending_finalization(receipt.receipt_id)
 
     def record_failed_attempt(self, receipt_id: str) -> int:
         with self._connect() as connection:
@@ -504,12 +707,21 @@ class P0ChatStore:
             rows = connection.execute(
                 """
                 SELECT receipt_id FROM p0_queue_receipts
-                WHERE state != 'delivered' AND attempt_count < ?
+                WHERE state NOT IN ('delivered', 'failed_terminal')
                 ORDER BY enqueued_at_ms, receipt_id
                 """,
-                (max_attempts,),
             ).fetchall()
         return [str(row["receipt_id"]) for row in rows]
+
+    def has_recoverable_work(self) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM p0_queue_receipts
+                WHERE state NOT IN ('delivered', 'failed_terminal') LIMIT 1
+                """
+            ).fetchone()
+        return row is not None
 
     def pending_final(self, receipt_id: str) -> sqlite3.Row | None:
         with self._connect() as connection:
@@ -517,6 +729,76 @@ class P0ChatStore:
                 "SELECT * FROM p0_final_reply_outbox WHERE queue_receipt_id = ?",
                 (receipt_id,),
             ).fetchone()
+
+    def next_pending_finalization(self, user_id: str) -> PendingP0Finalization | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT r.receipt_id
+                FROM p0_queue_receipts r
+                JOIN p0_final_reply_outbox o ON o.queue_receipt_id = r.receipt_id
+                WHERE r.user_id = ? AND r.state IN (
+                    'awaiting_reply_persistence', 'reply_persisted',
+                    'memory_finalization_pending', 'terminal_event_pending'
+                )
+                ORDER BY r.enqueued_at_ms, r.receipt_id LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.pending_finalization(str(row["receipt_id"]))
+
+    def pending_finalization(self, receipt_id: str) -> PendingP0Finalization:
+        outbox = self.pending_final(receipt_id)
+        if outbox is None:
+            raise KeyError(receipt_id)
+        receipt = self.load_receipt(receipt_id)
+        with self._connect() as connection:
+            attempt = connection.execute(
+                """
+                SELECT attempt_id, ordinal FROM attempts
+                WHERE user_id = ? AND logical_run_id = ? AND status = 'running'
+                ORDER BY ordinal DESC LIMIT 1
+                """,
+                (receipt.user_id, receipt.logical_run_id),
+            ).fetchone()
+        if attempt is None:
+            raise DurableStateError("P0 suffix has no active execution Attempt")
+        raw = json.loads(str(outbox["hook_context_json"] or "{}"))
+        identity_raw = raw.get("cache_identity")
+        identity = (
+            None
+            if identity_raw is None
+            else CacheIdentity(
+                session_id=str(identity_raw["session_id"]),
+                prompt_cache_key=str(identity_raw["prompt_cache_key"]),
+                tool_schema_sha256=str(identity_raw["tool_schema_sha256"]),
+            )
+        )
+        artifact = P0FinalizationArtifact(
+            context_messages=tuple(raw.get("context_messages") or ()),
+            cache_identity=identity,
+            current_memory=WorkingMemorySnapshot(
+                version=int(outbox["memory_version"]),
+                markdown=str(outbox["memory_markdown"] or ""),
+                token_count=(
+                    None
+                    if outbox["memory_token_count"] is None
+                    else int(outbox["memory_token_count"])
+                ),
+            ),
+        )
+        return PendingP0Finalization(
+            receipt=receipt,
+            attempt_id=str(attempt["attempt_id"]),
+            attempt_ordinal=int(attempt["ordinal"]),
+            phase=str(outbox["finalization_phase"]),
+            assistant_message_id=str(outbox["assistant_message_id"]),
+            text=str(outbox["text"]),
+            terminal_sequence=int(outbox["terminal_sequence"]),
+            artifact=artifact,
+        )
 
     def queue_receipt_contract(self, *, receipt_ref: str, user_id: str) -> QueueReceipt:
         receipt_id = receipt_ref.removeprefix(_QUEUE_RECEIPT_REF_PREFIX)
@@ -584,12 +866,13 @@ class P0ChatStore:
         backend_receipt: FinalReplyReceipt,
         now_ms: int,
     ) -> None:
-        with self._connect() as connection:
+        with self.run_state._transaction() as connection:
             connection.execute(
                 """
                 UPDATE p0_final_reply_outbox
                 SET status = 'persisted', backend_receipt_id = ?,
-                    backend_message_id = ?, updated_at_ms = ?
+                    backend_message_id = ?, finalization_phase = 'reply_persisted',
+                    updated_at_ms = ?
                 WHERE queue_receipt_id = ?
                 """,
                 (
@@ -601,22 +884,766 @@ class P0ChatStore:
             )
             connection.execute(
                 """
-                UPDATE p0_queue_receipts SET state = 'backend_persisted'
+                UPDATE p0_queue_receipts SET state = 'reply_persisted'
                 WHERE receipt_id = ?
                 """,
                 (receipt_id,),
             )
 
-    def mark_terminal_event_delivered(self, *, receipt_id: str) -> None:
-        with self._connect() as connection:
+    def mark_memory_finalization_pending(self, receipt_id: str, *, now_ms: int) -> None:
+        with self.run_state._transaction() as connection:
+            connection.execute(
+                """
+                UPDATE p0_final_reply_outbox
+                SET finalization_phase = 'memory_finalization_pending', updated_at_ms = ?
+                WHERE queue_receipt_id = ? AND finalization_phase = 'reply_persisted'
+                """,
+                (now_ms, receipt_id),
+            )
+            connection.execute(
+                """
+                UPDATE p0_queue_receipts SET state = 'memory_finalization_pending'
+                WHERE receipt_id = ?
+                """,
+                (receipt_id,),
+            )
+            receipt = self.load_receipt(receipt_id)
+            connection.execute(
+                """
+                UPDATE queue_items SET state = 'memory_finalization_pending', updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (now_ms, receipt.user_id, receipt.logical_run_id),
+            )
+
+    def commit_staged_memory_and_await_terminal_event(
+        self,
+        pending: PendingP0Finalization,
+        *,
+        staged: tuple[int, str | None, int | None, str],
+        now_ms: int,
+    ) -> None:
+        expected_version, markdown, token_count, run_id = staged
+        receipt = pending.receipt
+        with self.run_state._transaction() as connection:
+            memory = connection.execute(
+                "SELECT version FROM working_memory_state WHERE user_id = ?",
+                (receipt.user_id,),
+            ).fetchone()
+            if memory is None or int(memory["version"]) != expected_version:
+                raise DurableStateError(
+                    "working memory version changed during Stop Hook"
+                )
+            if markdown is None:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO working_memory_unchanged (
+                        marker_id, user_id, logical_run_id, expected_version, recorded_at_ms
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"memory-unchanged:{run_id}",
+                        receipt.user_id,
+                        run_id,
+                        expected_version,
+                        now_ms,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE working_memory_state SET last_run_id = ?
+                    WHERE user_id = ? AND version = ?
+                    """,
+                    (run_id, receipt.user_id, expected_version),
+                )
+            else:
+                if token_count is None or token_count < 0 or token_count > 16_000:
+                    raise DurableStateError(
+                        "changed working memory requires exact <=16K tokens"
+                    )
+                next_version = expected_version + 1
+                connection.execute(
+                    """
+                    INSERT INTO working_memory_versions (
+                        user_id, version, markdown, configured_model_token_count,
+                        tokenizer_status, logical_run_id, committed_at_ms
+                    ) VALUES (?, ?, ?, ?, 'exact', ?, ?)
+                    """,
+                    (
+                        receipt.user_id,
+                        next_version,
+                        markdown,
+                        token_count,
+                        run_id,
+                        now_ms,
+                    ),
+                )
+                updated = connection.execute(
+                    """
+                    UPDATE working_memory_state
+                    SET version = ?, markdown = ?, token_count = ?, last_run_id = ?
+                    WHERE user_id = ? AND version = ?
+                    """,
+                    (
+                        next_version,
+                        markdown,
+                        token_count,
+                        run_id,
+                        receipt.user_id,
+                        expected_version,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise DurableStateError(
+                        "working memory commit lost its expected version"
+                    )
+            connection.execute(
+                """
+                UPDATE p0_queue_receipts
+                SET event_sequence = event_sequence + 1
+                WHERE receipt_id = ?
+                """,
+                (receipt.receipt_id,),
+            )
+            sequence_row = connection.execute(
+                "SELECT event_sequence FROM p0_queue_receipts WHERE receipt_id = ?",
+                (receipt.receipt_id,),
+            ).fetchone()
+            if sequence_row is None:
+                raise DurableStateError("P0 receipt disappeared during finalization")
+            terminal_sequence = int(sequence_row["event_sequence"])
+            connection.execute(
+                """
+                UPDATE p0_final_reply_outbox
+                SET finalization_phase = 'terminal_event_pending',
+                    terminal_sequence = ?, updated_at_ms = ?
+                WHERE queue_receipt_id = ?
+                """,
+                (terminal_sequence, now_ms, receipt.receipt_id),
+            )
+            connection.execute(
+                "UPDATE p0_queue_receipts SET state = 'terminal_event_pending' WHERE receipt_id = ?",
+                (receipt.receipt_id,),
+            )
+            connection.execute(
+                """
+                UPDATE queue_items SET state = 'terminal_event_pending', updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (now_ms, receipt.user_id, receipt.logical_run_id),
+            )
+
+    def record_hook_failure(
+        self,
+        pending: PendingP0Finalization,
+        *,
+        failure_code: str,
+        now_ms: int,
+    ) -> str:
+        receipt = pending.receipt
+        with self.run_state._transaction() as connection:
+            connection.execute(
+                """
+                UPDATE attempts SET status = 'failed_fault', failure_code = ?, finished_at_ms = ?
+                WHERE attempt_id = ? AND status = 'running'
+                """,
+                (failure_code, now_ms, pending.attempt_id),
+            )
+            if pending.attempt_ordinal >= 3:
+                state = "failed_terminal"
+                connection.execute(
+                    "UPDATE p0_queue_receipts SET state = 'failed_terminal' WHERE receipt_id = ?",
+                    (receipt.receipt_id,),
+                )
+                connection.execute(
+                    """
+                    UPDATE queue_items SET state = 'failed_terminal', updated_at_ms = ?
+                    WHERE user_id = ? AND logical_run_id = ?
+                    """,
+                    (now_ms, receipt.user_id, receipt.logical_run_id),
+                )
+                return state
+            next_ordinal = pending.attempt_ordinal + 1
+            next_attempt = f"{receipt.logical_run_id}:attempt:{next_ordinal}"
+            connection.execute(
+                """
+                INSERT INTO attempts (
+                    attempt_id, user_id, logical_run_id, ordinal, status, started_at_ms
+                ) VALUES (?, ?, ?, ?, 'running', ?)
+                """,
+                (
+                    next_attempt,
+                    receipt.user_id,
+                    receipt.logical_run_id,
+                    next_ordinal,
+                    now_ms,
+                ),
+            )
+            return "memory_finalization_pending"
+
+    def mark_terminal_event_delivered(self, *, receipt_id: str, now_ms: int) -> None:
+        receipt = self.load_receipt(receipt_id)
+        with self.run_state._transaction() as connection:
             connection.execute(
                 "UPDATE p0_queue_receipts SET state = 'delivered' WHERE receipt_id = ?",
                 (receipt_id,),
             )
+            connection.execute(
+                """
+                UPDATE p0_final_reply_outbox
+                SET finalization_phase = 'completed' WHERE queue_receipt_id = ?
+                """,
+                (receipt_id,),
+            )
+            connection.execute(
+                """
+                UPDATE attempts SET status = 'succeeded', finished_at_ms = COALESCE(finished_at_ms, ?)
+                WHERE user_id = ? AND logical_run_id = ? AND status = 'running'
+                """,
+                (now_ms, receipt.user_id, receipt.logical_run_id),
+            )
+            connection.execute(
+                """
+                UPDATE queue_items
+                SET state = 'completed', completed_at_ms = COALESCE(completed_at_ms, ?),
+                    updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (
+                    now_ms,
+                    now_ms,
+                    receipt.user_id,
+                    receipt.logical_run_id,
+                ),
+            )
+
+
+class _NoopFeaturePort:
+    def apply(self, command: FakeFeatureCommand) -> FakeFeatureAcknowledgement:
+        del command
+        raise RuntimeError("P0 chat does not expose the coordinator fake-feature seam")
+
+
+class HarnessRuntimeDispatcher:
+    """Route every leased Tick through one coordinator-owned runtime boundary."""
+
+    def __init__(
+        self,
+        *,
+        p0: FakeInvocationPort,
+        background: FakeInvocationPort | None,
+    ) -> None:
+        self._p0 = p0
+        self._background = background
+
+    def invoke(
+        self,
+        context: InvocationContext,
+        *,
+        tools: DurableFeatureTools,
+        control: CoordinatorInvocationControl,
+    ) -> InvocationOutcome:
+        if context.tick.payload.kind == "p0_user_chat":
+            return self._p0.invoke(context, tools=tools, control=control)
+        if self._background is None:
+            raise RuntimeError("background runtime is not configured")
+        return self._background.invoke(context, tools=tools, control=control)
+
+
+class HarnessInputDispatcher:
+    """P0 carries a message ref; background kinds delegate input preparation."""
+
+    def __init__(self, background: RunInputPort | None) -> None:
+        self._background = background
+
+    def prepare(
+        self,
+        context: InvocationContext,
+        *,
+        lease: ActiveRunLease,
+    ) -> object | None:
+        if context.tick.payload.kind == "p0_user_chat":
+            return None
+        if self._background is None:
+            return None
+        return self._background.prepare(context, lease=lease)
+
+
+class HarnessFinalizerDispatcher:
+    """Recover P0 suffixes first, then delegate background suffixes."""
+
+    def __init__(
+        self,
+        *,
+        p0: RunFinalizerPort,
+        background: RunFinalizerPort | None,
+    ) -> None:
+        self._p0 = p0
+        self._background = background
+
+    def resume_pending(self, user_id: str) -> RunFinalizationResult | None:
+        p0 = self._p0.resume_pending(user_id)
+        if p0 is not None:
+            return p0
+        if self._background is None:
+            return None
+        return self._background.resume_pending(user_id)
+
+    def finalize(
+        self,
+        context: InvocationContext,
+        outcome: InvocationOutcome,
+        *,
+        lease: ActiveRunLease,
+    ) -> RunFinalizationResult:
+        if context.tick.payload.kind == "p0_user_chat":
+            return self._p0.finalize(context, outcome, lease=lease)
+        if self._background is None:
+            raise RuntimeError("background finalizer is not configured")
+        return self._background.finalize(context, outcome, lease=lease)
+
+    def finalize_quarantine(self, user_id: str) -> RunFinalizationResult | None:
+        if self._background is None:
+            return None
+        finalize = getattr(self._background, "finalize_quarantine", None)
+        if not callable(finalize):
+            return None
+        return finalize(user_id)
+
+
+class P0CoordinatorRuntime:
+    """P0 AIAgent adapter invoked only after the global coordinator lease."""
+
+    def __init__(
+        self,
+        *,
+        store: P0ChatStore,
+        backend: BackendPrivateChatPort,
+        runtime_loader: Callable[[], HermesInvocationRuntime],
+        now_ms: Callable[[], int],
+        heartbeat_interval_seconds: float,
+    ) -> None:
+        self._store = store
+        self._backend = backend
+        self._runtime_loader = runtime_loader
+        self._now_ms = now_ms
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
+
+    def invoke(
+        self,
+        context: InvocationContext,
+        *,
+        tools: object,
+        control: CoordinatorInvocationControl,
+    ) -> InvocationOutcome:
+        del tools
+        payload = context.tick.payload
+        if payload.kind != "p0_user_chat":
+            raise ValueError("P0 runtime cannot invoke another Tick kind")
+        receipt = self._store.receipt_for_run(
+            user_id=str(payload.user_id), logical_run_id=str(payload.logical_run_id)
+        )
+        submission = self._backend.resolve_submission(
+            user_id=receipt.user_id,
+            submission_ref=receipt.submission_ref,
+        )
+        if submission.user_message_id != receipt.user_message_id:
+            raise RuntimeError("resolved submission user_message_id mismatch")
+        self._store.mark_request_received(receipt.receipt_id, now_ms=self._now_ms())
+        self._backend.record_queue_receipt(
+            self._store.queue_receipt_contract(
+                receipt_ref=_QUEUE_RECEIPT_REF_PREFIX + receipt.receipt_id,
+                user_id=receipt.user_id,
+            )
+        )
+        current_memory = self._store.working_memory_snapshot_for_user(receipt.user_id)
+        prompt = submission.text
+        if current_memory.markdown:
+            prompt = (
+                "Working Memory from prior Thine ticks:\n"
+                + current_memory.markdown
+                + "\n\nCurrent user message:\n"
+                + submission.text
+            )
+
+        heartbeat_stop = threading.Event()
+        heartbeat_sends: list[threading.Thread] = []
+
+        def heartbeat() -> None:
+            while not heartbeat_stop.wait(self._heartbeat_interval_seconds):
+                sequence = self._store.next_event_sequence(receipt.receipt_id)
+                send = threading.Thread(
+                    target=self.publish,
+                    kwargs={
+                        "receipt": receipt,
+                        "kind": "heartbeat",
+                        "phase": "runtime",
+                        "text": "Still working",
+                        "best_effort": True,
+                        "sequence": sequence,
+                    },
+                    name=f"thine-heartbeat-send:{receipt.logical_run_id}",
+                    daemon=True,
+                )
+                heartbeat_sends.append(send)
+                send.start()
+
+        heartbeat_worker = threading.Thread(
+            target=heartbeat,
+            name=f"thine-heartbeat:{receipt.logical_run_id}",
+            daemon=True,
+        )
+        heartbeat_worker.start()
+
+        def emit(event: InvocationEvent) -> None:
+            if event.kind in {InvocationEventKind.FINAL, InvocationEventKind.FAILED}:
+                return
+            if event.kind is InvocationEventKind.ACCEPTED:
+                return
+            self.publish(
+                receipt,
+                kind=event.kind.value,
+                phase=event.phase,
+                text=event.text,
+                best_effort=True,
+            )
+
+        try:
+            result = self._runtime_loader().invoke(
+                InvocationRequest(
+                    logical_run_id=receipt.logical_run_id,
+                    kind=InvocationKind.USER_CHAT,
+                    prompt=prompt,
+                ),
+                emit=emit,
+            )
+        finally:
+            heartbeat_stop.set()
+            heartbeat_worker.join(timeout=1)
+            for send in heartbeat_sends:
+                send.join(timeout=0.01)
+        if result.interrupted:
+            return InvocationOutcome.preempted(
+                remaining_work=result.remaining_work or "resume P0 chat"
+            )
+        if result.failed or not result.completed or result.final_output is None:
+            return InvocationOutcome.fault(
+                result.failure_reason or "Hermes P0 invocation did not complete"
+            )
+        runtime = self._runtime_loader()
+        cache_identity: CacheIdentity | None = None
+        if isinstance(runtime, ProductP0Runtime):
+            from .transcript_agent import _cache_identity
+
+            cache_identity = _cache_identity(runtime._agent)
+        artifact = P0FinalizationArtifact(
+            context_messages=tuple(
+                dict(message)
+                for message in result.context_messages
+                if isinstance(message, dict)
+            ),
+            cache_identity=cache_identity,
+            current_memory=current_memory,
+        )
+        return InvocationOutcome(
+            "completed",
+            finalization_context=(receipt, result.final_output, artifact),
+        )
+
+    def publish(
+        self,
+        receipt: _QueueReceipt,
+        *,
+        kind: str,
+        phase: str,
+        text: str,
+        assistant_message_id: str | None = None,
+        final_reply_receipt_id: str | None = None,
+        best_effort: bool = False,
+        sequence: int | None = None,
+    ) -> None:
+        event_sequence = (
+            self._store.next_event_sequence(receipt.receipt_id)
+            if sequence is None
+            else sequence
+        )
+        mapped_kind = _chat_event_kind(kind, phase)
+        event = ChatEvent.from_dict({
+            "schema_version": _VERSION,
+            "event_id": f"{receipt.receipt_id}:{event_sequence}",
+            "stream_id": f"stream:{receipt.receipt_id}",
+            "step_id": None,
+            "user_message_id": receipt.user_message_id,
+            "assistant_message_id": assistant_message_id,
+            "final_reply_receipt_id": final_reply_receipt_id,
+            "kind": mapped_kind,
+            "phase": phase[:64] or "runtime",
+            "safe_display_text": text[:1000],
+            "ephemeral": mapped_kind not in {"final", "failed", "interrupted"},
+            "origin": "user_initiated_chat",
+            "emitted_at_ms": self._now_ms(),
+            "heartbeat_max_silence_ms": 5000,
+            "extensions": {},
+        })
+        try:
+            self._backend.publish_event(event)
+        except Exception:
+            if not best_effort:
+                raise
+
+    def publish_terminal_failure(self, logical_run_id: str, user_id: str) -> None:
+        receipt = self._store.receipt_for_run(
+            user_id=user_id, logical_run_id=logical_run_id
+        )
+        self.publish(
+            receipt,
+            kind="failed",
+            phase="retry_exhausted",
+            text=(
+                "Hermes could not complete this message after three attempts. "
+                "You can retry it from chat."
+            ),
+            best_effort=True,
+        )
+
+
+class P0RunFinalizer:
+    """Persist reply, obtain backend receipt, then finish the hook-only suffix."""
+
+    def __init__(
+        self,
+        *,
+        store: P0ChatStore,
+        backend: BackendPrivateChatPort,
+        runtime_loader: Callable[[], HermesInvocationRuntime],
+        events: P0CoordinatorRuntime,
+        now_ms: Callable[[], int],
+    ) -> None:
+        self._store = store
+        self._backend = backend
+        self._runtime_loader = runtime_loader
+        self._events = events
+        self._now_ms = now_ms
+
+    def resume_pending(self, user_id: str) -> RunFinalizationResult | None:
+        pending = self._store.next_pending_finalization(user_id)
+        return None if pending is None else self._resume(pending)
+
+    def finalize(
+        self,
+        context: InvocationContext,
+        outcome: InvocationOutcome,
+        *,
+        lease: ActiveRunLease,
+    ) -> RunFinalizationResult:
+        artifact = outcome.finalization_context
+        if (
+            not isinstance(artifact, tuple)
+            or len(artifact) != 3
+            or not isinstance(artifact[0], _QueueReceipt)
+            or not isinstance(artifact[2], P0FinalizationArtifact)
+        ):
+            raise ValueError("P0 completion is missing its finalization artifact")
+        receipt, text, persisted_context = artifact
+        assistant_message_id = str(
+            uuid.uuid5(uuid.NAMESPACE_URL, f"thine-assistant:{receipt.receipt_id}")
+        )
+        pending = self._store.persist_final(
+            receipt=receipt,
+            lease=lease,
+            assistant_message_id=assistant_message_id,
+            text=str(text),
+            terminal_sequence=0,
+            artifact=persisted_context,
+            now_ms=self._now_ms(),
+        )
+        return self._resume(pending)
+
+    def _resume(self, pending: PendingP0Finalization) -> RunFinalizationResult:
+        receipt = pending.receipt
+        phase = pending.phase
+        if phase == "awaiting_reply_persistence":
+            outbox = self._store.pending_final(receipt.receipt_id)
+            if outbox is None:
+                raise DurableStateError("P0 final outbox disappeared")
+            try:
+                backend_receipt = self._backend.persist_final_reply(
+                    self._store.final_outbox_contract(receipt.receipt_id)
+                )
+            except Exception:
+                return self._result(pending, "awaiting_reply_persistence")
+            if (
+                backend_receipt.payload.assistant_message_id
+                != pending.assistant_message_id
+                or backend_receipt.payload.user_message_id != receipt.user_message_id
+                or backend_receipt.payload.idempotency_key
+                != str(outbox["idempotency_key"])
+            ):
+                raise DurableStateError(
+                    "backend final reply receipt does not match outbox"
+                )
+            self._store.mark_final_persisted(
+                receipt_id=receipt.receipt_id,
+                backend_receipt=backend_receipt,
+                now_ms=self._now_ms(),
+            )
+            phase = "reply_persisted"
+        if phase == "reply_persisted":
+            self._store.mark_memory_finalization_pending(
+                receipt.receipt_id, now_ms=self._now_ms()
+            )
+            phase = "memory_finalization_pending"
+        if phase == "memory_finalization_pending":
+            runtime = self._runtime_loader()
+            if (
+                isinstance(runtime, ProductP0Runtime)
+                and pending.artifact.cache_identity is not None
+            ):
+                from .transcript_agent import _cache_identity
+
+                if _cache_identity(runtime._agent) != pending.artifact.cache_identity:
+                    state = self._store.record_hook_failure(
+                        pending,
+                        failure_code="stop_hook:StopHookContextChanged",
+                        now_ms=self._now_ms(),
+                    )
+                    if state == "failed_terminal":
+                        self._events.publish_terminal_failure(
+                            receipt.logical_run_id, receipt.user_id
+                        )
+                    return self._result(pending, state)
+            result = AgentTurnResult(
+                final_output=pending.text,
+                context_messages=list(pending.artifact.context_messages),
+            )
+            self._store._staged_memory = None
+            try:
+                finalize_memory = getattr(runtime, "finalize_working_memory", None)
+                if callable(finalize_memory):
+                    status = finalize_memory(
+                        run_id=receipt.logical_run_id,
+                        current=pending.artifact.current_memory,
+                        result=result,
+                        store=self._store,
+                    )
+                    if status:
+                        self._events.publish(
+                            receipt,
+                            kind="progress",
+                            phase="working_memory",
+                            text=str(status),
+                            best_effort=True,
+                        )
+                if self._store._staged_memory is None:
+                    self._store.mark_unchanged(
+                        expected_version=pending.artifact.current_memory.version,
+                        run_id=receipt.logical_run_id,
+                    )
+                assert self._store._staged_memory is not None
+                self._store.commit_staged_memory_and_await_terminal_event(
+                    pending,
+                    staged=self._store._staged_memory,
+                    now_ms=self._now_ms(),
+                )
+            except Exception as exc:
+                state = self._store.record_hook_failure(
+                    pending,
+                    failure_code=f"stop_hook:{type(exc).__name__}",
+                    now_ms=self._now_ms(),
+                )
+                if state == "failed_terminal":
+                    self._events.publish_terminal_failure(
+                        receipt.logical_run_id, receipt.user_id
+                    )
+                return self._result(pending, state)
+            phase = "terminal_event_pending"
+        if phase == "terminal_event_pending":
+            outbox = self._store.pending_final(receipt.receipt_id)
+            if outbox is None or outbox["backend_receipt_id"] is None:
+                raise DurableStateError("terminal event requires backend reply receipt")
+            try:
+                self._events.publish(
+                    receipt,
+                    kind="final",
+                    phase="final",
+                    text=pending.text,
+                    assistant_message_id=pending.assistant_message_id,
+                    final_reply_receipt_id=str(outbox["backend_receipt_id"]),
+                    sequence=int(outbox["terminal_sequence"]),
+                )
+            except Exception:
+                return self._result(pending, "terminal_event_pending")
+            self._store.mark_terminal_event_delivered(
+                receipt_id=receipt.receipt_id, now_ms=self._now_ms()
+            )
+            return self._result(pending, "completed")
+        return self._result(pending, phase)
+
+    @staticmethod
+    def _result(pending: PendingP0Finalization, status: str) -> RunFinalizationResult:
+        return RunFinalizationResult(
+            tick_id=pending.receipt.tick_id,
+            logical_run_id=pending.receipt.logical_run_id,
+            attempt_ordinal=pending.attempt_ordinal,
+            status=status,  # type: ignore[arg-type]
+        )
+
+
+class HarnessCoordinatorDriver:
+    """One process-wide driver for the single-flight RunCoordinator."""
+
+    def __init__(
+        self,
+        *,
+        coordinator: RunCoordinator,
+        user_id: str,
+        retry_delay_seconds: float,
+        result_callback: Callable[[str, str, str], None],
+    ) -> None:
+        self._coordinator = coordinator
+        self._user_id = user_id
+        self._retry_delay_seconds = retry_delay_seconds
+        self._result_callback = result_callback
+        self._wake = threading.Event()
+        self._closed = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="thine-global-run-coordinator",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def wake(self) -> None:
+        self._wake.set()
+
+    def close(self) -> None:
+        self._closed.set()
+        self._wake.set()
+        self._thread.join(timeout=2)
+
+    def _run(self) -> None:
+        waiting = {
+            "awaiting_reply_persistence",
+            "memory_finalization_pending",
+            "terminal_event_pending",
+        }
+        while not self._closed.is_set():
+            self._wake.wait()
+            self._wake.clear()
+            while not self._closed.is_set():
+                result = self._coordinator.run_next(self._user_id)
+                if result is None:
+                    break
+                self._result_callback(
+                    result.logical_run_id, result.status, self._user_id
+                )
+                if result.status in waiting:
+                    if self._closed.wait(self._retry_delay_seconds):
+                        return
 
 
 class P0ChatController:
-    """Admit synchronously, then resolve and invoke one P0 turn at a time."""
+    """Admit P0 ticks atomically and wake the one global coordinator."""
 
     def __init__(
         self,
@@ -629,29 +1656,72 @@ class P0ChatController:
         heartbeat_interval_seconds: float = 3.0,
         retry_delay_seconds: float = 1.0,
         max_attempts: int = 3,
+        background_runtime: FakeInvocationPort | None = None,
+        background_input: RunInputPort | None = None,
+        background_finalizer: RunFinalizerPort | None = None,
+        feature_port: FakeFeaturePort | None = None,
+        extra_closables: tuple[object, ...] = (),
     ) -> None:
         if (runtime is None) == (runtime_factory is None):
             raise ValueError("configure exactly one P0 runtime or runtime factory")
+        if max_attempts != 3:
+            raise ValueError("the frozen contract allows exactly three Attempts")
+        if (background_runtime is None) != (background_finalizer is None):
+            raise ValueError(
+                "background runtime and finalizer must be configured together"
+            )
         self._store = store
         self._backend = backend
         self._runtime = runtime
         self._runtime_factory = runtime_factory
         self._now_ms = now_ms or (lambda: int(time.time() * 1000))
-        self._heartbeat_interval_seconds = heartbeat_interval_seconds
-        self._retry_delay_seconds = retry_delay_seconds
-        self._max_attempts = max_attempts
-        self._activations: queue.Queue[str | None] = queue.Queue()
-        self._closed = threading.Event()
-        self._worker = threading.Thread(
-            target=self._run,
-            name="thine-p0-chat",
-            daemon=True,
+        self._extra_closables = extra_closables
+
+        def load_runtime() -> HermesInvocationRuntime:
+            if self._runtime is None:
+                assert self._runtime_factory is not None
+                self._runtime = self._runtime_factory()
+            return self._runtime
+
+        self._agent_runtime = P0CoordinatorRuntime(
+            store=store,
+            backend=backend,
+            runtime_loader=load_runtime,
+            now_ms=self._now_ms,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
         )
-        self._worker.start()
-        for receipt_id in self._store.recoverable_receipt_ids(
-            max_attempts=self._max_attempts
-        ):
-            self._activations.put(receipt_id)
+        p0_finalizer = P0RunFinalizer(
+            store=store,
+            backend=backend,
+            runtime_loader=load_runtime,
+            events=self._agent_runtime,
+            now_ms=self._now_ms,
+        )
+        runtime_dispatcher = HarnessRuntimeDispatcher(
+            p0=self._agent_runtime,
+            background=background_runtime,
+        )
+        input_dispatcher = HarnessInputDispatcher(background_input)
+        finalizer = HarnessFinalizerDispatcher(
+            p0=p0_finalizer,
+            background=background_finalizer,
+        )
+        self.coordinator = RunCoordinator(
+            store.run_state,
+            runtime=runtime_dispatcher,
+            feature_port=feature_port or _NoopFeaturePort(),
+            input_port=input_dispatcher,
+            finalizer=finalizer,
+            clock_ms=self._now_ms,
+        )
+        self._driver = HarnessCoordinatorDriver(
+            coordinator=self.coordinator,
+            user_id=self._infer_user_id(),
+            retry_delay_seconds=retry_delay_seconds,
+            result_callback=self._on_result,
+        )
+        if self._store.has_recoverable_work():
+            self._driver.wake()
 
     def admit(
         self,
@@ -690,6 +1760,8 @@ class P0ChatController:
             submission_ref=payload.payload_ref,
             now_ms=self._now_ms(),
         )
+        tick = self._tick_for_receipt(receipt)
+        self.coordinator.notify_enqueued(tick)
         return HermesControlResponse.from_dict({
             "schema_version": _VERSION,
             "request_id": payload.request_id,
@@ -731,7 +1803,17 @@ class P0ChatController:
         return None
 
     def activate(self, receipt_ref: str) -> None:
-        self._activations.put(receipt_ref.removeprefix(_QUEUE_RECEIPT_REF_PREFIX))
+        receipt_id = receipt_ref.removeprefix(_QUEUE_RECEIPT_REF_PREFIX)
+        receipt = self._store.load_receipt(receipt_id)
+        if self._store.claim_accepted_publication(receipt_id):
+            self._agent_runtime.publish(
+                receipt,
+                kind="accepted",
+                phase="queue",
+                text="Accepted",
+                best_effort=True,
+            )
+        self._driver.wake()
 
     def resolve_queue_receipt(self, *, user_id: str, result_ref: str) -> QueueReceipt:
         return self._store.queue_receipt_contract(
@@ -746,268 +1828,48 @@ class P0ChatController:
         )
 
     def close(self) -> None:
-        if self._closed.is_set():
-            return
-        self._closed.set()
-        self._activations.put(None)
-        self._worker.join(timeout=2)
+        self._driver.close()
+        for item in self._extra_closables:
+            close = getattr(item, "close", None)
+            if callable(close):
+                close()
         close_backend = getattr(self._backend, "close", None)
         if callable(close_backend):
             close_backend()
 
-    def _run(self) -> None:
-        while not self._closed.is_set():
-            receipt_id = self._activations.get()
-            if receipt_id is None:
-                return
-            receipt = self._store.load_receipt(receipt_id)
-            try:
-                self._process(receipt)
-            except Exception:
-                attempt_count = self._store.record_failed_attempt(receipt_id)
-                if attempt_count < self._max_attempts and not self._closed.wait(
-                    self._retry_delay_seconds
-                ):
-                    self._activations.put(receipt_id)
-                elif attempt_count >= self._max_attempts:
-                    try:
-                        self._publish_terminal_failure(receipt)
-                    except Exception:
-                        # Three attempts are the terminal boundary. A callback
-                        # outage must not restart inference beyond that limit.
-                        pass
+    def _infer_user_id(self) -> str:
+        with self._store._connect() as connection:
+            row = connection.execute(
+                "SELECT user_id FROM p0_queue_receipts ORDER BY enqueued_at_ms LIMIT 1"
+            ).fetchone()
+        if row is not None:
+            return str(row["user_id"])
+        configured = getattr(self._backend, "_firebase_uid", None)
+        return str(configured or "firebase-user-1")
 
-    def _process(self, receipt: _QueueReceipt) -> None:
-        existing_final = self._store.pending_final(receipt.receipt_id)
-        if existing_final is not None:
-            self._deliver_and_publish_final(receipt, existing_final)
-            return
+    def _tick_for_receipt(self, receipt: _QueueReceipt) -> Tick:
+        with self._store.run_state._connect() as connection:
+            row = connection.execute(
+                "SELECT tick_json FROM queue_items WHERE tick_id = ?",
+                (receipt.tick_id,),
+            ).fetchone()
+        if row is None:
+            raise DurableStateError("P0 receipt lost its durable Tick")
+        return Tick.from_json(str(row["tick_json"]))
 
-        submission = self._backend.resolve_submission(
-            user_id=receipt.user_id,
-            submission_ref=receipt.submission_ref,
-        )
-        if submission.user_message_id != receipt.user_message_id:
-            raise RuntimeError("resolved submission user_message_id mismatch")
-        self._backend.record_queue_receipt(
-            self._store.queue_receipt_contract(
-                receipt_ref=_QUEUE_RECEIPT_REF_PREFIX + receipt.receipt_id,
-                user_id=receipt.user_id,
-            )
-        )
-        sequence = 0
-        sequence_lock = threading.Lock()
-
-        def publish_fields(*, kind: str, phase: str, text: str) -> None:
-            nonlocal sequence
-            with sequence_lock:
-                sequence += 1
-                event_sequence = sequence
-            mapped_kind = _chat_event_kind(kind, phase)
-            self._backend.publish_event(
-                ChatEvent.from_dict({
-                    "schema_version": _VERSION,
-                    "event_id": f"{receipt.receipt_id}:{event_sequence}",
-                    "stream_id": f"stream:{receipt.receipt_id}",
-                    "step_id": None,
-                    "user_message_id": receipt.user_message_id,
-                    "assistant_message_id": None,
-                    "final_reply_receipt_id": None,
-                    "kind": mapped_kind,
-                    "phase": phase[:64] or "runtime",
-                    "safe_display_text": text[:1000],
-                    "ephemeral": mapped_kind not in {"failed", "interrupted"},
-                    "origin": "user_initiated_chat",
-                    "emitted_at_ms": self._now_ms(),
-                    "heartbeat_max_silence_ms": 5000,
-                    "extensions": {},
-                })
-            )
-
-        def publish(event: InvocationEvent) -> None:
-            if event.kind is InvocationEventKind.FINAL:
-                return
-            if event.kind is InvocationEventKind.FAILED:
-                # Provider/runtime faults are retried as one logical P0 input.
-                # Expose only the terminal third failure as recoverable.
-                return
-            publish_fields(
-                kind=event.kind.value,
-                phase=event.phase,
-                text=event.text,
-            )
-
-        heartbeat_stop = threading.Event()
-
-        def heartbeat() -> None:
-            while not heartbeat_stop.wait(self._heartbeat_interval_seconds):
-                publish_fields(
-                    kind="heartbeat",
-                    phase="runtime",
-                    text="Still working",
-                )
-
-        heartbeat_worker = threading.Thread(
-            target=heartbeat,
-            name=f"thine-p0-heartbeat-{receipt.receipt_id}",
-            daemon=True,
-        )
-        heartbeat_worker.start()
-        current_memory = self._store.working_memory_snapshot()
-        prompt = submission.text
-        if current_memory.markdown:
-            prompt = (
-                "Working Memory from prior Thine ticks:\n"
-                + current_memory.markdown
-                + "\n\nCurrent user message:\n"
-                + submission.text
-            )
-        try:
-            runtime = self._get_runtime()
-            result = runtime.invoke(
-                InvocationRequest(
-                    logical_run_id=receipt.logical_run_id,
-                    kind=InvocationKind.USER_CHAT,
-                    prompt=prompt,
-                ),
-                emit=publish,
-            )
-            if result.completed and not result.failed:
-                hook_status: str | None = None
-                finalize_memory = getattr(runtime, "finalize_working_memory", None)
-                if callable(finalize_memory):
-                    try:
-                        hook_status = finalize_memory(
-                            run_id=receipt.logical_run_id,
-                            current=current_memory,
-                            result=result,
-                            store=self._store,
-                        )
-                    except WorkingMemoryTokenizerUnavailable:
-                        hook_status = CONFIGURED_MODEL_TOKENIZER_LIMITATION
-                    except Exception as exc:
-                        hook_status = (
-                            "working memory Stop Hook failed: " + type(exc).__name__
-                        )
-                if hook_status:
-                    try:
-                        publish_fields(
-                            kind="progress",
-                            phase="working_memory",
-                            text=hook_status,
-                        )
-                    except Exception:
-                        # Working Memory is a hook-only concern. It must not
-                        # suppress an already-completed reply.
-                        pass
-        finally:
-            heartbeat_stop.set()
-            heartbeat_worker.join(timeout=1)
-        if result.failed or not result.completed or result.final_output is None:
-            raise RuntimeError(
-                result.failure_reason or "Hermes P0 invocation did not complete"
-            )
-        assistant_message_id = str(
-            uuid.uuid5(uuid.NAMESPACE_URL, f"thine-assistant:{receipt.receipt_id}")
-        )
-        self._store.persist_final(
-            receipt=receipt,
-            assistant_message_id=assistant_message_id,
-            text=result.final_output,
-            terminal_sequence=sequence + 1,
-            now_ms=self._now_ms(),
-        )
-        outbox = self._store.pending_final(receipt.receipt_id)
-        assert outbox is not None
-        self._deliver_and_publish_final(receipt, outbox)
-
-    def _deliver_and_publish_final(
-        self, receipt: _QueueReceipt, outbox: sqlite3.Row
-    ) -> None:
-        if outbox["status"] != "persisted":
-            self._deliver_final(receipt, outbox)
-        persisted_outbox = self._store.pending_final(receipt.receipt_id)
-        if persisted_outbox is None:
-            raise RuntimeError("final outbox disappeared after backend persistence")
-        outbox = persisted_outbox
-        sequence = int(outbox["terminal_sequence"])
-        backend_receipt_id = str(outbox["backend_receipt_id"])
-        self._backend.publish_event(
-            ChatEvent.from_dict({
-                "schema_version": _VERSION,
-                "event_id": f"{receipt.receipt_id}:{sequence}",
-                "stream_id": f"stream:{receipt.receipt_id}",
-                "step_id": None,
-                "user_message_id": receipt.user_message_id,
-                "assistant_message_id": str(outbox["assistant_message_id"]),
-                "final_reply_receipt_id": backend_receipt_id,
-                "kind": "final",
-                "phase": "final",
-                "safe_display_text": str(outbox["text"])[:1000],
-                "ephemeral": False,
-                "origin": "user_initiated_chat",
-                "emitted_at_ms": self._now_ms(),
-                "heartbeat_max_silence_ms": 5000,
-                "extensions": {},
-            })
-        )
-        self._store.mark_terminal_event_delivered(receipt_id=receipt.receipt_id)
-
-    def _publish_terminal_failure(self, receipt: _QueueReceipt) -> None:
-        self._backend.publish_event(
-            ChatEvent.from_dict({
-                "schema_version": _VERSION,
-                "event_id": f"{receipt.receipt_id}:2147483647",
-                "stream_id": f"stream:{receipt.receipt_id}",
-                "step_id": None,
-                "user_message_id": receipt.user_message_id,
-                "assistant_message_id": None,
-                "final_reply_receipt_id": None,
-                "kind": "failed",
-                "phase": "retry_exhausted",
-                "safe_display_text": (
-                    "Hermes could not complete this message after three attempts. "
-                    "You can retry it from chat."
-                ),
-                "ephemeral": False,
-                "origin": "user_initiated_chat",
-                "emitted_at_ms": self._now_ms(),
-                "heartbeat_max_silence_ms": 5000,
-                "extensions": {},
-            })
-        )
-
-    def _deliver_final(self, receipt: _QueueReceipt, outbox: sqlite3.Row) -> None:
-        backend_receipt = self._backend.persist_final_reply(
-            self._store.final_outbox_contract(receipt.receipt_id)
-        )
-        if (
-            backend_receipt.payload.assistant_message_id
-            != str(outbox["assistant_message_id"])
-            or backend_receipt.payload.user_message_id != receipt.user_message_id
-            or backend_receipt.payload.idempotency_key != str(outbox["idempotency_key"])
-        ):
-            raise RuntimeError(
-                "backend final reply receipt does not match local outbox"
-            )
-        self._store.mark_final_persisted(
-            receipt_id=receipt.receipt_id,
-            backend_receipt=backend_receipt,
-            now_ms=self._now_ms(),
-        )
-
-    def _get_runtime(self) -> HermesInvocationRuntime:
-        if self._runtime is None:
-            assert self._runtime_factory is not None
-            self._runtime = self._runtime_factory()
-        return self._runtime
+    def _on_result(self, logical_run_id: str, status: str, user_id: str) -> None:
+        if status == "failed_terminal":
+            self._agent_runtime.publish_terminal_failure(logical_run_id, user_id)
 
 
 __all__ = [
     "BackendPrivateChatClient",
     "BackendPrivateChatPort",
+    "HarnessCoordinatorDriver",
     "P0ChatController",
     "P0ChatStore",
+    "P0CoordinatorRuntime",
+    "P0RunFinalizer",
     "ProductP0Runtime",
     "ResolvedSubmission",
     "build_p0_runtime",
