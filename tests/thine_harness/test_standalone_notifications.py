@@ -19,7 +19,7 @@ from thine_harness.contracts.notifications import (
 from thine_harness.contracts.runtime import Tick
 from thine_harness.deferred_tools import DeferredNamespaceCatalog
 from thine_harness.run_coordinator import InvocationContext
-from thine_harness.run_state import DurableRunState, LeasedRun
+from thine_harness.run_state import DurableRunState, LeasedRun, SCHEMA_VERSION
 from thine_harness.standalone_notifications import (
     STANDALONE_NOTIFICATION_SEND_TOOL_NAME,
     STANDALONE_NOTIFICATION_SEND_TOOL_SCHEMA,
@@ -527,6 +527,6 @@ def test_schema_upgrade_preserves_existing_proactive_action(tmp_path: Path):
     assert row["action_kind"] == "background_message"
     assert row["title"] == "Thine"
     assert row["navigation_template"] == "route.chat"
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     connection.close()

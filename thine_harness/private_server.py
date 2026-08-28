@@ -50,6 +50,7 @@ from .speaker_mappings import (
 )
 from .standalone_notifications import StandaloneNotificationToolBinding
 from .transcript_agent import TranscriptAgentFinalizer, build_real_transcript_runtime
+from .topics_preferences import TopicPreferenceService, TopicPreferenceToolBinding
 
 
 def build_private_service_server(
@@ -125,15 +126,21 @@ def build_product_p0_controller(
         dispatcher=ActionDispatcher(store.run_state),
         backend=communications,
     )
+    topic_service = TopicPreferenceService(store.run_state)
+    topic_binding = TopicPreferenceToolBinding(service=topic_service)
     notification_binding = StandaloneNotificationToolBinding(
         dispatcher=ActionDispatcher(store.run_state),
         backend=communications,
+        preference_lookup=lambda user_id: topic_service.preference_value(
+            user_id, "notifications_enabled"
+        ),
     )
 
     def communication_context(user_id: str) -> dict[str, object]:
         return {
             **communication_binding.prompt_context(user_id),
             **notification_binding.prompt_context(user_id),
+            **topic_binding.prompt_context(user_id),
         }
 
     transcript_runtime = build_real_transcript_runtime(
@@ -144,6 +151,7 @@ def build_product_p0_controller(
             speaker_binding,
             communication_binding,
             notification_binding,
+            topic_binding,
             SpeakerMappingInspectionToolBinding(
                 state=store.run_state,
                 user_id=private_config.firebase_uid,
@@ -191,7 +199,11 @@ def build_product_p0_controller(
                     communication_context=communication_context,
                 ),
             },
-            context_bindings=(communication_binding, notification_binding),
+            context_bindings=(
+                communication_binding,
+                notification_binding,
+                topic_binding,
+            ),
         ),
         background_input=BackgroundInputRouter({
             "p1_transcript": transcript_input,
@@ -213,6 +225,8 @@ def build_product_p0_controller(
             ),
         }),
         background_scan=scan_background,
+        p0_context_bindings=(topic_binding,),
+        policy_context=topic_binding.prompt_context,
         extra_closables=(transcript, interactions, speakers, communications),
     )
     controller.add_closable(

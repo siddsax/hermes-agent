@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 import ipaddress
 import json
@@ -65,6 +66,11 @@ _P0_SYSTEM_PROMPT = (
     "tools whenever they are needed. Keep user-visible progress factual and concise. "
     "Never send a notification for this user-initiated reply; chat persistence is "
     "the only delivery path. "
+    "Discover the topics namespace when the user explicitly corrects a fact or asks "
+    "to change notifications or speaker-tag nudges. Only those two narrow preferences "
+    "are switchable; background inference, Home mutation, schedule creation, and "
+    "proactive chat cannot be disabled. Durable explicit preferences/corrections "
+    "override inferred state, and no old Working Memory version can be restored. "
     "Treat Thine backend resources as authoritative, preserve prompt-cache stability, "
     "and leave durable Working Memory updates to the same-context Stop Hook."
 )
@@ -270,6 +276,8 @@ def build_p0_runtime(
 
     resolved_token_loader = token_loader or _load_codex_cli_token
     resolved_agent_factory = agent_factory or _aiagent_factory
+    from .transcript_agent import TRANSCRIPT_AGENT_TOOLSET
+
     credentials = resolved_token_loader()
     access_token = str((credentials or {}).get("access_token") or "")
     if not access_token:
@@ -286,6 +294,7 @@ def build_p0_runtime(
         model=config.model,
         reasoning_config={"enabled": True, "effort": config.reasoning_effort},
         fallback_model=None,
+        enabled_toolsets=[TRANSCRIPT_AGENT_TOOLSET],
         quiet_mode=True,
         session_id=f"thine-p0:{firebase_uid}",
         pass_session_id=True,
@@ -1227,12 +1236,16 @@ class P0CoordinatorRuntime:
         runtime_loader: Callable[[], HermesInvocationRuntime],
         now_ms: Callable[[], int],
         heartbeat_interval_seconds: float,
+        context_bindings: tuple[object, ...] = (),
+        policy_context: Callable[[str], dict[str, object]] | None = None,
     ) -> None:
         self._store = store
         self._backend = backend
         self._runtime_loader = runtime_loader
         self._now_ms = now_ms
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._context_bindings = context_bindings
+        self._policy_context = policy_context
 
     def invoke(
         self,
@@ -1263,10 +1276,24 @@ class P0CoordinatorRuntime:
         )
         current_memory = self._store.working_memory_snapshot_for_user(receipt.user_id)
         prompt = submission.text
-        if current_memory.markdown:
+        policy_context = (
+            {}
+            if self._policy_context is None
+            else dict(self._policy_context(receipt.user_id))
+        )
+        if current_memory.markdown or policy_context:
             prompt = (
                 "Working Memory from prior Thine ticks:\n"
                 + current_memory.markdown
+                + "\n\nDurable Topics, preferences, and explicit corrections "
+                "(authoritative over inferred state):\n"
+                + json.dumps(
+                    policy_context,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
                 + "\n\nCurrent user message:\n"
                 + submission.text
             )
@@ -1314,14 +1341,25 @@ class P0CoordinatorRuntime:
             )
 
         try:
-            result = self._runtime_loader().invoke(
-                InvocationRequest(
-                    logical_run_id=receipt.logical_run_id,
-                    kind=InvocationKind.USER_CHAT,
-                    prompt=prompt,
-                ),
-                emit=emit,
-            )
+            with ExitStack() as stack:
+                for binding in self._context_bindings:
+                    activate_p0 = getattr(binding, "activate_p0", None)
+                    if callable(activate_p0):
+                        stack.enter_context(
+                            activate_p0(
+                                context,
+                                user_message_id=receipt.user_message_id,
+                                user_message_text=submission.text,
+                            )
+                        )
+                result = self._runtime_loader().invoke(
+                    InvocationRequest(
+                        logical_run_id=receipt.logical_run_id,
+                        kind=InvocationKind.USER_CHAT,
+                        prompt=prompt,
+                    ),
+                    emit=emit,
+                )
         finally:
             heartbeat_stop.set()
             heartbeat_worker.join(timeout=1)
@@ -1710,6 +1748,8 @@ class P0ChatController:
         background_scan_interval_seconds: float = 5.0,
         feature_port: FakeFeaturePort | None = None,
         extra_closables: tuple[object, ...] = (),
+        p0_context_bindings: tuple[object, ...] = (),
+        policy_context: Callable[[str], dict[str, object]] | None = None,
     ) -> None:
         if (runtime is None) == (runtime_factory is None):
             raise ValueError("configure exactly one P0 runtime or runtime factory")
@@ -1738,6 +1778,8 @@ class P0ChatController:
             runtime_loader=load_runtime,
             now_ms=self._now_ms,
             heartbeat_interval_seconds=heartbeat_interval_seconds,
+            context_bindings=p0_context_bindings,
+            policy_context=policy_context,
         )
         p0_finalizer = P0RunFinalizer(
             store=store,

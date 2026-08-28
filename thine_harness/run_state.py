@@ -28,7 +28,7 @@ from .contracts.transcripts import TranscriptAck, TranscriptClaim
 from .working_memory import WorkingMemorySnapshot
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class DurableStateError(RuntimeError):
@@ -910,6 +910,77 @@ class DurableRunState:
                         "communication migration left invalid foreign keys"
                     )
                 version = 8
+            if version == 8:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE durable_topics (
+                        topic_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        topic_key TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK (state IN (
+                            'proposed', 'asked', 'acknowledged', 'snoozed',
+                            'resolved', 'expired'
+                        )),
+                        last_asked_at_ms INTEGER,
+                        next_eligible_at_ms INTEGER,
+                        evidence_refs_json TEXT NOT NULL,
+                        last_evidence_at_ms INTEGER,
+                        last_action TEXT,
+                        receipt_refs_json TEXT NOT NULL,
+                        authorizing_message_id TEXT,
+                        do_not_ask INTEGER NOT NULL CHECK (do_not_ask IN (0, 1)),
+                        updated_at_ms INTEGER NOT NULL,
+                        UNIQUE(user_id, topic_key)
+                    );
+                    CREATE INDEX durable_topics_by_user_state
+                        ON durable_topics(user_id, state, updated_at_ms DESC);
+
+                    CREATE TABLE explicit_preferences (
+                        user_id TEXT NOT NULL,
+                        preference_key TEXT NOT NULL CHECK (preference_key IN (
+                            'notifications_enabled',
+                            'speaker_tag_nudges_enabled'
+                        )),
+                        preference_value INTEGER NOT NULL
+                            CHECK (preference_value IN (0, 1)),
+                        authorizing_message_id TEXT NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        revision INTEGER NOT NULL CHECK (revision >= 1),
+                        PRIMARY KEY(user_id, preference_key)
+                    );
+                    CREATE INDEX explicit_preferences_revision
+                        ON explicit_preferences(user_id, revision DESC);
+
+                    CREATE TABLE explicit_corrections (
+                        user_id TEXT NOT NULL,
+                        correction_key TEXT NOT NULL,
+                        corrected_value TEXT NOT NULL,
+                        authorizing_message_id TEXT NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        PRIMARY KEY(user_id, correction_key)
+                    );
+                    CREATE INDEX explicit_corrections_recent
+                        ON explicit_corrections(user_id, updated_at_ms DESC);
+
+                    CREATE TABLE topic_preference_receipts (
+                        receipt_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL,
+                        operation TEXT NOT NULL,
+                        subject_key TEXT NOT NULL,
+                        intent_fingerprint TEXT NOT NULL,
+                        result_json TEXT NOT NULL,
+                        created_at_ms INTEGER NOT NULL,
+                        UNIQUE(user_id, logical_run_id, intent_fingerprint)
+                    );
+                    CREATE INDEX topic_preference_receipts_recent
+                        ON topic_preference_receipts(user_id, created_at_ms DESC);
+                    PRAGMA user_version = 9;
+                    COMMIT;
+                    """
+                )
+                version = 9
         except BaseException:
             connection.rollback()
             raise

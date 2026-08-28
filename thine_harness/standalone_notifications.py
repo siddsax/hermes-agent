@@ -93,10 +93,12 @@ class StandaloneNotificationToolBinding:
         dispatcher: ActionDispatcher,
         backend: StandaloneNotificationPort,
         clock_ms: Callable[[], int] | None = None,
+        preference_lookup: Callable[[str], bool | None] | None = None,
     ) -> None:
         self._dispatcher = dispatcher
         self._backend = backend
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
+        self._preference_lookup = preference_lookup
         self._lock = threading.Lock()
         self._active: _ActiveBackgroundTick | None = None
 
@@ -147,7 +149,11 @@ class StandaloneNotificationToolBinding:
         permission, permission_stale = self._permission(user_id)
         recent = self._recent_receipts(user_id)
         last_request = recent[0] if recent else None
-        repeat_guard = self._repeat_guard(permission, recent)
+        repeat_guard = self._repeat_guard(
+            permission,
+            recent,
+            explicit_notifications_enabled=self._explicit_preference(user_id),
+        )
         return {
             "standalone_notification": {
                 "allowance": self._dispatcher.allowance_snapshot(user_id).to_dict(),
@@ -198,7 +204,11 @@ class StandaloneNotificationToolBinding:
         if existing is None:
             permission, _stale = self._permission(active.user_id)
             repeat_guard = self._repeat_guard(
-                permission, self._recent_receipts(active.user_id)
+                permission,
+                self._recent_receipts(active.user_id),
+                explicit_notifications_enabled=self._explicit_preference(
+                    active.user_id
+                ),
             )
             if repeat_guard is not None:
                 return self._json({
@@ -361,11 +371,20 @@ class StandaloneNotificationToolBinding:
             })
         return recent
 
-    @staticmethod
     def _repeat_guard(
+        self,
         permission: NotificationPermission,
         recent: list[dict[str, object]],
+        *,
+        explicit_notifications_enabled: bool | None,
     ) -> dict[str, object] | None:
+        if explicit_notifications_enabled is False:
+            return {
+                "action_id": None,
+                "outcome": "capability_disabled",
+                "source": "explicit_preference",
+                "do_not_repeat_until_policy_or_permission_changes": True,
+            }
         policy = permission.payload
         for receipt in recent:
             outcome = receipt.get("outcome")
@@ -382,6 +401,11 @@ class StandaloneNotificationToolBinding:
                     "do_not_repeat_until_policy_or_permission_changes": True,
                 }
         return None
+
+    def _explicit_preference(self, user_id: str) -> bool | None:
+        if self._preference_lookup is None:
+            return None
+        return self._preference_lookup(user_id)
 
     @staticmethod
     def _valid_args(args: Mapping[str, object]) -> bool:
