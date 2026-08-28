@@ -40,6 +40,14 @@ from .p0_chat import (
 )
 from .run_coordinator import RunCoordinator
 from .runtime import HermesInvocationRuntime
+from .schedules import (
+    OneShotScheduleDriver,
+    OneShotScheduleService,
+    RealScheduleAgentRuntime,
+    ScheduleInputPort,
+    ScheduleRunFinalizer,
+    ScheduleToolBinding,
+)
 from .speaker_mappings import (
     BackendSpeakerMappingClient,
     RealSpeakerMappingAgentRuntime,
@@ -143,6 +151,12 @@ def build_product_p0_controller(
             **topic_binding.prompt_context(user_id),
         }
 
+    schedules = OneShotScheduleService(store.run_state)
+    schedule_binding = ScheduleToolBinding(
+        state=store.run_state,
+        service=schedules,
+        user_id=private_config.firebase_uid,
+    )
     transcript_runtime = build_real_transcript_runtime(
         store.run_state,
         firebase_uid=private_config.firebase_uid,
@@ -152,6 +166,7 @@ def build_product_p0_controller(
             communication_binding,
             notification_binding,
             topic_binding,
+            schedule_binding,
             SpeakerMappingInspectionToolBinding(
                 state=store.run_state,
                 user_id=private_config.firebase_uid,
@@ -176,6 +191,8 @@ def build_product_p0_controller(
     def scan_background(user_id: str, coordinator: RunCoordinator) -> object:
         communication_binding.reconcile_due(user_id)
         notification_binding.reconcile_due(user_id)
+        schedules.fire_due_once(user_id)
+        schedules.promote_oldest_overdue(user_id)
         return speaker_input.enqueue_next(user_id, coordinator=coordinator)
 
     controller = P0ChatController(
@@ -198,6 +215,11 @@ def build_product_p0_controller(
                     binding=speaker_binding,
                     communication_context=communication_context,
                 ),
+                "p2_scheduled": RealScheduleAgentRuntime(
+                    store.run_state,
+                    agent=transcript_runtime.agent,
+                    communication_context=communication_context,
+                ),
             },
             context_bindings=(
                 communication_binding,
@@ -209,6 +231,7 @@ def build_product_p0_controller(
             "p1_transcript": transcript_input,
             "p1_interaction": interaction_input,
             "p1_speaker": speaker_input,
+            "p2_scheduled": ScheduleInputPort(schedules),
         }),
         background_finalizer=BackgroundFinalizerRouter({
             "p1_transcript": TranscriptAgentFinalizer(
@@ -223,6 +246,7 @@ def build_product_p0_controller(
                 store.run_state,
                 speaker_port=speakers,
             ),
+            "p2_scheduled": ScheduleRunFinalizer(store.run_state),
         }),
         background_scan=scan_background,
         p0_context_bindings=(topic_binding,),
@@ -232,6 +256,13 @@ def build_product_p0_controller(
     controller.add_closable(
         HalfHourInteractionDriver(
             pump=interaction_input,
+            user_id=private_config.firebase_uid,
+            wake_coordinator=controller.wake_background,
+        )
+    )
+    controller.add_closable(
+        OneShotScheduleDriver(
+            service=schedules,
             user_id=private_config.firebase_uid,
             wake_coordinator=controller.wake_background,
         )

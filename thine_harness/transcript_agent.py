@@ -58,7 +58,9 @@ _SYSTEM_PROMPT = (
     "valid to call no tool and choose no user-visible action. Never imply an effect "
     "unless a tool receipt proves it. The final prose is a private run trace, not a "
     "message to the user. Working Memory is recent operational continuity only; "
-    "durable source data and long-term knowledge do not belong there."
+    "durable source data and long-term knowledge do not belong there. One-shot "
+    "schedule tools are always available through the schedules namespace and never "
+    "represent recurring work."
 )
 
 

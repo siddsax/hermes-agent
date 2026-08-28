@@ -28,7 +28,7 @@ from .contracts.transcripts import TranscriptAck, TranscriptClaim
 from .working_memory import WorkingMemorySnapshot
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 class DurableStateError(RuntimeError):
@@ -981,6 +981,66 @@ class DurableRunState:
                     """
                 )
                 version = 9
+            if version == 9:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE one_shot_schedules (
+                        schedule_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        due_at_ms INTEGER NOT NULL CHECK (due_at_ms >= 0),
+                        timezone_name TEXT NOT NULL,
+                        due_time_input TEXT NOT NULL,
+                        created_at_ms INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'active', 'enqueued', 'cancelled', 'completed',
+                            'failed_terminal'
+                        )),
+                        reason TEXT NOT NULL CHECK (
+                            length(reason) BETWEEN 1 AND 1000
+                        ),
+                        creator_tick_id TEXT NOT NULL,
+                        originating_run_id TEXT NOT NULL,
+                        originating_action_id TEXT NOT NULL,
+                        intent_fingerprint TEXT NOT NULL,
+                        enqueued_tick_id TEXT UNIQUE,
+                        enqueued_logical_run_id TEXT UNIQUE,
+                        enqueued_at_ms INTEGER,
+                        promoted_to_p1_at_ms INTEGER,
+                        completed_at_ms INTEGER,
+                        UNIQUE(user_id, originating_action_id),
+                        UNIQUE(user_id, originating_run_id, intent_fingerprint)
+                    );
+                    CREATE INDEX one_shot_schedules_due
+                        ON one_shot_schedules(user_id, status, due_at_ms,
+                                              created_at_ms, schedule_id);
+
+                    CREATE TABLE one_shot_schedule_mutations (
+                        action_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        schedule_id TEXT NOT NULL,
+                        operation TEXT NOT NULL CHECK (operation IN (
+                            'edit', 'cancel', 'run_now'
+                        )),
+                        intent_fingerprint TEXT NOT NULL,
+                        result_json TEXT NOT NULL,
+                        created_at_ms INTEGER NOT NULL,
+                        FOREIGN KEY(schedule_id)
+                            REFERENCES one_shot_schedules(schedule_id)
+                    );
+                    CREATE INDEX one_shot_schedule_mutations_by_schedule
+                        ON one_shot_schedule_mutations(user_id, schedule_id,
+                                                       created_at_ms);
+                    CREATE UNIQUE INDEX one_shot_schedule_mutations_by_intent
+                        ON one_shot_schedule_mutations(
+                            user_id, schedule_id, operation, intent_fingerprint
+                        );
+                    PRAGMA user_version = 10;
+                    COMMIT;
+                    """
+                )
+                version = 10
         except BaseException:
             connection.rollback()
             raise

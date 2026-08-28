@@ -72,7 +72,9 @@ _P0_SYSTEM_PROMPT = (
     "proactive chat cannot be disabled. Durable explicit preferences/corrections "
     "override inferred state, and no old Working Memory version can be restored. "
     "Treat Thine backend resources as authoritative, preserve prompt-cache stability, "
-    "and leave durable Working Memory updates to the same-context Stop Hook."
+    "and leave durable Working Memory updates to the same-context Stop Hook. "
+    "One-shot schedule tools are an always-available core capability; use tool "
+    "search to create, inspect, edit, cancel, or run a schedule when useful."
 )
 
 
