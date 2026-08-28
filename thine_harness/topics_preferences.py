@@ -1238,7 +1238,9 @@ class TopicPreferenceToolBinding:
             return "preference_not_switchable"
         if active.kind != "p0_user_chat" or not active.user_message_id:
             return "explicit_p0_authorization_required"
-        text = (active.user_message_text or "").casefold()
+        text = TopicPreferenceToolBinding._direct_request_text(
+            active.user_message_text or ""
+        ).casefold()
         if key == "notifications_enabled":
             subject = "notification" in text
             positive = any(
@@ -1290,6 +1292,58 @@ class TopicPreferenceToolBinding:
         if not subject or (positive if value else negative) is False:
             return "explicit_user_request_not_found"
         return None
+
+    @staticmethod
+    def _direct_request_text(message: str) -> str:
+        """Exclude clearly quoted external data from P0 preference authority."""
+        direct = re.sub(r"```.*?```", " ", message, flags=re.DOTALL)
+        direct = re.sub(r"`[^`\n]*`", " ", direct)
+        direct = re.sub(
+            r"<(transcript|tool[_ -]?output|summary|interaction|speaker[_ -]?mapping|home[_ -]?content)\b[^>]*>.*?</\1\s*>",
+            " ",
+            direct,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        direct = re.sub(r"(?m)^\s*>.*$", " ", direct)
+        direct = re.sub(r'"[^"\n]*"|“[^”\n]*”', " ", direct)
+        direct = re.sub(r"(?<!\w)'[^'\n]*'(?!\w)|‘[^’\n]*’", " ", direct)
+
+        external_markers = (
+            "transcript",
+            "recording",
+            "tool output",
+            "tool result",
+            "summary",
+            "email",
+            "slack",
+            "meeting notes",
+            "prior chat",
+            "chat content",
+            "interaction evidence",
+            "speaker mapping",
+            "home content",
+        )
+        retained_lines: list[str] = []
+        inside_external_block = False
+        for line in direct.splitlines():
+            folded = line.casefold()
+            if any(marker in folded for marker in external_markers) and (
+                line.rstrip().endswith(":")
+            ):
+                inside_external_block = True
+                continue
+            if inside_external_block:
+                if not line.strip():
+                    inside_external_block = False
+                continue
+            retained_lines.append(line)
+        direct = "\n".join(retained_lines)
+        units = re.split(r"(?<=[.!?])\s+|\n+", direct)
+        return "\n".join(
+            unit
+            for unit in units
+            if not any(marker in unit.casefold() for marker in external_markers)
+        )
 
     @staticmethod
     def _explicit_correction_matches(message: str, corrected_value: str) -> bool:
