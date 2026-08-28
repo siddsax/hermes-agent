@@ -20,7 +20,7 @@ from hermes_constants import get_hermes_home
 
 from .contracts.codec import ContractDecodeError
 from .contracts.control import HermesControlRequest, HermesControlResponse
-from .contracts.home import HomeRevision, HomeState
+from .contracts.home import HomeActivation, HomeHistory, HomeRevision, HomeState
 
 
 _VERSION = {"major": 1, "minor": 0}
@@ -40,8 +40,11 @@ _COUNT_COMPONENTS = frozenset(("home.card.connectors", "home.card.people"))
 
 HOME_TOOLSET = "local-thine"
 GET_CURRENT_TOOL_NAME = "thine_ui_state_get_current"
+GET_HISTORY_TOOL_NAME = "thine_ui_state_get_history"
 REPLACE_CURRENT_TOOL_NAME = "thine_ui_state_replace_current"
+REACTIVATE_REVISION_TOOL_NAME = "thine_ui_state_reactivate_revision"
 _HOME_STATE_REF_PREFIX = "home-state:"
+_HOME_HISTORY_LIMIT = 50
 
 
 class HomeStateError(RuntimeError):
@@ -90,12 +93,22 @@ class HomeToolHandlers:
             )
         return _tool_success(state=self.projector.current(self.user_id).to_dict())
 
+    def get_history(self, args: Mapping[str, object], **_kwargs: object) -> str:
+        if args:
+            return _tool_error(
+                HomeStateValidationError(
+                    f"{GET_HISTORY_TOOL_NAME} accepts no arguments"
+                )
+            )
+        return _tool_success(history=self.projector.history(self.user_id).to_dict())
+
     def replace_current(self, args: Mapping[str, object], **_kwargs: object) -> str:
         required = {
             "expected_revision",
             "nodes",
             "reason",
             "originating_run_id",
+            "source_tick_id",
             "action_id",
         }
         if set(args) != required:
@@ -120,11 +133,52 @@ class HomeToolHandlers:
                 nodes=args["nodes"],
                 reason=args["reason"],
                 originating_run_id=args["originating_run_id"],
+                source_tick_id=args["source_tick_id"],
+                author="hermes_agent",
                 action_id=args["action_id"],
             )
         except HomeStateError as exc:
             return _tool_error(exc)
         return _tool_success(revision=revision.to_dict())
+
+    def reactivate_revision(self, args: Mapping[str, object], **_kwargs: object) -> str:
+        required = {
+            "expected_revision",
+            "source_revision",
+            "reason",
+            "originating_run_id",
+            "source_tick_id",
+            "action_id",
+        }
+        if set(args) != required:
+            unknown = sorted(set(args) - required)
+            missing = sorted(required - set(args))
+            detail = []
+            if missing:
+                detail.append("missing: " + ", ".join(missing))
+            if unknown:
+                detail.append("unsupported: " + ", ".join(unknown))
+            return _tool_error(
+                HomeStateValidationError(
+                    "reactivation requires exactly the documented fields ("
+                    + "; ".join(detail)
+                    + ")"
+                )
+            )
+        try:
+            activation = self.projector.reactivate_revision(
+                user_id=self.user_id,
+                expected_revision=args["expected_revision"],
+                source_revision=args["source_revision"],
+                reason=args["reason"],
+                originating_run_id=args["originating_run_id"],
+                source_tick_id=args["source_tick_id"],
+                author="hermes_agent",
+                action_id=args["action_id"],
+            )
+        except HomeStateError as exc:
+            return _tool_error(exc)
+        return _tool_success(activation=activation.to_dict())
 
 
 class HomeProjectionControl:
@@ -241,6 +295,24 @@ class HomeStateProjector:
                     FOREIGN KEY (user_id, revision)
                         REFERENCES home_revisions(user_id, revision)
                 );
+                CREATE TABLE IF NOT EXISTS home_action_receipts (
+                    user_id TEXT NOT NULL,
+                    action_id TEXT NOT NULL,
+                    intent_fingerprint TEXT NOT NULL,
+                    mutation_kind TEXT NOT NULL CHECK (
+                        mutation_kind IN ('replace', 'reactivation')
+                    ),
+                    result_json TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, action_id)
+                );
+                INSERT OR IGNORE INTO home_action_receipts (
+                    user_id, action_id, intent_fingerprint, mutation_kind,
+                    result_json, created_at_ms
+                )
+                SELECT user_id, action_id, intent_fingerprint, 'replace',
+                       revision_json, created_at_ms
+                FROM home_revisions;
                 COMMIT;
                 """
             )
@@ -258,6 +330,33 @@ class HomeStateProjector:
                 row = self._initialize_current(connection, normalized_user_id)
             return HomeState.from_json(row["state_json"])
 
+    def history(self, user_id: str) -> HomeHistory:
+        normalized_user_id = _bounded_identity(user_id, field="user_id")
+        with self._transaction() as connection:
+            current = self._current_row(connection, normalized_user_id)
+            if current is None:
+                current = self._initialize_current(connection, normalized_user_id)
+            rows = connection.execute(
+                """
+                SELECT revision_json
+                FROM home_revisions
+                WHERE user_id = ?
+                ORDER BY revision DESC
+                LIMIT ?
+                """,
+                (normalized_user_id, _HOME_HISTORY_LIMIT),
+            ).fetchall()
+            return HomeHistory.from_dict({
+                "schema_version": _VERSION,
+                "current_revision": int(current["revision"]),
+                "retention_limit": _HOME_HISTORY_LIMIT,
+                "revisions": [
+                    HomeRevision.from_json(row["revision_json"]).to_dict()
+                    for row in rows
+                ],
+                "extensions": {},
+            })
+
     def replace_current(
         self,
         *,
@@ -266,6 +365,8 @@ class HomeStateProjector:
         nodes: object,
         reason: object,
         originating_run_id: object,
+        source_tick_id: object,
+        author: object,
         action_id: object,
     ) -> HomeRevision:
         normalized_user_id = _bounded_identity(user_id, field="user_id")
@@ -273,6 +374,10 @@ class HomeStateProjector:
             originating_run_id, field="originating_run_id"
         )
         normalized_action_id = _bounded_identity(action_id, field="action_id")
+        normalized_source_tick_id = _bounded_identity(
+            source_tick_id, field="source_tick_id"
+        )
+        normalized_author = _bounded_identity(author, field="author")
         if (
             isinstance(expected_revision, bool)
             or not isinstance(expected_revision, int)
@@ -292,23 +397,25 @@ class HomeStateProjector:
             "nodes": normalized_nodes,
             "reason": reason,
             "originating_run_id": normalized_run_id,
+            "source_tick_id": normalized_source_tick_id,
+            "author": normalized_author,
+            "mutation_kind": "replace",
         })
 
         with self._transaction() as connection:
-            duplicate = connection.execute(
-                """
-                SELECT intent_fingerprint, revision_json
-                FROM home_revisions
-                WHERE user_id = ? AND action_id = ?
-                """,
-                (normalized_user_id, normalized_action_id),
-            ).fetchone()
+            duplicate = self._action_receipt(
+                connection, normalized_user_id, normalized_action_id
+            )
             if duplicate is not None:
                 if duplicate["intent_fingerprint"] != intent_fingerprint:
                     raise HomeActionConflict(
                         "action_id was already used for a different Home replacement"
                     )
-                return HomeRevision.from_json(duplicate["revision_json"])
+                if duplicate["mutation_kind"] != "replace":
+                    raise HomeActionConflict(
+                        "action_id was already used for a different Home operation"
+                    )
+                return HomeRevision.from_json(duplicate["result_json"])
 
             current = self._current_row(connection, normalized_user_id)
             if current is None:
@@ -337,7 +444,11 @@ class HomeStateProjector:
                 "reason": reason,
                 "created_at_ms": created_at_ms,
                 "state": state.to_dict(),
-                "extensions": {},
+                "extensions": {
+                    "author": normalized_author,
+                    "source_tick_id": normalized_source_tick_id,
+                    "mutation_kind": "replace",
+                },
             })
             connection.execute(
                 """
@@ -364,7 +475,166 @@ class HomeStateProjector:
                 "UPDATE home_current SET revision = ? WHERE user_id = ?",
                 (next_revision, normalized_user_id),
             )
+            self._record_action(
+                connection,
+                user_id=normalized_user_id,
+                action_id=normalized_action_id,
+                intent_fingerprint=intent_fingerprint,
+                mutation_kind="replace",
+                result_json=revision.to_json(),
+                created_at_ms=created_at_ms,
+            )
+            self._prune_history(connection, normalized_user_id)
             return revision
+
+    def reactivate_revision(
+        self,
+        *,
+        user_id: object,
+        expected_revision: object,
+        source_revision: object,
+        reason: object,
+        originating_run_id: object,
+        source_tick_id: object,
+        author: object,
+        action_id: object,
+    ) -> HomeActivation:
+        normalized_user_id = _bounded_identity(user_id, field="user_id")
+        normalized_run_id = _bounded_identity(
+            originating_run_id, field="originating_run_id"
+        )
+        normalized_source_tick_id = _bounded_identity(
+            source_tick_id, field="source_tick_id"
+        )
+        normalized_author = _bounded_identity(author, field="author")
+        normalized_action_id = _bounded_identity(action_id, field="action_id")
+        expected_revision = _positive_revision(
+            expected_revision, field="expected_revision"
+        )
+        source_revision = _positive_revision(source_revision, field="source_revision")
+        normalized_reason = _reason(reason)
+        intent_fingerprint = _intent_fingerprint({
+            "user_id": normalized_user_id,
+            "expected_revision": expected_revision,
+            "source_revision": source_revision,
+            "reason": normalized_reason,
+            "originating_run_id": normalized_run_id,
+            "source_tick_id": normalized_source_tick_id,
+            "author": normalized_author,
+            "mutation_kind": "reactivation",
+        })
+
+        with self._transaction() as connection:
+            duplicate = self._action_receipt(
+                connection, normalized_user_id, normalized_action_id
+            )
+            if duplicate is not None:
+                if duplicate["intent_fingerprint"] != intent_fingerprint:
+                    raise HomeActionConflict(
+                        "action_id was already used for a different Home reactivation"
+                    )
+                if duplicate["mutation_kind"] != "reactivation":
+                    raise HomeActionConflict(
+                        "action_id was already used for a different Home operation"
+                    )
+                return HomeActivation.from_json(duplicate["result_json"])
+
+            current = self._current_row(connection, normalized_user_id)
+            if current is None:
+                current = self._initialize_current(connection, normalized_user_id)
+            current_revision = int(current["revision"])
+            if expected_revision != current_revision:
+                raise HomeRevisionConflict(
+                    expected_revision=expected_revision,
+                    current_revision=current_revision,
+                )
+
+            source = connection.execute(
+                """
+                SELECT state_json FROM home_revisions
+                WHERE user_id = ? AND revision = ?
+                """,
+                (normalized_user_id, source_revision),
+            ).fetchone()
+            if source is None:
+                raise HomeStateValidationError(
+                    f"source Home revision {source_revision} is not retained"
+                )
+            source_state = HomeState.from_json(source["state_json"])
+            normalized_nodes = _validated_tool_nodes(
+                _tool_nodes_from_state(source_state)
+            )
+            created_at_ms = int(self._clock_ms())
+            next_revision = current_revision + 1
+            state = _build_home_state(
+                user_id=normalized_user_id,
+                revision=next_revision,
+                updated_at_ms=created_at_ms,
+                nodes=normalized_nodes,
+            )
+            revision = HomeRevision.from_dict({
+                "schema_version": _VERSION,
+                "revision": next_revision,
+                "parent_revision": current_revision,
+                "originating_run_id": normalized_run_id,
+                "action_id": normalized_action_id,
+                "reason": normalized_reason,
+                "created_at_ms": created_at_ms,
+                "state": state.to_dict(),
+                "extensions": {
+                    "author": normalized_author,
+                    "source_tick_id": normalized_source_tick_id,
+                    "mutation_kind": "reactivation",
+                    "source_revision": source_revision,
+                },
+            })
+            connection.execute(
+                """
+                INSERT INTO home_revisions (
+                    user_id, revision, parent_revision, originating_run_id,
+                    action_id, intent_fingerprint, reason, created_at_ms,
+                    state_json, revision_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_user_id,
+                    next_revision,
+                    current_revision,
+                    normalized_run_id,
+                    normalized_action_id,
+                    intent_fingerprint,
+                    normalized_reason,
+                    created_at_ms,
+                    state.to_json(),
+                    revision.to_json(),
+                ),
+            )
+            connection.execute(
+                "UPDATE home_current SET revision = ? WHERE user_id = ?",
+                (next_revision, normalized_user_id),
+            )
+            activation = HomeActivation.from_dict({
+                "schema_version": _VERSION,
+                "action_id": normalized_action_id,
+                "source_revision": source_revision,
+                "expected_current_revision": expected_revision,
+                "new_revision": next_revision,
+                "revalidated": True,
+                "navigation_changed": False,
+                "created_at_ms": created_at_ms,
+                "extensions": {},
+            })
+            self._record_action(
+                connection,
+                user_id=normalized_user_id,
+                action_id=normalized_action_id,
+                intent_fingerprint=intent_fingerprint,
+                mutation_kind="reactivation",
+                result_json=activation.to_json(),
+                created_at_ms=created_at_ms,
+            )
+            self._prune_history(connection, normalized_user_id)
+            return activation
 
     def resolve_state_ref(self, *, user_id: str, result_ref: str) -> HomeState:
         normalized_user_id = _bounded_identity(user_id, field="user_id")
@@ -406,6 +676,64 @@ class HomeStateProjector:
             (user_id, user_id),
         ).fetchone()
 
+    @staticmethod
+    def _action_receipt(
+        connection: sqlite3.Connection, user_id: str, action_id: str
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            """
+            SELECT intent_fingerprint, mutation_kind, result_json
+            FROM home_action_receipts
+            WHERE user_id = ? AND action_id = ?
+            """,
+            (user_id, action_id),
+        ).fetchone()
+
+    @staticmethod
+    def _record_action(
+        connection: sqlite3.Connection,
+        *,
+        user_id: str,
+        action_id: str,
+        intent_fingerprint: str,
+        mutation_kind: str,
+        result_json: str,
+        created_at_ms: int,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO home_action_receipts (
+                user_id, action_id, intent_fingerprint, mutation_kind,
+                result_json, created_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                action_id,
+                intent_fingerprint,
+                mutation_kind,
+                result_json,
+                created_at_ms,
+            ),
+        )
+
+    @staticmethod
+    def _prune_history(connection: sqlite3.Connection, user_id: str) -> None:
+        connection.execute(
+            """
+            DELETE FROM home_revisions
+            WHERE user_id = ?
+              AND revision NOT IN (
+                  SELECT revision
+                  FROM home_revisions
+                  WHERE user_id = ?
+                  ORDER BY revision DESC
+                  LIMIT ?
+              )
+            """,
+            (user_id, user_id, _HOME_HISTORY_LIMIT),
+        )
+
     def _initialize_current(
         self, connection: sqlite3.Connection, user_id: str
     ) -> sqlite3.Row:
@@ -425,7 +753,11 @@ class HomeStateProjector:
             "reason": "Create the default agent-composed Home state.",
             "created_at_ms": created_at_ms,
             "state": state.to_dict(),
-            "extensions": {},
+            "extensions": {
+                "author": "system",
+                "source_tick_id": "system:home-bootstrap",
+                "mutation_kind": "bootstrap",
+            },
         })
         connection.execute(
             """
@@ -450,6 +782,18 @@ class HomeStateProjector:
             "INSERT INTO home_current (user_id, revision) VALUES (?, 1)",
             (user_id,),
         )
+        self._record_action(
+            connection,
+            user_id=user_id,
+            action_id="system:home-bootstrap",
+            intent_fingerprint=_intent_fingerprint({
+                "user_id": user_id,
+                "bootstrap": True,
+            }),
+            mutation_kind="replace",
+            result_json=revision.to_json(),
+            created_at_ms=created_at_ms,
+        )
         row = self._current_row(connection, user_id)
         if row is None:  # pragma: no cover - guarded by the transaction above
             raise HomeStateError("default Home state was not persisted")
@@ -462,6 +806,39 @@ def _bounded_identity(value: object, *, field: str) -> str:
             f"{field} must be a non-empty string of at most 128 characters"
         )
     return value
+
+
+def _positive_revision(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise HomeStateValidationError(
+            f"{field} must be an integer greater than or equal to 1"
+        )
+    return value
+
+
+def _reason(value: object) -> str:
+    if not isinstance(value, str) or not 1 <= len(value) <= 1000:
+        raise HomeStateValidationError(
+            "reason must be a non-empty string of at most 1,000 characters"
+        )
+    return value
+
+
+def _tool_nodes_from_state(state: HomeState) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for node in state.payload.nodes:
+        content = node.content
+        result.append({
+            "node_id": node.node_id,
+            "component_id": node.component_id,
+            "visible": node.visible,
+            "content": {
+                "title": content.title,
+                "body": content.body,
+                "count": content.count,
+            },
+        })
+    return result
 
 
 def _validated_tool_nodes(nodes: object) -> list[dict[str, object]]:
@@ -616,10 +993,24 @@ def register_home_state_tools(
         scope=scope,
     )
     active_registry.register(
+        name=GET_HISTORY_TOOL_NAME,
+        toolset=HOME_TOOLSET,
+        schema=GET_HISTORY_TOOL_SCHEMA,
+        handler=handlers.get_history,
+        scope=scope,
+    )
+    active_registry.register(
         name=REPLACE_CURRENT_TOOL_NAME,
         toolset=HOME_TOOLSET,
         schema=REPLACE_CURRENT_TOOL_SCHEMA,
         handler=handlers.replace_current,
+        scope=scope,
+    )
+    active_registry.register(
+        name=REACTIVATE_REVISION_TOOL_NAME,
+        toolset=HOME_TOOLSET,
+        schema=REACTIVATE_REVISION_TOOL_SCHEMA,
+        handler=handlers.reactivate_revision,
         scope=scope,
     )
     return handlers
@@ -630,6 +1021,19 @@ GET_CURRENT_TOOL_SCHEMA = {
     "description": (
         "Read the authoritative current agent-composed Thine Home state and revision. "
         "Call this before proposing a replacement."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    },
+}
+
+GET_HISTORY_TOOL_SCHEMA = {
+    "name": GET_HISTORY_TOOL_NAME,
+    "description": (
+        "Read the retained immutable Thine Home revision history, newest first. "
+        "This history is independent of Working Memory."
     ),
     "parameters": {
         "type": "object",
@@ -673,6 +1077,7 @@ REPLACE_CURRENT_TOOL_SCHEMA = {
             },
             "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
             "originating_run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "source_tick_id": {"type": "string", "minLength": 1, "maxLength": 128},
             "action_id": {"type": "string", "minLength": 1, "maxLength": 128},
         },
         "required": [
@@ -680,6 +1085,43 @@ REPLACE_CURRENT_TOOL_SCHEMA = {
             "nodes",
             "reason",
             "originating_run_id",
+            "source_tick_id",
+            "action_id",
+        ],
+        "additionalProperties": False,
+    },
+}
+
+REACTIVATE_REVISION_TOOL_SCHEMA = {
+    "name": REACTIVATE_REVISION_TOOL_NAME,
+    "description": (
+        "Revalidate one retained historical Thine Home design and publish it as a "
+        "new head revision. Read current state first; stale bases are rejected."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "expected_revision": {"type": "integer", "minimum": 1},
+            "source_revision": {"type": "integer", "minimum": 1},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "originating_run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+            },
+            "source_tick_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+            },
+            "action_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        },
+        "required": [
+            "expected_revision",
+            "source_revision",
+            "reason",
+            "originating_run_id",
+            "source_tick_id",
             "action_id",
         ],
         "additionalProperties": False,
@@ -690,6 +1132,8 @@ REPLACE_CURRENT_TOOL_SCHEMA = {
 __all__ = [
     "GET_CURRENT_TOOL_NAME",
     "GET_CURRENT_TOOL_SCHEMA",
+    "GET_HISTORY_TOOL_NAME",
+    "GET_HISTORY_TOOL_SCHEMA",
     "HOME_TOOLSET",
     "HomeActionConflict",
     "HomeRevisionConflict",
@@ -700,6 +1144,8 @@ __all__ = [
     "HomeToolHandlers",
     "REPLACE_CURRENT_TOOL_NAME",
     "REPLACE_CURRENT_TOOL_SCHEMA",
+    "REACTIVATE_REVISION_TOOL_NAME",
+    "REACTIVATE_REVISION_TOOL_SCHEMA",
     "default_database_path",
     "register_home_state_tools",
 ]
