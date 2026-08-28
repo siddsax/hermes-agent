@@ -298,14 +298,14 @@ def test_lost_claim_response_reuses_request_and_does_not_duplicate_inference(
     first = coordinator.run_next("daily-user")
     second = coordinator.run_next("daily-user")
 
-    assert first is not None and first.status == "failed_retryable"
+    assert first is not None and first.status == "input_retry_pending"
     assert second is not None and second.status == "completed"
     assert len(transcript.claim_requests) == 1
     assert len(runtime.invocations) == 1
     assert transcript.lookup_requests[0] == transcript.lookup_requests[1]
     assert state.transcript_run_record(
         user_id="daily-user", logical_run_id=second.logical_run_id
-    ).attempts_total == 2
+    ).attempts_total == 1
 
 
 def test_ack_only_recovery_never_reinvokes_fake_decision_or_stop_hook(

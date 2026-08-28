@@ -20,12 +20,13 @@ import uuid
 from hermes_constants import get_hermes_home
 
 from .contracts.runtime import Tick
+from .contracts.recovery import ExplicitRetry, InputGap, QuarantineRecord
 from .contracts.runtime import InputReceipt, RunFinalization, RunReceipt
 from .contracts.transcripts import TranscriptAck, TranscriptClaim
 from .working_memory import WorkingMemorySnapshot
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class DurableStateError(RuntimeError):
@@ -157,6 +158,30 @@ class TranscriptRunRecord:
 
 
 @dataclass(frozen=True)
+class PendingTranscriptQuarantine:
+    user_id: str
+    tick_id: str
+    logical_run_id: str
+    attempt_ordinal: int
+    claim_id: str
+    quarantine_id: str
+    failure_code: str
+    quarantined_at_ms: int
+
+
+@dataclass(frozen=True)
+class TranscriptQuarantineInspection:
+    quarantine_id: str
+    logical_run_id: str
+    claim_id: str
+    failure_code: str
+    sync_state: str
+    record: QuarantineRecord | None
+    input_gap: InputGap | None
+    retry_run_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AgentRunInspection:
     logical_run_id: str
     attempt_id: str
@@ -226,7 +251,7 @@ class DurableRunState:
                 )
             if version == 0:
                 connection.executescript(
-                f"""
+                    f"""
                 BEGIN IMMEDIATE;
                 CREATE TABLE queue_items (
                     enqueue_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -449,6 +474,65 @@ class DurableRunState:
                     CREATE INDEX agent_run_inspections_recent
                         ON agent_run_inspections(user_id, recorded_at_ms DESC);
                     PRAGMA user_version = 3;
+                    COMMIT;
+                    """
+                )
+                version = 3
+            if version == 3:
+                connection.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE attempt_execution_started (
+                        attempt_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        logical_run_id TEXT NOT NULL,
+                        started_at_ms INTEGER NOT NULL,
+                        FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id),
+                        FOREIGN KEY(logical_run_id) REFERENCES queue_items(logical_run_id)
+                    );
+                    INSERT INTO attempt_execution_started (
+                        attempt_id, user_id, logical_run_id, started_at_ms
+                    )
+                    SELECT attempt_id, user_id, logical_run_id, started_at_ms
+                    FROM attempts WHERE status = 'running';
+
+                    CREATE TABLE transcript_quarantines (
+                        quarantine_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        original_logical_run_id TEXT NOT NULL UNIQUE,
+                        claim_id TEXT NOT NULL UNIQUE,
+                        failure_code TEXT NOT NULL,
+                        quarantined_at_ms INTEGER NOT NULL,
+                        sync_state TEXT NOT NULL,
+                        record_json TEXT,
+                        input_gap_json TEXT,
+                        gap_delivery_run_id TEXT,
+                        synchronized_at_ms INTEGER,
+                        FOREIGN KEY(quarantine_id) REFERENCES quarantines(quarantine_id),
+                        FOREIGN KEY(original_logical_run_id)
+                            REFERENCES queue_items(logical_run_id),
+                        FOREIGN KEY(gap_delivery_run_id)
+                            REFERENCES queue_items(logical_run_id)
+                    );
+                    CREATE INDEX transcript_quarantine_sync
+                        ON transcript_quarantines(user_id, sync_state, quarantined_at_ms);
+
+                    CREATE TABLE transcript_explicit_retries (
+                        retry_run_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        quarantine_id TEXT NOT NULL,
+                        retry_request_id TEXT NOT NULL UNIQUE,
+                        explicit_retry_json TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        created_at_ms INTEGER NOT NULL,
+                        completed_at_ms INTEGER,
+                        FOREIGN KEY(retry_run_id) REFERENCES queue_items(logical_run_id),
+                        FOREIGN KEY(quarantine_id)
+                            REFERENCES transcript_quarantines(quarantine_id)
+                    );
+                    CREATE INDEX transcript_retries_by_quarantine
+                        ON transcript_explicit_retries(user_id, quarantine_id, created_at_ms);
+                    PRAGMA user_version = 4;
                     COMMIT;
                     """
                 )
@@ -685,6 +769,10 @@ class DurableRunState:
                 """,
                 (now_ms, user_id, logical_run_id),
             )
+            connection.execute(
+                "DELETE FROM attempt_execution_started WHERE attempt_id = ?",
+                (attempt_id,),
+            )
         return CheckpointRecord(
             checkpoint_id=checkpoint_id,
             logical_run_id=logical_run_id,
@@ -693,6 +781,75 @@ class DurableRunState:
             completed_receipt_ids=receipt_ids,
             updated_at_ms=now_ms,
         )
+
+    def requeue_input_transport_failure(
+        self,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        owner: str,
+        attempt_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> None:
+        """Retry input delivery without consuming or replacing the Attempt."""
+        with self._transaction() as connection:
+            self._require_active_owner(
+                connection,
+                user_id=user_id,
+                logical_run_id=logical_run_id,
+                owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
+                now_ms=now_ms,
+            )
+            started = connection.execute(
+                "SELECT 1 FROM attempt_execution_started WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+            if started is not None:
+                raise DurableStateError(
+                    "input transport cannot requeue after inference started"
+                )
+            connection.execute(
+                """
+                UPDATE queue_items
+                SET state = 'queued', lease_owner = NULL, lease_token = NULL,
+                    lease_expires_at_ms = NULL, updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (now_ms, user_id, logical_run_id),
+            )
+
+    def mark_inference_started(
+        self,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        owner: str,
+        attempt_id: str,
+        lease_token: str,
+        now_ms: int,
+    ) -> None:
+        """Mark the boundary after which a crash consumes this Attempt."""
+        with self._transaction() as connection:
+            self._require_active_owner(
+                connection,
+                user_id=user_id,
+                logical_run_id=logical_run_id,
+                owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
+                now_ms=now_ms,
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO attempt_execution_started (
+                    attempt_id, user_id, logical_run_id, started_at_ms
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (attempt_id, user_id, logical_run_id, now_ms),
+            )
 
     def renew_lease(
         self,
@@ -859,7 +1016,9 @@ class DurableRunState:
                 (user_id, logical_run_id),
             ).fetchone()
             if row is None:
-                raise DurableStateError("claim response arrived before request persistence")
+                raise DurableStateError(
+                    "claim response arrived before request persistence"
+                )
             if payload.claim_request_id != row["claim_request_id"]:
                 raise DurableStateError("claim response request identity mismatch")
             if payload.lease_owner != logical_run_id:
@@ -891,6 +1050,355 @@ class DurableRunState:
             if stored is None:
                 raise DurableStateError("claim response was not durable")
             return self._stored_transcript_claim_from_row(stored)
+
+    def next_pending_transcript_quarantine(
+        self, user_id: str
+    ) -> PendingTranscriptQuarantine | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT tq.*, q.tick_id, MAX(a.ordinal) AS attempt_ordinal
+                FROM transcript_quarantines tq
+                JOIN queue_items q
+                  ON q.user_id = tq.user_id
+                 AND q.logical_run_id = tq.original_logical_run_id
+                JOIN attempts a
+                  ON a.user_id = tq.user_id
+                 AND a.logical_run_id = tq.original_logical_run_id
+                WHERE tq.user_id = ? AND tq.sync_state = 'pending'
+                GROUP BY tq.quarantine_id, q.tick_id
+                ORDER BY tq.quarantined_at_ms, tq.quarantine_id
+                LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return PendingTranscriptQuarantine(
+            user_id=user_id,
+            tick_id=str(row["tick_id"]),
+            logical_run_id=str(row["original_logical_run_id"]),
+            attempt_ordinal=int(row["attempt_ordinal"]),
+            claim_id=str(row["claim_id"]),
+            quarantine_id=str(row["quarantine_id"]),
+            failure_code=str(row["failure_code"]),
+            quarantined_at_ms=int(row["quarantined_at_ms"]),
+        )
+
+    def complete_transcript_quarantine(self, result: Any) -> None:
+        """Commit the backend-confirmed immutable record and typed source gap."""
+        gap = result.input_gap
+        with self._transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT tq.*, t.claim_json
+                FROM transcript_quarantines tq
+                JOIN transcript_claims t
+                  ON t.user_id = tq.user_id
+                 AND t.logical_run_id = tq.original_logical_run_id
+                WHERE tq.quarantine_id = ?
+                """,
+                (result.quarantine_id,),
+            ).fetchone()
+            if row is None:
+                raise DurableStateError("unknown transcript quarantine")
+            if row["sync_state"] == "synchronized":
+                if row["input_gap_json"] != gap.to_json():
+                    raise DurableStateError("quarantine replay changed its input gap")
+                return
+            if (
+                result.claim_id != row["claim_id"]
+                or result.logical_run_id != row["original_logical_run_id"]
+                or result.source_identity != row["claim_id"]
+                or result.failure_code != row["failure_code"]
+                or result.fault_attempts_total != 3
+                or result.quarantined_at_ms != row["quarantined_at_ms"]
+                or result.status != "quarantined"
+                or not result.input_retained
+                or not result.normal_cursor_advanced
+                or not result.canonical_transcript_retained
+                or gap.payload.quarantine_id != row["quarantine_id"]
+                or gap.payload.source_kind != "transcript"
+                or gap.payload.source_identity != row["claim_id"]
+                or not gap.payload.normal_cursor_advanced
+            ):
+                raise DurableStateError("backend quarantine identity mismatch")
+            claim = TranscriptClaim.from_json(str(row["claim_json"])).payload
+            entries = claim.entries
+            if not entries:
+                raise DurableStateError("cannot quarantine an empty transcript claim")
+            sequence_numbers = [
+                int(entry.sequence_number)
+                for entry in entries
+                if entry.sequence_number is not None
+            ]
+            expected_buffer_ids = tuple(
+                int(entry.aggregation_buffer_id) for entry in entries
+            )
+            expected_sequences = tuple(
+                None if entry.sequence_number is None else int(entry.sequence_number)
+                for entry in entries
+            )
+            expected_provenance = tuple(str(entry.provenance) for entry in entries)
+            if (
+                result.aggregation_buffer_ids != expected_buffer_ids
+                or result.sequence_numbers != expected_sequences
+                or result.provenance != expected_provenance
+                or len(result.adoption_kinds) != len(entries)
+            ):
+                raise DurableStateError("backend quarantine range mismatch")
+            record = QuarantineRecord.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "quarantine_id": str(row["quarantine_id"]),
+                "source_kind": "transcript",
+                "source_identity": str(row["claim_id"]),
+                "immutable_range": {
+                    "range_kind": "transcript_entries",
+                    "aggregation_buffer_ids": [
+                        int(entry.aggregation_buffer_id) for entry in entries
+                    ],
+                    "first_sequence_number": (
+                        min(sequence_numbers) if sequence_numbers else None
+                    ),
+                    "last_sequence_number": (
+                        max(sequence_numbers) if sequence_numbers else None
+                    ),
+                },
+                "logical_run_id": str(row["original_logical_run_id"]),
+                "fault_attempts_total": 3,
+                "normal_cursor_advanced": True,
+                "created_at_ms": int(row["quarantined_at_ms"]),
+                "extensions": {},
+            })
+            connection.execute(
+                """
+                UPDATE transcript_quarantines
+                SET sync_state = 'synchronized', record_json = ?,
+                    input_gap_json = ?, synchronized_at_ms = ?
+                WHERE quarantine_id = ? AND sync_state = 'pending'
+                """,
+                (
+                    record.to_json(),
+                    gap.to_json(),
+                    int(gap.payload.recorded_at_ms),
+                    result.quarantine_id,
+                ),
+            )
+
+    def attach_pending_transcript_gaps(
+        self, *, user_id: str, logical_run_id: str
+    ) -> tuple[InputGap, ...]:
+        """Attach each source gap once to the next normal transcript Logical Run."""
+        with self._transaction() as connection:
+            is_retry = connection.execute(
+                """
+                SELECT 1 FROM transcript_explicit_retries
+                WHERE user_id = ? AND retry_run_id = ?
+                """,
+                (user_id, logical_run_id),
+            ).fetchone()
+            if is_retry is not None:
+                return ()
+            rows = connection.execute(
+                """
+                SELECT quarantine_id, input_gap_json
+                FROM transcript_quarantines
+                WHERE user_id = ? AND sync_state = 'synchronized'
+                  AND (gap_delivery_run_id IS NULL OR gap_delivery_run_id = ?)
+                ORDER BY quarantined_at_ms, quarantine_id
+                """,
+                (user_id, logical_run_id),
+            ).fetchall()
+            for row in rows:
+                connection.execute(
+                    """
+                    UPDATE transcript_quarantines SET gap_delivery_run_id = ?
+                    WHERE quarantine_id = ? AND gap_delivery_run_id IS NULL
+                    """,
+                    (logical_run_id, row["quarantine_id"]),
+                )
+        return tuple(InputGap.from_json(str(row["input_gap_json"])) for row in rows)
+
+    def enqueue_transcript_retry(
+        self,
+        *,
+        user_id: str,
+        quarantine_id: str,
+        retry_run_id: str,
+        created_at_ms: int,
+    ) -> ExplicitRetry:
+        """Create separately identified retry work without mutating the old stream."""
+        if not user_id or not quarantine_id or not retry_run_id:
+            raise ValueError("user_id, quarantine_id, and retry_run_id are required")
+        retry_request_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"thine-transcript-quarantine-retry:{retry_run_id}",
+            )
+        )
+        tick_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"thine-transcript-quarantine-retry-tick:{retry_run_id}",
+            )
+        )
+        with self._transaction() as connection:
+            quarantine = connection.execute(
+                """
+                SELECT * FROM transcript_quarantines
+                WHERE user_id = ? AND quarantine_id = ?
+                  AND sync_state = 'synchronized'
+                """,
+                (user_id, quarantine_id),
+            ).fetchone()
+            if quarantine is None:
+                raise DurableStateError("retry requires a synchronized quarantine")
+            receipt_rows = connection.execute(
+                """
+                SELECT receipt_id FROM tool_receipts
+                WHERE user_id = ? AND logical_run_id = ?
+                ORDER BY acknowledged_at_ms, receipt_id
+                """,
+                (user_id, quarantine["original_logical_run_id"]),
+            ).fetchall()
+            retry = ExplicitRetry.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "retry_run_id": retry_run_id,
+                "quarantine_id": quarantine_id,
+                "source_identity": str(quarantine["claim_id"]),
+                "preserved_receipt_ids": [
+                    str(row["receipt_id"]) for row in receipt_rows
+                ],
+                "created_at_ms": created_at_ms,
+                "rewinds_normal_cursor": False,
+                "extensions": {},
+            })
+            existing = connection.execute(
+                """
+                SELECT explicit_retry_json FROM transcript_explicit_retries
+                WHERE user_id = ? AND retry_run_id = ?
+                """,
+                (user_id, retry_run_id),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["explicit_retry_json"]) != retry.to_json():
+                    raise DurableStateError(
+                        "retry_run_id was reused with a different quarantine"
+                    )
+                return ExplicitRetry.from_json(str(existing["explicit_retry_json"]))
+            tick = Tick.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "tick_id": tick_id,
+                "user_id": user_id,
+                "logical_run_id": retry_run_id,
+                "kind": "p1_transcript",
+                "priority": "p1",
+                "occurred_at_ms": created_at_ms,
+                "received_at_ms": created_at_ms,
+                "queued_at_ms": created_at_ms,
+                "source_ref": {
+                    "kind": "transcript_availability",
+                    "id": quarantine_id,
+                },
+                "causation_id": str(quarantine["original_logical_run_id"]),
+                "correlation_id": tick_id,
+                "attempt_ordinal": 1,
+                "lease": None,
+                "communication_allowance_snapshot": None,
+                "payload": {
+                    "payload_kind": "transcript_availability",
+                    "reference_id": quarantine_id,
+                },
+                "extensions": {},
+            })
+            self._insert_tick_locked(connection, tick=tick, now_ms=created_at_ms)
+            connection.execute(
+                """
+                INSERT INTO transcript_explicit_retries (
+                    retry_run_id, user_id, quarantine_id, retry_request_id,
+                    explicit_retry_json, state, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, 'queued', ?)
+                """,
+                (
+                    retry_run_id,
+                    user_id,
+                    quarantine_id,
+                    retry_request_id,
+                    retry.to_json(),
+                    created_at_ms,
+                ),
+            )
+        return retry
+
+    def explicit_transcript_retry(
+        self, *, user_id: str, retry_run_id: str
+    ) -> ExplicitRetry | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT explicit_retry_json FROM transcript_explicit_retries
+                WHERE user_id = ? AND retry_run_id = ?
+                """,
+                (user_id, retry_run_id),
+            ).fetchone()
+        return (
+            None
+            if row is None
+            else ExplicitRetry.from_json(str(row["explicit_retry_json"]))
+        )
+
+    def transcript_retry_request_id(self, *, user_id: str, retry_run_id: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT retry_request_id FROM transcript_explicit_retries
+                WHERE user_id = ? AND retry_run_id = ?
+                """,
+                (user_id, retry_run_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(retry_run_id)
+        return str(row["retry_request_id"])
+
+    def inspect_transcript_quarantine(
+        self, *, user_id: str, quarantine_id: str
+    ) -> TranscriptQuarantineInspection:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM transcript_quarantines
+                WHERE user_id = ? AND quarantine_id = ?
+                """,
+                (user_id, quarantine_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(quarantine_id)
+            retry_rows = connection.execute(
+                """
+                SELECT retry_run_id FROM transcript_explicit_retries
+                WHERE user_id = ? AND quarantine_id = ?
+                ORDER BY created_at_ms, retry_run_id
+                """,
+                (user_id, quarantine_id),
+            ).fetchall()
+        return TranscriptQuarantineInspection(
+            quarantine_id=quarantine_id,
+            logical_run_id=str(row["original_logical_run_id"]),
+            claim_id=str(row["claim_id"]),
+            failure_code=str(row["failure_code"]),
+            sync_state=str(row["sync_state"]),
+            record=(
+                None
+                if row["record_json"] is None
+                else QuarantineRecord.from_json(str(row["record_json"]))
+            ),
+            input_gap=(
+                None
+                if row["input_gap_json"] is None
+                else InputGap.from_json(str(row["input_gap_json"]))
+            ),
+            retry_run_ids=tuple(str(item["retry_run_id"]) for item in retry_rows),
+        )
 
     def working_memory_snapshot(self, user_id: str) -> WorkingMemorySnapshot:
         """Load the one automatically injected profile-scoped memory document."""
@@ -956,7 +1464,9 @@ class DurableRunState:
                 now_ms=now_ms,
             )
             if item["kind"] != "p1_transcript":
-                raise DurableStateError("transcript finalizer received another Tick kind")
+                raise DurableStateError(
+                    "transcript finalizer received another Tick kind"
+                )
             claim = connection.execute(
                 """
                 SELECT * FROM transcript_claims
@@ -973,7 +1483,9 @@ class DurableRunState:
                 raise DurableStateError("transcript run has no durable claimed input")
             claim_payload = TranscriptClaim.from_json(claim["claim_json"]).payload
             if not claim_payload.entries:
-                raise DurableStateError("empty transcript claim cannot enter inference finalization")
+                raise DurableStateError(
+                    "empty transcript claim cannot enter inference finalization"
+                )
 
             connection.execute(
                 """
@@ -1068,24 +1580,22 @@ class DurableRunState:
                     f"thine-transcript-finalization:{logical_run_id}",
                 )
             )
-            finalization = RunFinalization.from_dict(
-                {
-                    "schema_version": {"major": 1, "minor": 0},
-                    "finalization_id": finalization_id,
-                    "logical_run_id": logical_run_id,
-                    "tick_id": str(item["tick_id"]),
-                    "tick_kind": "p1_transcript",
-                    "phase": "awaiting_audio_ack",
-                    "source_ack_id": None,
-                    "final_reply_receipt_id": None,
-                    "recovery_mode": "ack_only",
-                    "inference_allowed": False,
-                    "restream_allowed": False,
-                    "working_memory_outcome": memory_outcome,
-                    "finalized_at_ms": None,
-                    "extensions": {},
-                }
-            )
+            finalization = RunFinalization.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "finalization_id": finalization_id,
+                "logical_run_id": logical_run_id,
+                "tick_id": str(item["tick_id"]),
+                "tick_kind": "p1_transcript",
+                "phase": "awaiting_audio_ack",
+                "source_ack_id": None,
+                "final_reply_receipt_id": None,
+                "recovery_mode": "ack_only",
+                "inference_allowed": False,
+                "restream_allowed": False,
+                "working_memory_outcome": memory_outcome,
+                "finalized_at_ms": None,
+                "extensions": {},
+            })
             if memory_outcome == "unchanged":
                 connection.execute(
                     """
@@ -1174,10 +1684,20 @@ class DurableRunState:
                         str(agent_inspection["api_mode"]),
                         str(agent_inspection["reasoning_effort"]),
                         str(agent_inspection["final_output"]),
-                        json.dumps(agent_inspection["tool_discoveries"], separators=(",", ":")),
-                        json.dumps(agent_inspection["usage"], separators=(",", ":"), sort_keys=True),
+                        json.dumps(
+                            agent_inspection["tool_discoveries"], separators=(",", ":")
+                        ),
+                        json.dumps(
+                            agent_inspection["usage"],
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
                         str(agent_inspection["stop_hook_outcome"]),
-                        json.dumps(agent_inspection["stop_hook_cache_identity"], separators=(",", ":"), sort_keys=True),
+                        json.dumps(
+                            agent_inspection["stop_hook_cache_identity"],
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
                         memory_version,
                         memory_token_count,
                         now_ms,
@@ -1231,9 +1751,7 @@ class DurableRunState:
                 finalization_id=finalization_id,
             )
 
-    def next_pending_transcript_ack(
-        self, user_id: str
-    ) -> PendingTranscriptAck | None:
+    def next_pending_transcript_ack(self, user_id: str) -> PendingTranscriptAck | None:
         with self._connect() as connection:
             row = connection.execute(
                 """
@@ -1285,19 +1803,17 @@ class DurableRunState:
         ):
             raise DurableStateError("Dataplane acknowledgement identity mismatch")
         recorded_at_ms = int(ack.acknowledged_at_ms)
-        input_receipt = InputReceipt.from_dict(
-            {
-                "schema_version": {"major": 1, "minor": 0},
-                "receipt_id": f"input-receipt:{ack.ack_id}",
-                "source_kind": "transcript",
-                "source_identity": pending.claim_id,
-                "logical_run_id": pending.logical_run_id,
-                "ack_id": ack.ack_id,
-                "disposition": "acknowledged",
-                "recorded_at_ms": recorded_at_ms,
-                "extensions": {},
-            }
-        )
+        input_receipt = InputReceipt.from_dict({
+            "schema_version": {"major": 1, "minor": 0},
+            "receipt_id": f"input-receipt:{ack.ack_id}",
+            "source_kind": "transcript",
+            "source_identity": pending.claim_id,
+            "logical_run_id": pending.logical_run_id,
+            "ack_id": ack.ack_id,
+            "disposition": "acknowledged",
+            "recorded_at_ms": recorded_at_ms,
+            "extensions": {},
+        })
         with self._connect() as connection:
             outcome_row = connection.execute(
                 """
@@ -1309,24 +1825,22 @@ class DurableRunState:
         if outcome_row is None:
             raise DurableStateError("transcript finalization is missing")
         memory_outcome = str(outcome_row["working_memory_outcome"])
-        finalization = RunFinalization.from_dict(
-            {
-                "schema_version": {"major": 1, "minor": 0},
-                "finalization_id": pending.finalization_id,
-                "logical_run_id": pending.logical_run_id,
-                "tick_id": pending.tick_id,
-                "tick_kind": "p1_transcript",
-                "phase": "completed",
-                "source_ack_id": ack.ack_id,
-                "final_reply_receipt_id": None,
-                "recovery_mode": "ack_only",
-                "inference_allowed": False,
-                "restream_allowed": False,
-                "working_memory_outcome": memory_outcome,
-                "finalized_at_ms": recorded_at_ms,
-                "extensions": {},
-            }
-        )
+        finalization = RunFinalization.from_dict({
+            "schema_version": {"major": 1, "minor": 0},
+            "finalization_id": pending.finalization_id,
+            "logical_run_id": pending.logical_run_id,
+            "tick_id": pending.tick_id,
+            "tick_kind": "p1_transcript",
+            "phase": "completed",
+            "source_ack_id": ack.ack_id,
+            "final_reply_receipt_id": None,
+            "recovery_mode": "ack_only",
+            "inference_allowed": False,
+            "restream_allowed": False,
+            "working_memory_outcome": memory_outcome,
+            "finalized_at_ms": recorded_at_ms,
+            "extensions": {},
+        })
         with self._transaction() as connection:
             row = connection.execute(
                 """
@@ -1342,8 +1856,13 @@ class DurableRunState:
                 raise DurableStateError("acknowledgement targets an unknown run")
             if row["state"] == "completed" and row["claim_state"] == "acknowledged":
                 return
-            if row["state"] != "awaiting_audio_ack" or row["claim_state"] != "awaiting_ack":
-                raise DurableStateError("run is not awaiting transcript acknowledgement")
+            if (
+                row["state"] != "awaiting_audio_ack"
+                or row["claim_state"] != "awaiting_ack"
+            ):
+                raise DurableStateError(
+                    "run is not awaiting transcript acknowledgement"
+                )
             attempts_total = int(
                 connection.execute(
                     """
@@ -1353,19 +1872,17 @@ class DurableRunState:
                     (pending.user_id, pending.logical_run_id),
                 ).fetchone()[0]
             )
-            run_receipt = RunReceipt.from_dict(
-                {
-                    "schema_version": {"major": 1, "minor": 0},
-                    "receipt_id": f"run-receipt:{pending.logical_run_id}",
-                    "logical_run_id": pending.logical_run_id,
-                    "tick_id": pending.tick_id,
-                    "outcome": "completed",
-                    "attempts_total": attempts_total,
-                    "finalization_id": pending.finalization_id,
-                    "recorded_at_ms": recorded_at_ms,
-                    "extensions": {},
-                }
-            )
+            run_receipt = RunReceipt.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "receipt_id": f"run-receipt:{pending.logical_run_id}",
+                "logical_run_id": pending.logical_run_id,
+                "tick_id": pending.tick_id,
+                "outcome": "completed",
+                "attempts_total": attempts_total,
+                "finalization_id": pending.finalization_id,
+                "recorded_at_ms": recorded_at_ms,
+                "extensions": {},
+            })
             connection.execute(
                 """
                 INSERT INTO input_receipts (
@@ -1437,6 +1954,18 @@ class DurableRunState:
                     pending.logical_run_id,
                 ),
             )
+            connection.execute(
+                """
+                UPDATE transcript_explicit_retries
+                SET state = 'completed', completed_at_ms = ?
+                WHERE user_id = ? AND retry_run_id = ?
+                """,
+                (
+                    recorded_at_ms,
+                    pending.user_id,
+                    pending.logical_run_id,
+                ),
+            )
 
     def transcript_run_record(
         self, *, user_id: str, logical_run_id: str
@@ -1480,7 +2009,9 @@ class DurableRunState:
         canonical_retained: bool | None = None
         if row["ack_json"] is not None:
             canonical_retained = bool(
-                TranscriptAck.from_json(row["ack_json"]).payload.canonical_transcript_retained
+                TranscriptAck.from_json(
+                    row["ack_json"]
+                ).payload.canonical_transcript_retained
             )
         return TranscriptRunRecord(
             queue_state=str(row["queue_state"]),
@@ -1643,6 +2174,15 @@ class DurableRunState:
                         failure_code,
                         now_ms,
                     ),
+                )
+            if state == "quarantined" and item["kind"] == "p1_transcript":
+                self._insert_pending_transcript_quarantine_locked(
+                    connection,
+                    user_id=user_id,
+                    logical_run_id=logical_run_id,
+                    quarantine_id=quarantine_id,
+                    failure_code=failure_code,
+                    quarantined_at_ms=now_ms,
                 )
             connection.execute(
                 """
@@ -1898,6 +2438,21 @@ class DurableRunState:
             ).fetchone()
             if attempt is None:
                 raise DurableStateError("expired running item has no Attempt")
+            execution_started = connection.execute(
+                "SELECT 1 FROM attempt_execution_started WHERE attempt_id = ?",
+                (attempt["attempt_id"],),
+            ).fetchone()
+            if execution_started is None:
+                connection.execute(
+                    """
+                    UPDATE queue_items
+                    SET state = 'queued', lease_owner = NULL, lease_token = NULL,
+                        lease_expires_at_ms = NULL, updated_at_ms = ?
+                    WHERE logical_run_id = ? AND user_id = ?
+                    """,
+                    (now_ms, item["logical_run_id"], user_id),
+                )
+                continue
             ordinal = int(attempt["ordinal"])
             connection.execute(
                 """
@@ -1943,6 +2498,15 @@ class DurableRunState:
                         now_ms,
                     ),
                 )
+                if item["kind"] == "p1_transcript":
+                    self._insert_pending_transcript_quarantine_locked(
+                        connection,
+                        user_id=user_id,
+                        logical_run_id=str(item["logical_run_id"]),
+                        quarantine_id=f"{item['logical_run_id']}:quarantine",
+                        failure_code="crash_discarded_uncheckpointed_inference",
+                        quarantined_at_ms=now_ms,
+                    )
             connection.execute(
                 """
                 UPDATE queue_items
@@ -1952,6 +2516,46 @@ class DurableRunState:
                 """,
                 (terminal, now_ms, item["logical_run_id"], user_id),
             )
+
+    @staticmethod
+    def _insert_pending_transcript_quarantine_locked(
+        connection: sqlite3.Connection,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        quarantine_id: str,
+        failure_code: str,
+        quarantined_at_ms: int,
+    ) -> None:
+        claim = connection.execute(
+            """
+            SELECT claim_id, claim_json FROM transcript_claims
+            WHERE user_id = ? AND logical_run_id = ?
+              AND claim_id IS NOT NULL AND claim_json IS NOT NULL
+            """,
+            (user_id, logical_run_id),
+        ).fetchone()
+        if claim is None:
+            # Generic coordinator tests and non-transcript adapters may use the
+            # p1_transcript kind without the real Input Pump. There is no
+            # cross-store suffix to synchronize when no Dataplane claim exists.
+            return
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO transcript_quarantines (
+                quarantine_id, user_id, original_logical_run_id, claim_id,
+                failure_code, quarantined_at_ms, sync_state
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending')
+            """,
+            (
+                quarantine_id,
+                user_id,
+                logical_run_id,
+                claim["claim_id"],
+                failure_code,
+                quarantined_at_ms,
+            ),
+        )
 
     @staticmethod
     def _require_active_owner(
@@ -2116,6 +2720,7 @@ __all__ = [
     "LeaseDiagnostic",
     "LeasedRun",
     "PendingTranscriptAck",
+    "PendingTranscriptQuarantine",
     "QueueDiagnostic",
     "QuarantineDiagnostic",
     "ReceiptConflict",
@@ -2123,6 +2728,7 @@ __all__ = [
     "StateDiagnostics",
     "StoredTranscriptClaim",
     "TranscriptRunRecord",
+    "TranscriptQuarantineInspection",
     "ToolReceiptRecord",
     "default_database_path",
     "diagnostics_as_dict",
