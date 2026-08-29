@@ -4,10 +4,10 @@
     "major": 1,
     "minor": 0
   },
-  "controller_commit": "cff01a55a3fa27505556f4213b79d9a3bb93d1f2",
+  "controller_commit": "a259d725d60ad4933dd1becadcae466c82dd8219",
   "source_path": "contracts/local-hermes-thine/v1",
   "file_sha256": {
-    "README.md": "2aef64c9291a524486516385a20d37d42dc0be5102195e2bdeb1245392dab135",
+    "README.md": "8e5773b45d1b7ceea9172de1f406330798e5d02c197167ad81c1cd1e6df484a0",
     "fixtures/invalid/dataplane.json": "ac906087d42244d6bc5c0d0609efd739679b80cd064edf896a8d4069bf1d6269",
     "fixtures/invalid/mobile.json": "d2766951e37ae4157733a615b1446dbcf1d992400027f1a1b10cbf73ce0119b6",
     "fixtures/invalid/policy.json": "b350973cdeac02498a2f4c75a230fac8f21dce599bdf617789cc66baac21ce4b",
@@ -18,7 +18,7 @@
     "fixtures/valid/runtime.json": "476d0f746cc970f0ccc25bbf797863962b8f1b1d2882a82e59243d90e935530e",
     "manifest.json": "7283c202f1fb2a700dabaa37a05a2512de06f5f78b721a9ebe8d3be0e4f38f97",
     "metadata/compatibility.json": "4e90bc5e04e3ba609baae0e9bee4cafaa505dd0e0caeba91f6d4f22d05fa6420",
-    "metadata/consumer-propagation.json": "be99ae80ac13a4f74523e63a55e372ae6b550c2e77c0207fa9e4d6505b6be708",
+    "metadata/consumer-propagation.json": "c57a023b4f07c65e0325e96a2107e7c2a81af625f402108eea858a95342c5740",
     "metadata/endpoint-routing.json": "d4adaa90e29df49650d713a5c74b1ea4d04ecfef0c15bb3eded5fdcccc2fe2e0",
     "metadata/home-registry.json": "24a7797a635df6d00ccf5f6cde8ec64b65b0c4f0d1188d4f92f2c6650683d4ed",
     "metadata/interaction-allowlist.json": "8e7cd6d595d27a323465cede02013297500871f4dcf0495f9e069e2026208e01",

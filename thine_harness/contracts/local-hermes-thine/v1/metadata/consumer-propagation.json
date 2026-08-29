@@ -16,6 +16,10 @@
       "destination_path": "contracts/local-hermes-thine/v1",
       "provenance_path": "contracts/hermes/contract-pack.provenance.json",
       "provenance_hash_key": "files",
+      "consumer_assertion_path": "apps/dataplane/src/hermes/contracts/conformance.test.ts",
+      "consumer_assertion_requirements": [
+        "controller_commit"
+      ],
       "propagation_command": "python3 -m tools.contract_pack_propagation backend --consumer-root \"$backend_root\" --controller-commit \"$controller_contract_commit\" --apply",
       "copy_verification_command": "python3 -m tools.contract_pack_propagation backend --consumer-root \"$backend_root\" --controller-commit \"$controller_contract_commit\"",
       "generation_commands": [
@@ -32,6 +36,12 @@
       "destination_path": "thine_harness/contracts/local-hermes-thine/v1",
       "provenance_path": "thine_harness/contracts/local-hermes-thine/local-hermes-thine-v1.provenance.json",
       "provenance_hash_key": "file_sha256",
+      "consumer_assertion_path": "tests/thine_harness/test_contract_conformance_v1.py",
+      "consumer_assertion_requirements": [
+        "controller_commit",
+        "valid_fixture_count",
+        "invalid_fixture_count"
+      ],
       "propagation_command": "python3 -m tools.contract_pack_propagation hermes --consumer-root \"$hermes_root\" --controller-commit \"$controller_contract_commit\" --apply",
       "copy_verification_command": "python3 -m tools.contract_pack_propagation hermes --consumer-root \"$hermes_root\" --controller-commit \"$controller_contract_commit\"",
       "generation_commands": [
@@ -46,6 +56,11 @@
       "destination_path": "contracts/local-hermes-thine/v1",
       "provenance_path": "docs/local-hermes/mobile-contract-conformance.md",
       "provenance_hash_key": "normalized_tree_digest",
+      "consumer_assertion_path": "ThineTests/HermesContracts/HermesContractConformanceTests.swift",
+      "consumer_assertion_requirements": [
+        "valid_swift_fixture_count",
+        "invalid_swift_fixture_count"
+      ],
       "propagation_command": "python3 -m tools.contract_pack_propagation mobile --consumer-root \"$mobile_root\" --controller-commit \"$controller_contract_commit\" --apply",
       "copy_verification_command": "python3 -m tools.contract_pack_propagation mobile --consumer-root \"$mobile_root\" --controller-commit \"$controller_contract_commit\"",
       "fixture_mirrors": {

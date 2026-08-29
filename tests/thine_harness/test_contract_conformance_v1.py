@@ -52,7 +52,7 @@ def test_vendored_pack_is_the_complete_accepted_controller_snapshot():
     )
 
     assert provenance["controller_commit"] == (
-        "cff01a55a3fa27505556f4213b79d9a3bb93d1f2"
+        "a259d725d60ad4933dd1becadcae466c82dd8219"
     )
     assert provenance["contract_version"] == {"major": 1, "minor": 0}
     assert provenance["file_sha256"]

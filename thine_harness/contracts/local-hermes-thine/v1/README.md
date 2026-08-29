@@ -57,6 +57,14 @@ also mirrors all eight mobile fixture suites. Mobile then updates its listed
 handwritten closed-enum binding. A partial copy, a stale provenance digest, or
 an omitted fixture mirror is not a valid propagation.
 
+The helper also rewrites and verifies the provenance assertions declared in
+the manifest. Backend pins the propagated controller commit in its Dataplane
+conformance test. Hermes pins that commit plus the valid and invalid fixture
+counts derived from the propagated suites, so adding golden cases cannot leave
+its test expectations stale. Mobile likewise updates and verifies the valid and
+invalid Swift-assigned fixture counts, derived from the serialization map rather
+than from all language-neutral golden cases.
+
 This is a coordinated correction to the not-yet-independently-negotiated v1
 snapshot, not a compatible minor addition. All three consumers must take the
 same corrected controller commit before the changed closed enums are used.
