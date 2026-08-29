@@ -74,6 +74,7 @@ class LeasedRun:
     lease_token: str
     checkpoint: CheckpointRecord | None
     acknowledged_receipts: tuple[ToolReceiptRecord, ...]
+    segment_ordinal: int
 
 
 @dataclass(frozen=True)
@@ -1357,6 +1358,16 @@ class DurableRunState:
             checkpoint = self._latest_checkpoint_locked(
                 connection, user_id=user_id, logical_run_id=item["logical_run_id"]
             )
+            cap_checkpoint_count = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) FROM checkpoints
+                    WHERE user_id = ? AND logical_run_id = ?
+                      AND cause LIKE 'continuation:%'
+                    """,
+                    (user_id, item["logical_run_id"]),
+                ).fetchone()[0]
+            )
             receipts = self._receipts_locked(
                 connection, user_id=user_id, logical_run_id=item["logical_run_id"]
             )
@@ -1368,6 +1379,7 @@ class DurableRunState:
                 lease_token=lease_token,
                 checkpoint=checkpoint,
                 acknowledged_receipts=receipts,
+                segment_ordinal=cap_checkpoint_count + 1,
             )
 
     def save_checkpoint_and_requeue(
@@ -1473,6 +1485,143 @@ class DurableRunState:
             ),
             partial_visible_assistant_output=partial_visible_assistant_output,
             updated_at_ms=now_ms,
+        )
+
+    def save_checkpoint_and_terminate_chain(
+        self,
+        *,
+        user_id: str,
+        logical_run_id: str,
+        owner: str,
+        attempt_id: str,
+        lease_token: str,
+        cap_reason: str,
+        remaining_work: str,
+        completed_receipt_ids: tuple[str, ...],
+        original_input: str = "",
+        context_messages: tuple[dict[str, Any], ...] = (),
+        completed_tool_results: tuple[dict[str, Any], ...] = (),
+        successful_action_receipts: tuple[dict[str, Any], ...] = (),
+        partial_visible_assistant_output: str = "",
+        now_ms: int,
+    ) -> tuple[CheckpointRecord, Literal["failed_terminal"]]:
+        """Persist the final bounded checkpoint without consuming a fault Attempt."""
+        if cap_reason not in {"duration", "tool_calls"}:
+            raise ValueError("unknown invocation segment cap reason")
+        receipt_ids = tuple(dict.fromkeys(completed_receipt_ids))
+        context_messages_json = self._checkpoint_json(
+            "context_messages", context_messages
+        )
+        completed_tool_results_json = self._checkpoint_json(
+            "completed_tool_results", completed_tool_results
+        )
+        successful_action_receipts_json = self._checkpoint_json(
+            "successful_action_receipts", successful_action_receipts
+        )
+        cause = f"continuation:{cap_reason}"
+        with self._transaction() as connection:
+            self._require_active_owner(
+                connection,
+                user_id=user_id,
+                logical_run_id=logical_run_id,
+                owner=owner,
+                attempt_id=attempt_id,
+                lease_token=lease_token,
+                now_ms=now_ms,
+            )
+            checkpoint_ordinal = (
+                int(
+                    connection.execute(
+                        """
+                    SELECT COUNT(*) FROM checkpoints
+                    WHERE user_id = ? AND logical_run_id = ?
+                    """,
+                        (user_id, logical_run_id),
+                    ).fetchone()[0]
+                )
+                + 1
+            )
+            checkpoint_id = f"{logical_run_id}:checkpoint:{checkpoint_ordinal}"
+            connection.execute(
+                """
+                INSERT INTO checkpoints (
+                    checkpoint_id, user_id, logical_run_id, cause, remaining_work,
+                    completed_receipt_ids_json, original_input,
+                    context_messages_json, completed_tool_results_json,
+                    successful_action_receipts_json,
+                    partial_visible_assistant_output, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    checkpoint_id,
+                    user_id,
+                    logical_run_id,
+                    cause,
+                    remaining_work,
+                    json.dumps(receipt_ids, separators=(",", ":")),
+                    original_input,
+                    context_messages_json,
+                    completed_tool_results_json,
+                    successful_action_receipts_json,
+                    partial_visible_assistant_output,
+                    now_ms,
+                ),
+            )
+            attempt = connection.execute(
+                """
+                SELECT ordinal FROM attempts
+                WHERE user_id = ? AND logical_run_id = ? AND attempt_id = ?
+                  AND status = 'running'
+                """,
+                (user_id, logical_run_id, attempt_id),
+            ).fetchone()
+            if attempt is None:
+                raise DurableStateError("active run has no running Attempt")
+            connection.execute(
+                """
+                UPDATE attempts SET status = 'succeeded', finished_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ? AND attempt_id = ?
+                  AND status = 'running'
+                """,
+                (now_ms, user_id, logical_run_id, attempt_id),
+            )
+            # A bounded chain is neither a provider/runtime fault nor an input
+            # quarantine. Preserve its final checkpoint and source claim in a
+            # terminal queue state for operator inspection without advancing
+            # any input acknowledgement cursor.
+            terminal: Literal["failed_terminal"] = "failed_terminal"
+            connection.execute(
+                """
+                UPDATE queue_items
+                SET state = ?, lease_owner = NULL, lease_token = NULL,
+                    lease_expires_at_ms = NULL, updated_at_ms = ?
+                WHERE user_id = ? AND logical_run_id = ?
+                """,
+                (terminal, now_ms, user_id, logical_run_id),
+            )
+            connection.execute(
+                "DELETE FROM attempt_execution_started WHERE attempt_id = ?",
+                (attempt_id,),
+            )
+        return (
+            CheckpointRecord(
+                checkpoint_id=checkpoint_id,
+                logical_run_id=logical_run_id,
+                cause=cause,
+                remaining_work=remaining_work,
+                completed_receipt_ids=receipt_ids,
+                original_input=original_input,
+                context_messages=tuple(dict(item) for item in context_messages),
+                completed_tool_results=tuple(
+                    dict(item) for item in completed_tool_results
+                ),
+                successful_action_receipts=tuple(
+                    dict(item) for item in successful_action_receipts
+                ),
+                partial_visible_assistant_output=partial_visible_assistant_output,
+                updated_at_ms=now_ms,
+            ),
+            terminal,
         )
 
     @staticmethod

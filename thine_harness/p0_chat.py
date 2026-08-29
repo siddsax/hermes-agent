@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import ipaddress
 import json
 import sqlite3
@@ -38,6 +38,7 @@ from .run_coordinator import (
 from .run_state import DurableRunState, DurableStateError
 from .runtime import (
     AgentTurnResult,
+    BackgroundCheckpointPayload,
     HermesAIAgentSession,
     HermesInvocationRuntime,
     InvocationEvent,
@@ -45,6 +46,7 @@ from .runtime import (
     InvocationKind,
     InvocationRequest,
     RuntimeModelConfig,
+    build_background_invocation_request,
 )
 from .working_memory import (
     CONFIGURED_MODEL_TOKENIZER_LIMITATION,
@@ -1516,12 +1518,21 @@ class P0CoordinatorRuntime:
                                 user_message_text=submission.text,
                             )
                         )
-                result = self._runtime_loader().invoke(
-                    InvocationRequest(
-                        logical_run_id=receipt.logical_run_id,
-                        kind=InvocationKind.USER_CHAT,
-                        prompt=prompt,
+                background_request = build_background_invocation_request(
+                    logical_run_id=receipt.logical_run_id,
+                    initial_prompt=prompt,
+                    checkpoint=context.checkpoint,
+                    newest_working_memory=current_memory.markdown,
+                    durable_action_receipts=tuple(
+                        asdict(item) for item in context.acknowledged_receipts
                     ),
+                )
+                request = replace(
+                    background_request,
+                    kind=InvocationKind.USER_CHAT,
+                )
+                result = self._runtime_loader().invoke(
+                    request,
                     emit=emit,
                 )
         finally:
@@ -1530,8 +1541,12 @@ class P0CoordinatorRuntime:
             for send in heartbeat_sends:
                 send.join(timeout=0.01)
         if result.interrupted:
-            return InvocationOutcome.preempted(
-                remaining_work=result.remaining_work or "resume P0 chat"
+            return InvocationOutcome.interrupted(
+                remaining_work=result.remaining_work or "resume P0 chat",
+                checkpoint_payload=BackgroundCheckpointPayload.from_turn(
+                    request, result
+                ),
+                cap_reason=result.segment_cap_reason,
             )
         if result.failed or not result.completed or result.final_output is None:
             return InvocationOutcome.fault(

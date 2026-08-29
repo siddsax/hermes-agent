@@ -17,6 +17,7 @@ from thine_harness.runtime import (
     InvocationControl,
     InvocationKind,
     InvocationRequest,
+    InvocationSegmentPolicy,
     RuntimeModelConfig,
     RuntimeSelectionError,
     SAFE_BOUNDARY_RESUME_PROMPT,
@@ -677,6 +678,201 @@ def test_aiagent_cancellation_waits_until_active_tool_result_is_persisted():
     assert not worker.is_alive()
     assert results[0].interrupted is True
     assert agent.interrupts == ["p0_arrived"]
+
+
+class _ImmediateTimer:
+    def __init__(self, _seconds, callback) -> None:
+        self._callback = callback
+        self.cancelled = False
+
+    def start(self) -> None:
+        self._callback()
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+class _ManualTimer(_ImmediateTimer):
+    def start(self) -> None:
+        return None
+
+    def fire(self) -> None:
+        self._callback()
+
+
+class _SegmentCapAIAgent(_FakeAIAgent):
+    def __init__(self, *, tool_completions: int) -> None:
+        super().__init__()
+        self.tool_completions = tool_completions
+        self.tool_complete_callback = None
+        self.original_callback_calls: list[str] = []
+        self.interrupted = False
+
+    def request_interrupt_at_tool_safe_boundary(self, reason):
+        if reason == "segment_cap:tool_calls":
+            assert len(self.original_callback_calls) == 50
+        self.interrupt(reason)
+        self.interrupted = True
+        return False
+
+    def run_conversation(self, prompt, **kwargs):
+        del prompt, kwargs
+        for index in range(self.tool_completions):
+            assert self.tool_complete_callback is not None
+            self.tool_complete_callback(
+                f"call-{index + 1}", "inspect", {}, "durable-result"
+            )
+        return {
+            "final_response": None if self.interrupted else "answer",
+            "messages": [
+                {
+                    "role": "tool",
+                    "tool_call_id": f"call-{index + 1}",
+                    "tool_name": "inspect",
+                    "content": "durable-result",
+                }
+                for index in range(self.tool_completions)
+            ],
+            "completed": not self.interrupted,
+            "failed": False,
+            "interrupted": self.interrupted,
+        }
+
+
+def test_aiagent_segment_cap_interrupts_after_the_50th_durable_tool_result():
+    agent = _SegmentCapAIAgent(tool_completions=50)
+    original_callback = lambda call_id, *_args: agent.original_callback_calls.append(
+        call_id
+    )
+    agent.tool_complete_callback = original_callback
+    session = HermesAIAgentSession(
+        agent=agent,
+        expected=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+        segment_policy=InvocationSegmentPolicy(
+            max_duration_seconds=900,
+            max_tool_calls=50,
+        ),
+    )
+
+    result = session.invoke(
+        InvocationRequest(
+            "tool-cap",
+            InvocationKind.BACKGROUND,
+            "work",
+            resume_token="resume:tool-cap",
+        ),
+        emit=lambda event: None,
+        control=InvocationControl(),
+    )
+
+    assert result.interrupted is True
+    assert result.segment_cap_reason == "tool_calls"
+    assert agent.interrupts == ["segment_cap:tool_calls"]
+    assert agent.original_callback_calls == [
+        f"call-{index}" for index in range(1, 51)
+    ]
+    assert agent.tool_complete_callback is original_callback
+
+
+def test_aiagent_segment_deadline_uses_the_same_safe_boundary_cancel_path():
+    timers: list[_ImmediateTimer] = []
+
+    def timer_factory(seconds, callback):
+        timer = _ImmediateTimer(seconds, callback)
+        timers.append(timer)
+        return timer
+
+    agent = _SegmentCapAIAgent(tool_completions=0)
+    session = HermesAIAgentSession(
+        agent=agent,
+        expected=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+        segment_policy=InvocationSegmentPolicy(
+            max_duration_seconds=900,
+            max_tool_calls=50,
+        ),
+        timer_factory=timer_factory,
+    )
+
+    result = session.invoke(
+        InvocationRequest(
+            "duration-cap",
+            InvocationKind.BACKGROUND,
+            "work",
+            resume_token="resume:duration-cap",
+        ),
+        emit=lambda event: None,
+        control=InvocationControl(),
+    )
+
+    assert result.interrupted is True
+    assert result.segment_cap_reason == "duration"
+    assert agent.interrupts == ["segment_cap:duration"]
+    assert timers[0].cancelled is True
+
+
+def test_p0_preemption_wins_without_waiting_for_the_segment_deadline():
+    timers: list[_ManualTimer] = []
+
+    def timer_factory(seconds, callback):
+        timer = _ManualTimer(seconds, callback)
+        timers.append(timer)
+        return timer
+
+    class _BlockingCapAIAgent(_SegmentCapAIAgent):
+        def __init__(self) -> None:
+            super().__init__(tool_completions=0)
+            self.started = threading.Event()
+            self.cancelled = threading.Event()
+
+        def request_interrupt_at_tool_safe_boundary(self, reason):
+            result = super().request_interrupt_at_tool_safe_boundary(reason)
+            self.cancelled.set()
+            return result
+
+        def run_conversation(self, prompt, **kwargs):
+            del prompt, kwargs
+            self.started.set()
+            assert self.cancelled.wait(2)
+            return {
+                "final_response": None,
+                "messages": [],
+                "completed": False,
+                "failed": False,
+                "interrupted": True,
+            }
+
+    agent = _BlockingCapAIAgent()
+    control = InvocationControl()
+    session = HermesAIAgentSession(
+        agent=agent,
+        expected=RuntimeModelConfig.openai_gpt_5_6_sol_medium(),
+        timer_factory=timer_factory,
+    )
+    results: list[AgentTurnResult] = []
+    worker = threading.Thread(
+        target=lambda: results.append(
+            session.invoke(
+                InvocationRequest(
+                    "p0-wins",
+                    InvocationKind.BACKGROUND,
+                    "work",
+                    resume_token="resume:p0-wins",
+                ),
+                emit=lambda event: None,
+                control=control,
+            )
+        )
+    )
+    worker.start()
+    assert agent.started.wait(2)
+
+    control.cancel("p0_user_tick")
+    timers[0].fire()
+    worker.join(2)
+
+    assert results[0].interrupted is True
+    assert results[0].segment_cap_reason is None
+    assert agent.interrupts == ["p0_user_tick"]
 
 
 def test_completed_aiagent_turn_unbinds_its_cancellation_control():

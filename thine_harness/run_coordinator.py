@@ -84,6 +84,7 @@ class InvocationContext:
     checkpoint: CheckpointRecord | None
     acknowledged_receipts: tuple[ToolReceiptRecord, ...]
     prepared_input: Any | None = None
+    segment_ordinal: int = 1
 
 
 OutcomeStatus = Literal[
@@ -105,6 +106,7 @@ class InvocationOutcome:
     decision_outcome: Literal["no_action"] | None = None
     finalization_context: Any | None = None
     checkpoint_payload: BackgroundCheckpointPayload | None = None
+    cap_reason: Literal["duration", "tool_calls"] | None = None
 
     @classmethod
     def completed(cls) -> "InvocationOutcome":
@@ -166,10 +168,32 @@ class InvocationOutcome:
         *,
         remaining_work: str,
         checkpoint_payload: BackgroundCheckpointPayload | None = None,
+        cap_reason: Literal["duration", "tool_calls"] | None = None,
     ) -> "InvocationOutcome":
         return cls(
             "continuation",
             remaining_work,
+            checkpoint_payload=checkpoint_payload,
+            cap_reason=cap_reason,
+        )
+
+    @classmethod
+    def interrupted(
+        cls,
+        *,
+        remaining_work: str,
+        checkpoint_payload: BackgroundCheckpointPayload | None = None,
+        cap_reason: Literal["duration", "tool_calls"] | None = None,
+    ) -> "InvocationOutcome":
+        """Classify provider interruption as priority preemption or a cap yield."""
+        if cap_reason is not None:
+            return cls.continuation(
+                remaining_work=remaining_work,
+                checkpoint_payload=checkpoint_payload,
+                cap_reason=cap_reason,
+            )
+        return cls.preempted(
+            remaining_work=remaining_work,
             checkpoint_payload=checkpoint_payload,
         )
 
@@ -323,6 +347,8 @@ class RunResult:
     attempt_ordinal: int
     status: str
     checkpoint_id: str | None = None
+    segment_ordinal: int = 1
+    cap_reason: Literal["duration", "tool_calls"] | None = None
 
 
 class DurableFeatureTools:
@@ -502,6 +528,7 @@ class RunCoordinator:
                 attempt_ordinal=leased.attempt_ordinal,
                 checkpoint=leased.checkpoint,
                 acknowledged_receipts=leased.acknowledged_receipts,
+                segment_ordinal=leased.segment_ordinal,
             )
             active_lease = ActiveRunLease(
                 user_id=user_id,
@@ -570,6 +597,7 @@ class RunCoordinator:
                     logical_run_id=str(payload.logical_run_id),
                     attempt_ordinal=leased.attempt_ordinal,
                     status="input_retry_pending",
+                    segment_ordinal=context.segment_ordinal,
                 )
             if outcome.status == "completed":
                 if self._finalizer is not None:
@@ -602,18 +630,21 @@ class RunCoordinator:
                                     logical_run_id=quarantined.logical_run_id,
                                     attempt_ordinal=quarantined.attempt_ordinal,
                                     status=quarantined.status,
+                                    segment_ordinal=context.segment_ordinal,
                                 )
                         return RunResult(
                             tick_id=str(payload.tick_id),
                             logical_run_id=str(payload.logical_run_id),
                             attempt_ordinal=leased.attempt_ordinal,
                             status=status,
+                            segment_ordinal=context.segment_ordinal,
                         )
                     return RunResult(
                         tick_id=finalized.tick_id,
                         logical_run_id=finalized.logical_run_id,
                         attempt_ordinal=finalized.attempt_ordinal,
                         status=finalized.status,
+                        segment_ordinal=context.segment_ordinal,
                     )
                 self._state.complete(
                     user_id=user_id,
@@ -628,6 +659,7 @@ class RunCoordinator:
                     logical_run_id=str(payload.logical_run_id),
                     attempt_ordinal=leased.attempt_ordinal,
                     status="completed",
+                    segment_ordinal=context.segment_ordinal,
                 )
             if outcome.status in {
                 "cancelled",
@@ -644,13 +676,72 @@ class RunCoordinator:
                     )
                 )
                 checkpoint_payload = outcome.checkpoint_payload
+                checkpoint_cause = (
+                    f"continuation:{outcome.cap_reason}"
+                    if outcome.status == "continuation"
+                    and outcome.cap_reason is not None
+                    else outcome.status
+                )
+                max_segments = 2 if payload.kind == "p0_user_chat" else 3
+                if (
+                    outcome.status == "continuation"
+                    and outcome.cap_reason is not None
+                    and context.segment_ordinal >= max_segments
+                ):
+                    checkpoint, terminal = (
+                        self._state.save_checkpoint_and_terminate_chain(
+                            user_id=user_id,
+                            logical_run_id=str(payload.logical_run_id),
+                            owner=self._lease_owner,
+                            attempt_id=leased.attempt_id,
+                            lease_token=leased.lease_token,
+                            cap_reason=outcome.cap_reason,
+                            remaining_work=outcome.remaining_work,
+                            completed_receipt_ids=persisted_receipts,
+                            original_input=(
+                                ""
+                                if checkpoint_payload is None
+                                else checkpoint_payload.original_input
+                            ),
+                            context_messages=(
+                                ()
+                                if checkpoint_payload is None
+                                else checkpoint_payload.context_messages
+                            ),
+                            completed_tool_results=(
+                                ()
+                                if checkpoint_payload is None
+                                else checkpoint_payload.completed_tool_results
+                            ),
+                            successful_action_receipts=(
+                                ()
+                                if checkpoint_payload is None
+                                else checkpoint_payload.successful_action_receipts
+                            ),
+                            partial_visible_assistant_output=(
+                                ""
+                                if checkpoint_payload is None
+                                else checkpoint_payload.partial_visible_assistant_output
+                            ),
+                            now_ms=self._clock_ms(),
+                        )
+                    )
+                    return RunResult(
+                        tick_id=str(payload.tick_id),
+                        logical_run_id=str(payload.logical_run_id),
+                        attempt_ordinal=leased.attempt_ordinal,
+                        status=terminal,
+                        checkpoint_id=checkpoint.checkpoint_id,
+                        segment_ordinal=context.segment_ordinal,
+                        cap_reason=outcome.cap_reason,
+                    )
                 checkpoint = self._state.save_checkpoint_and_requeue(
                     user_id=user_id,
                     logical_run_id=str(payload.logical_run_id),
                     owner=self._lease_owner,
                     attempt_id=leased.attempt_id,
                     lease_token=leased.lease_token,
-                    cause=outcome.status,
+                    cause=checkpoint_cause,
                     remaining_work=outcome.remaining_work,
                     completed_receipt_ids=persisted_receipts,
                     original_input=(
@@ -686,6 +777,8 @@ class RunCoordinator:
                     attempt_ordinal=leased.attempt_ordinal,
                     status="checkpointed",
                     checkpoint_id=checkpoint.checkpoint_id,
+                    segment_ordinal=context.segment_ordinal,
+                    cap_reason=outcome.cap_reason,
                 )
             if outcome.status == "fault":
                 status = self._state.record_fault(
@@ -708,12 +801,14 @@ class RunCoordinator:
                             logical_run_id=quarantined.logical_run_id,
                             attempt_ordinal=quarantined.attempt_ordinal,
                             status=quarantined.status,
+                            segment_ordinal=context.segment_ordinal,
                         )
                 return RunResult(
                     tick_id=str(payload.tick_id),
                     logical_run_id=str(payload.logical_run_id),
                     attempt_ordinal=leased.attempt_ordinal,
                     status=status,
+                    segment_ordinal=context.segment_ordinal,
                 )
             raise AssertionError(f"unhandled outcome {outcome.status!r}")
         finally:

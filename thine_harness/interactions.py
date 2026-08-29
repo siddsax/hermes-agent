@@ -534,11 +534,12 @@ class RealInteractionAgentRuntime:
             stopped.set()
             thread.join(timeout=0.1)
         if result.interrupted:
-            return InvocationOutcome.preempted(
+            return InvocationOutcome.interrupted(
                 remaining_work=result.remaining_work or "resume interaction inference",
                 checkpoint_payload=BackgroundCheckpointPayload.from_turn(
                     request, result
                 ),
+                cap_reason=result.segment_cap_reason,
             )
         if result.failed or not result.completed:
             return InvocationOutcome.fault(

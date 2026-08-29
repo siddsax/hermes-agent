@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import json
 import threading
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Literal, Protocol, Sequence
 
 
 SAFE_BOUNDARY_RESUME_PROMPT = (
@@ -38,6 +38,20 @@ class InvocationEventKind(str, Enum):
 
 class RuntimeSelectionError(RuntimeError):
     """The live Hermes session drifted from the required fail-closed model."""
+
+
+@dataclass(frozen=True)
+class InvocationSegmentPolicy:
+    """One bounded Hermes provider segment, independent of fault Attempts."""
+
+    max_duration_seconds: float = 15 * 60
+    max_tool_calls: int = 50
+
+    def __post_init__(self) -> None:
+        if self.max_duration_seconds <= 0:
+            raise ValueError("max_duration_seconds must be positive")
+        if self.max_tool_calls <= 0:
+            raise ValueError("max_tool_calls must be positive")
 
 
 def runtime_selection_fingerprint(agent: Any) -> tuple[str, str, str, str]:
@@ -130,6 +144,7 @@ class AgentTurnResult:
     completed_tool_results: list[dict[str, Any]] = field(default_factory=list)
     successful_action_receipts: list[dict[str, Any]] = field(default_factory=list)
     partial_visible_assistant_output: str = ""
+    segment_cap_reason: Literal["duration", "tool_calls"] | None = None
 
 
 @dataclass(frozen=True)
@@ -414,9 +429,18 @@ class HermesAIAgentSession:
         "cache_write_tokens",
     )
 
-    def __init__(self, *, agent: Any, expected: RuntimeModelConfig):
+    def __init__(
+        self,
+        *,
+        agent: Any,
+        expected: RuntimeModelConfig,
+        segment_policy: InvocationSegmentPolicy | None = None,
+        timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
+    ):
         self._agent = agent
         self._expected = expected
+        self._segment_policy = segment_policy or InvocationSegmentPolicy()
+        self._timer_factory = timer_factory or threading.Timer
         self.validate_runtime()
 
     def validate_runtime(self) -> None:
@@ -462,6 +486,7 @@ class HermesAIAgentSession:
         invocation_done = threading.Event()
         cancellation_state = _InvocationCancellationState()
         cancellation_workers: list[threading.Thread] = []
+        invocation_control = control
 
         def interrupt_at_safe_boundary(reason: str) -> None:
             request_at_boundary = getattr(
@@ -470,9 +495,7 @@ class HermesAIAgentSession:
                 None,
             )
             if callable(request_at_boundary):
-                queued = cancellation_state.deliver(
-                    lambda: request_at_boundary(reason)
-                )
+                queued = cancellation_state.deliver(lambda: request_at_boundary(reason))
                 if queued is True:
                     control._safe_boundary_deferred.set()
                 return
@@ -486,10 +509,11 @@ class HermesAIAgentSession:
                     control._safe_boundary_deferred.set()
                     if invocation_done.wait(0.01):
                         return
-                if not invocation_done.is_set() and not cancellation_state.provider_returned:
-                    cancellation_state.deliver(
-                        lambda: self._agent.interrupt(reason)
-                    )
+                if (
+                    not invocation_done.is_set()
+                    and not cancellation_state.provider_returned
+                ):
+                    cancellation_state.deliver(lambda: self._agent.interrupt(reason))
 
             worker = threading.Thread(
                 target=deliver,
@@ -500,6 +524,35 @@ class HermesAIAgentSession:
             worker.start()
 
         unbind_cancel = control.bind_cancel(interrupt_at_safe_boundary)
+
+        callback_was_present = hasattr(self._agent, "tool_complete_callback")
+        previous_tool_complete = getattr(self._agent, "tool_complete_callback", None)
+        completed_tool_calls = 0
+        completed_tool_calls_lock = threading.Lock()
+
+        def bounded_tool_complete(*args: Any, **kwargs: Any) -> None:
+            nonlocal completed_tool_calls
+            reached_cap = False
+            try:
+                if callable(previous_tool_complete):
+                    previous_tool_complete(*args, **kwargs)
+            finally:
+                with completed_tool_calls_lock:
+                    completed_tool_calls += 1
+                    reached_cap = (
+                        completed_tool_calls == self._segment_policy.max_tool_calls
+                    )
+                if reached_cap:
+                    invocation_control.cancel("segment_cap:tool_calls")
+
+        self._agent.tool_complete_callback = bounded_tool_complete
+        deadline_timer = self._timer_factory(
+            self._segment_policy.max_duration_seconds,
+            lambda: invocation_control.cancel("segment_cap:duration"),
+        )
+        if hasattr(deadline_timer, "daemon"):
+            deadline_timer.daemon = True
+        deadline_timer.start()
 
         def on_delta(delta: Any) -> None:
             text = str(delta or "")
@@ -516,6 +569,11 @@ class HermesAIAgentSession:
             )
             cancellation_state.publish_provider_returned()
         finally:
+            deadline_timer.cancel()
+            if callback_was_present:
+                self._agent.tool_complete_callback = previous_tool_complete
+            else:
+                delattr(self._agent, "tool_complete_callback")
             invocation_done.set()
             unbind_cancel()
             for worker in cancellation_workers:
@@ -528,17 +586,12 @@ class HermesAIAgentSession:
             clear_interrupt = getattr(self._agent, "clear_interrupt", None)
             if callable(clear_interrupt):
                 clear_interrupt()
-        usage = {
-            key: int(raw.get(key) or 0)
-            for key in self._USAGE_KEYS
-        }
+        usage = {key: int(raw.get(key) or 0) for key in self._USAGE_KEYS}
         messages = list(raw.get("messages") or [])
         completed_tool_results = [
             {
                 "tool_call_id": str(message.get("tool_call_id") or ""),
-                "name": str(
-                    message.get("tool_name") or message.get("name") or ""
-                ),
+                "name": str(message.get("tool_name") or message.get("name") or ""),
                 "content": message.get("content"),
                 "effect_disposition": message.get("effect_disposition"),
             }
@@ -571,6 +624,19 @@ class HermesAIAgentSession:
             completed_tool_results=completed_tool_results,
             successful_action_receipts=successful_action_receipts,
             partial_visible_assistant_output="".join(visible_deltas),
+            segment_cap_reason=(
+                None
+                if not interrupted
+                else (
+                    "duration"
+                    if control.reason == "segment_cap:duration"
+                    else (
+                        "tool_calls"
+                        if control.reason == "segment_cap:tool_calls"
+                        else None
+                    )
+                )
+            ),
         )
 
 
@@ -619,9 +685,7 @@ class HermesInvocationRuntime:
                     remaining_work=request.prompt,
                     context_messages=list(request.context_messages),
                     completed_tool_results=list(request.completed_tool_results),
-                    successful_action_receipts=list(
-                        request.successful_action_receipts
-                    ),
+                    successful_action_receipts=list(request.successful_action_receipts),
                     partial_visible_assistant_output=(
                         request.partial_visible_assistant_output
                     ),
@@ -718,9 +782,7 @@ class HermesInvocationRuntime:
                 context_messages=list(checkpoint.context_messages),
                 original_input=checkpoint.input_prompt,
                 completed_tool_results=list(checkpoint.completed_tool_results),
-                successful_action_receipts=list(
-                    checkpoint.successful_action_receipts
-                ),
+                successful_action_receipts=list(checkpoint.successful_action_receipts),
                 partial_visible_assistant_output=(
                     checkpoint.partial_visible_assistant_output
                 ),
@@ -728,6 +790,7 @@ class HermesInvocationRuntime:
             emit=emit,
             control=control,
         )
+
 
 __all__ = [
     "AgentSessionPort",
@@ -743,6 +806,7 @@ __all__ = [
     "InvocationEventKind",
     "InvocationKind",
     "InvocationRequest",
+    "InvocationSegmentPolicy",
     "RuntimeDiagnostics",
     "RuntimeModelConfig",
     "RuntimeSelectionError",

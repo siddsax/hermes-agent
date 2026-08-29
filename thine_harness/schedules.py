@@ -30,11 +30,13 @@ from .run_coordinator import (
 )
 from .run_state import DurableRunState, DurableStateError, ReceiptConflict
 from .runtime import (
+    BackgroundCheckpointPayload,
     HermesAIAgentSession,
     InvocationControl as ProviderInvocationControl,
     InvocationKind,
     InvocationRequest,
     RuntimeModelConfig,
+    build_background_invocation_request,
 )
 from .working_memory import (
     CacheIdentity,
@@ -1240,15 +1242,18 @@ class RealScheduleAgentRuntime:
             target=relay, name="thine-schedule-preemption", daemon=True
         )
         thread.start()
+        request = build_background_invocation_request(
+            logical_run_id=str(context.tick.payload.logical_run_id),
+            initial_prompt=prompt,
+            checkpoint=context.checkpoint,
+            newest_working_memory=current.markdown,
+            durable_action_receipts=tuple(
+                asdict(receipt) for receipt in context.acknowledged_receipts
+            ),
+        )
         try:
             result = self._session.invoke(
-                InvocationRequest(
-                    logical_run_id=str(context.tick.payload.logical_run_id),
-                    kind=InvocationKind.BACKGROUND,
-                    prompt=prompt,
-                    resume_token=str(context.tick.payload.logical_run_id),
-                    original_input=prompt,
-                ),
+                request,
                 emit=lambda _event: None,
                 control=provider_control,
             )
@@ -1256,8 +1261,12 @@ class RealScheduleAgentRuntime:
             stopped.set()
             thread.join(timeout=0.1)
         if result.interrupted:
-            return InvocationOutcome.preempted(
-                remaining_work=result.remaining_work or "resume scheduled inference"
+            return InvocationOutcome.interrupted(
+                remaining_work=result.remaining_work or "resume scheduled inference",
+                checkpoint_payload=BackgroundCheckpointPayload.from_turn(
+                    request, result
+                ),
+                cap_reason=result.segment_cap_reason,
             )
         if result.failed or not result.completed:
             return InvocationOutcome.fault(

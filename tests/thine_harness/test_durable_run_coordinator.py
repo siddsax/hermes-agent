@@ -600,6 +600,109 @@ def test_cancellation_yield_and_bounded_continuation_do_not_consume_attempt(
     ]
 
 
+def test_interrupted_outcome_distinguishes_cap_yield_from_p0_preemption():
+    cap = InvocationOutcome.interrupted(
+        remaining_work="bounded continuation",
+        cap_reason="duration",
+    )
+    p0 = InvocationOutcome.interrupted(remaining_work="resume after P0")
+
+    assert (cap.status, cap.cap_reason) == ("continuation", "duration")
+    assert (p0.status, p0.cap_reason) == ("preempted", None)
+
+
+class _ToolCapThenComplete:
+    def invoke(self, context, *, tools, control):
+        del tools, control
+        if context.segment_ordinal == 1:
+            return InvocationOutcome.continuation(
+                remaining_work="finish in the next segment",
+                cap_reason="tool_calls",
+            )
+        return InvocationOutcome.completed()
+
+
+def test_completion_diagnostics_retain_the_resumed_segment_ordinal(tmp_path: Path):
+    coordinator = RunCoordinator(
+        DurableRunState(tmp_path / "state.sqlite3"),
+        runtime=_ToolCapThenComplete(),
+        feature_port=_RecordingFeature(),
+    )
+    coordinator.enqueue(_tick("cap-then-complete", kind="p2_scheduled"))
+
+    first = _require_result(coordinator)
+    second = _require_result(coordinator)
+
+    assert (first.status, first.segment_ordinal) == ("checkpointed", 1)
+    assert (second.status, second.segment_ordinal) == ("completed", 2)
+
+
+class _AlwaysToolCapContinuation:
+    def __init__(self) -> None:
+        self.segment_ordinals: list[int] = []
+
+    def invoke(self, context, *, tools, control):
+        del control
+        self.segment_ordinals.append(context.segment_ordinal)
+        tools.execute_once(
+            FakeFeatureCommand(
+                action_id="bounded-effect",
+                intent_fingerprint="a" * 64,
+                payload={"value": "once"},
+            )
+        )
+        return InvocationOutcome.continuation(
+            remaining_work="unfinished bounded work",
+            cap_reason="tool_calls",
+        )
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_statuses", "expected_segments"),
+    [
+        (
+            "p2_scheduled",
+            ["checkpointed", "checkpointed", "failed_terminal"],
+            [1, 2, 3],
+        ),
+        ("p0_user_chat", ["checkpointed", "failed_terminal"], [1, 2]),
+    ],
+)
+def test_cap_continuation_chain_terminates_without_consuming_a_fault_attempt(
+    tmp_path: Path,
+    kind: str,
+    expected_statuses: list[str],
+    expected_segments: list[int],
+):
+    runtime = _AlwaysToolCapContinuation()
+    state = DurableRunState(tmp_path / "state.sqlite3")
+    feature = _RecordingFeature()
+    coordinator = RunCoordinator(
+        state,
+        runtime=runtime,
+        feature_port=feature,
+        clock_ms=lambda: 100,
+    )
+    coordinator.enqueue(_tick("bounded", kind=kind))
+
+    results = [_require_result(coordinator) for _ in expected_statuses]
+
+    assert [result.status for result in results] == expected_statuses
+    assert runtime.segment_ordinals == expected_segments
+    assert [result.segment_ordinal for result in results] == expected_segments
+    assert [result.cap_reason for result in results] == [
+        "tool_calls" for _ in expected_statuses
+    ]
+    diagnostics = coordinator.diagnostics("daily-user")
+    assert [(item.ordinal, item.status) for item in diagnostics.attempts] == [
+        (1, "succeeded")
+    ]
+    assert [checkpoint.cause for checkpoint in diagnostics.checkpoints] == [
+        "continuation:tool_calls" for _ in expected_statuses
+    ]
+    assert [command.action_id for command in feature.commands] == ["bounded-effect"]
+
+
 class _FaultFirstTick:
     def __init__(self) -> None:
         self.invoked: list[str] = []
