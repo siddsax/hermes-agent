@@ -972,6 +972,50 @@
       }
     },
     {
+      "case_id": "mobile-chat-outbox.waiting-cancellable",
+      "target": "mobile_chat_outbox",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "local_outbox_id": "mobile-outbox-waiting-1",
+        "user_id": "user-local",
+        "user_message_id": "message-waiting-1",
+        "idempotency_key": "user-message:message-waiting-1",
+        "submission_order": 2,
+        "status": "waiting_for_connection",
+        "backend_submission_id": null,
+        "queue_receipt_id": null,
+        "cancellable": true,
+        "created_at_ms": 1787644799000,
+        "updated_at_ms": 1787644799000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "mobile-chat-outbox.submitting-not-cancellable",
+      "target": "mobile_chat_outbox",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "local_outbox_id": "mobile-outbox-submitting-1",
+        "user_id": "user-local",
+        "user_message_id": "message-submitting-1",
+        "idempotency_key": "user-message:message-submitting-1",
+        "submission_order": 3,
+        "status": "submitting",
+        "backend_submission_id": null,
+        "queue_receipt_id": null,
+        "cancellable": false,
+        "created_at_ms": 1787644799000,
+        "updated_at_ms": 1787644799500,
+        "extensions": {}
+      }
+    },
+    {
       "case_id": "mobile-chat-outbox.submitted",
       "target": "mobile_chat_outbox",
       "payload": {

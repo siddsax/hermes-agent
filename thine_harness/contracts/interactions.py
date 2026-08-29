@@ -10,6 +10,7 @@ from ._views_generated import (
     MobileInteractionEventVariant13View,
     MobileInteractionEventVariant14View,
     MobileInteractionEventVariant15View,
+    MobileInteractionEventVariant16View,
     MobileInteractionEventVariant1View,
     MobileInteractionEventVariant2View,
     MobileInteractionEventVariant3View,
@@ -67,6 +68,7 @@ class InteractionEvent(
         | MobileInteractionEventVariant13View
         | MobileInteractionEventVariant14View
         | MobileInteractionEventVariant15View
+        | MobileInteractionEventVariant16View
     ]
 ):
     """Immutable typed view of a validated interaction_event payload."""

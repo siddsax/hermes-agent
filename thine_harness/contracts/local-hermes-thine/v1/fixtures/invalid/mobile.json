@@ -286,6 +286,36 @@
       }
     },
     {
+      "case_id": "interaction.support-external-raw-url-rejected",
+      "target": "interaction_event",
+      "expected_error": "undeclared additive property 'raw_url'",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "e-support-url",
+        "user_id": "u",
+        "device_id": "d",
+        "occurred_at_ms": 1,
+        "received_at_ms": 1,
+        "screen_id": "route.profile",
+        "surface_id": "profile.support",
+        "kind": "support_external_action",
+        "object_ref": null,
+        "outcome": "requested",
+        "home_revision": null,
+        "home_node_id": null,
+        "primary_correlation": null,
+        "safe_payload": {
+          "action": "support",
+          "closed_value": null,
+          "raw_url": "https://should-not-cross.example"
+        },
+        "extensions": {}
+      }
+    },
+    {
       "case_id": "notification.background-without-message-rejected",
       "target": "notification_intent",
       "expected_error": "does not satisfy oneOf",
@@ -322,6 +352,52 @@
         "permission_state": "not_determined",
         "allowance_consumed": true,
         "completed_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "mobile-outbox.waiting-not-cancellable-rejected",
+      "target": "mobile_chat_outbox",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "local_outbox_id": "mobile-outbox-waiting-invalid",
+        "user_id": "user-local",
+        "user_message_id": "message-waiting-invalid",
+        "idempotency_key": "user-message:message-waiting-invalid",
+        "submission_order": 1,
+        "status": "waiting_for_connection",
+        "backend_submission_id": null,
+        "queue_receipt_id": null,
+        "cancellable": false,
+        "created_at_ms": 1,
+        "updated_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "mobile-outbox.submitting-cancellable-rejected",
+      "target": "mobile_chat_outbox",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "local_outbox_id": "mobile-outbox-submitting-invalid",
+        "user_id": "user-local",
+        "user_message_id": "message-submitting-invalid",
+        "idempotency_key": "user-message:message-submitting-invalid",
+        "submission_order": 1,
+        "status": "submitting",
+        "backend_submission_id": null,
+        "queue_receipt_id": null,
+        "cancellable": true,
+        "created_at_ms": 1,
+        "updated_at_ms": 1,
         "extensions": {}
       }
     },

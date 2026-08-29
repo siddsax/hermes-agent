@@ -42,6 +42,41 @@ manifest path confinement (including symlinks), exact redaction and size constra
 Meeting Mode exclusion, and the local
 fail-closed topology.
 
+## Propagating a corrected snapshot
+
+`metadata/consumer-propagation.json` is the canonical propagation manifest for
+the backend, Hermes fork, and mobile app. From a clean consumer feature branch,
+set `controller_root` to the controller checkout containing the accepted pack
+commit and `consumer_root` to that consumer checkout. Replace the consumer's
+destination tree with the controller tree using that consumer's exact
+`propagation_command`, then run the listed generation and verification
+commands. Backend and Hermes provenance record the controller `HEAD` plus every
+path-sorted SHA-256 file digest. Mobile provenance records the same controller
+`HEAD` plus the normalized digest over that path-sorted hash stream; the helper
+also mirrors all eight mobile fixture suites. Mobile then updates its listed
+handwritten closed-enum binding. A partial copy, a stale provenance digest, or
+an omitted fixture mirror is not a valid propagation.
+
+This is a coordinated correction to the not-yet-independently-negotiated v1
+snapshot, not a compatible minor addition. All three consumers must take the
+same corrected controller commit before the changed closed enums are used.
+
+From the controller repository root, the exact copy/provenance/fixture step is:
+
+```bash
+controller_contract_commit=$(git rev-parse HEAD)
+python3 -m tools.contract_pack_propagation backend --consumer-root "$backend_root" --controller-commit "$controller_contract_commit" --apply
+python3 -m tools.contract_pack_propagation hermes --consumer-root "$hermes_root" --controller-commit "$controller_contract_commit" --apply
+python3 -m tools.contract_pack_propagation mobile --consumer-root "$mobile_root" --controller-commit "$controller_contract_commit" --apply
+```
+
+Run each command again without `--apply` for a read-only byte, provenance, and
+mobile-fixture verification. Then make the manifest's exact mobile binding
+changes, run every listed generator and verification command, and commit each
+consumer separately. The mobile conformance fixtures make an omitted closed
+enum or the old `submitting` cancellability behavior fail at the public decoder
+seam.
+
 The public boundary includes the durable invocation request/event stream,
 transcript claim/lease-renewal/reclaim/continuation and quarantined input-gap
 records, separate interaction ingestion and processing-cursor receipts, complete

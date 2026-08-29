@@ -4165,7 +4165,8 @@ class MobileInteractionBatchView(Protocol):
         | MobileInteractionEventVariant12View
         | MobileInteractionEventVariant13View
         | MobileInteractionEventVariant14View
-        | MobileInteractionEventVariant15View,
+        | MobileInteractionEventVariant15View
+        | MobileInteractionEventVariant16View,
         ...,
     ]: ...
 
@@ -4498,7 +4499,7 @@ class MobileInteractionEventVariant15View(Protocol):
     def surface_id(self) -> str: ...
 
     @property
-    def kind(self) -> Literal["account_action"]: ...
+    def kind(self) -> Literal["support_external_action"]: ...
 
     @property
     def object_ref(self) -> str | None: ...
@@ -4521,6 +4522,60 @@ class MobileInteractionEventVariant15View(Protocol):
 
     @property
     def safe_payload(self) -> MobileMobileInteractionEventVariant15SafePayloadView: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class MobileInteractionEventVariant16View(Protocol):
+    @property
+    def schema_version(self) -> MobileVersionView: ...
+
+    @property
+    def event_id(self) -> str: ...
+
+    @property
+    def user_id(self) -> str: ...
+
+    @property
+    def device_id(self) -> str: ...
+
+    @property
+    def occurred_at_ms(self) -> int: ...
+
+    @property
+    def received_at_ms(self) -> int: ...
+
+    @property
+    def screen_id(self) -> str: ...
+
+    @property
+    def surface_id(self) -> str: ...
+
+    @property
+    def kind(self) -> Literal["account_action"]: ...
+
+    @property
+    def object_ref(self) -> str | None: ...
+
+    @property
+    def outcome(
+        self,
+    ) -> Literal[
+        "requested", "accepted", "succeeded", "failed", "cancelled", "unknown"
+    ]: ...
+
+    @property
+    def home_revision(self) -> int | None: ...
+
+    @property
+    def home_node_id(self) -> str | None: ...
+
+    @property
+    def primary_correlation(self) -> MobilePrimaryCorrelationView | None: ...
+
+    @property
+    def safe_payload(self) -> MobileMobileInteractionEventVariant16SafePayloadView: ...
 
     @property
     def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
@@ -5032,7 +5087,7 @@ class MobileMobileChatOutboxVariant1View(Protocol):
     def submission_order(self) -> int: ...
 
     @property
-    def status(self) -> Literal["waiting_for_connection", "submitting"]: ...
+    def status(self) -> Literal["waiting_for_connection"]: ...
 
     @property
     def backend_submission_id(self) -> None: ...
@@ -5073,6 +5128,47 @@ class MobileMobileChatOutboxVariant2View(Protocol):
     def submission_order(self) -> int: ...
 
     @property
+    def status(self) -> Literal["submitting"]: ...
+
+    @property
+    def backend_submission_id(self) -> None: ...
+
+    @property
+    def queue_receipt_id(self) -> None: ...
+
+    @property
+    def cancellable(self) -> Literal[False]: ...
+
+    @property
+    def created_at_ms(self) -> int: ...
+
+    @property
+    def updated_at_ms(self) -> int: ...
+
+    @property
+    def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
+
+
+class MobileMobileChatOutboxVariant3View(Protocol):
+    @property
+    def schema_version(self) -> MobileVersionView: ...
+
+    @property
+    def local_outbox_id(self) -> str: ...
+
+    @property
+    def user_id(self) -> str: ...
+
+    @property
+    def user_message_id(self) -> str: ...
+
+    @property
+    def idempotency_key(self) -> str: ...
+
+    @property
+    def submission_order(self) -> int: ...
+
+    @property
     def status(self) -> Literal["submitted"]: ...
 
     @property
@@ -5094,7 +5190,7 @@ class MobileMobileChatOutboxVariant2View(Protocol):
     def extensions(self) -> Mapping[str, FrozenJSONValue]: ...
 
 
-class MobileMobileChatOutboxVariant3View(Protocol):
+class MobileMobileChatOutboxVariant4View(Protocol):
     @property
     def schema_version(self) -> MobileVersionView: ...
 
@@ -5532,6 +5628,18 @@ class MobileMobileInteractionEventVariant14SafePayloadView(Protocol):
 
 
 class MobileMobileInteractionEventVariant15SafePayloadView(Protocol):
+    @property
+    def action(
+        self,
+    ) -> Literal[
+        "feedback_board", "text_support", "feedback", "support", "privacy", "terms"
+    ]: ...
+
+    @property
+    def closed_value(self) -> str | bool | int | None: ...
+
+
+class MobileMobileInteractionEventVariant16SafePayloadView(Protocol):
     @property
     def action(
         self,

@@ -376,10 +376,7 @@
         {
           "properties": {
             "status": {
-              "enum": [
-                "waiting_for_connection",
-                "submitting"
-              ]
+              "const": "waiting_for_connection"
             },
             "backend_submission_id": {
               "type": "null"
@@ -389,6 +386,22 @@
             },
             "cancellable": {
               "const": true
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "submitting"
+            },
+            "backend_submission_id": {
+              "type": "null"
+            },
+            "queue_receipt_id": {
+              "type": "null"
+            },
+            "cancellable": {
+              "const": false
             }
           }
         },
@@ -969,6 +982,7 @@
             "gift_action",
             "transcript_action",
             "voice_fingerprint_action",
+            "support_external_action",
             "account_action"
           ]
         },
@@ -1071,6 +1085,12 @@
                 "open_speaker",
                 "start",
                 "skip",
+                "feedback_board",
+                "text_support",
+                "feedback",
+                "support",
+                "privacy",
+                "terms",
                 "logout_request",
                 "logout_confirm",
                 "delete_request",
@@ -1363,6 +1383,27 @@
                     "retry",
                     "skip",
                     "continue"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "support_external_action"
+            },
+            "safe_payload": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "feedback_board",
+                    "text_support",
+                    "feedback",
+                    "support",
+                    "privacy",
+                    "terms"
                   ]
                 }
               }

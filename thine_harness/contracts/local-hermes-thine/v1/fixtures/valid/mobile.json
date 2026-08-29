@@ -355,6 +355,34 @@
       }
     },
     {
+      "case_id": "interaction.support-external-redacted",
+      "target": "interaction_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "interaction-support-1",
+        "user_id": "user-local",
+        "device_id": "iphone-local",
+        "occurred_at_ms": 1787644800000,
+        "received_at_ms": 1787644800100,
+        "screen_id": "route.profile",
+        "surface_id": "profile.support",
+        "kind": "support_external_action",
+        "object_ref": null,
+        "outcome": "requested",
+        "home_revision": null,
+        "home_node_id": null,
+        "primary_correlation": null,
+        "safe_payload": {
+          "action": "text_support",
+          "closed_value": null
+        },
+        "extensions": {}
+      }
+    },
+    {
       "case_id": "interaction.delivery-ack-not-processed",
       "target": "interaction_delivery_ack",
       "payload": {

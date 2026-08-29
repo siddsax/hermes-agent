@@ -147,6 +147,7 @@
     "runtime_profile": "metadata/runtime-profile.json",
     "endpoint_routing": "metadata/endpoint-routing.json",
     "interaction_allowlist": "metadata/interaction-allowlist.json",
+    "consumer_propagation": "metadata/consumer-propagation.json",
     "topology": "metadata/topology.json",
     "privacy_and_limits": "metadata/privacy-and-limits.json"
   }

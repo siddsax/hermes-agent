@@ -103,6 +103,14 @@
       "skip",
       "continue"
     ],
+    "support_external_action": [
+      "feedback_board",
+      "text_support",
+      "feedback",
+      "support",
+      "privacy",
+      "terms"
+    ],
     "account_action": [
       "logout_request",
       "logout_confirm",
@@ -132,7 +140,13 @@
     "raw_contact_pii",
     "audio",
     "waveform",
-    "file_paths"
+    "file_paths",
+    "prefilled_body",
+    "user_name",
+    "app_version",
+    "support_logs",
+    "raw_url",
+    "mail_content"
   ],
   "delivery_ack_meaning": "hermes_durably_stored_event_not_model_processed",
   "tick_policy": "fixed_half_hour_interaction_only"

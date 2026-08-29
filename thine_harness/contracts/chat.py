@@ -10,6 +10,7 @@ from ._views_generated import (
     MobileMobileChatOutboxVariant1View,
     MobileMobileChatOutboxVariant2View,
     MobileMobileChatOutboxVariant3View,
+    MobileMobileChatOutboxVariant4View,
     RuntimeFinalReplyOutboxVariant1View,
     RuntimeFinalReplyOutboxVariant2View,
     RuntimeFinalReplyReceiptView,
@@ -76,6 +77,7 @@ class MobileChatOutbox(
         MobileMobileChatOutboxVariant1View
         | MobileMobileChatOutboxVariant2View
         | MobileMobileChatOutboxVariant3View
+        | MobileMobileChatOutboxVariant4View
     ]
 ):
     """Immutable typed view of a validated mobile_chat_outbox payload."""

@@ -52,7 +52,7 @@ def test_vendored_pack_is_the_complete_accepted_controller_snapshot():
     )
 
     assert provenance["controller_commit"] == (
-        "2479efa6059ae2b0185cfdf575c53c74eb64ce59"
+        "cff01a55a3fa27505556f4213b79d9a3bb93d1f2"
     )
     assert provenance["contract_version"] == {"major": 1, "minor": 0}
     assert provenance["file_sha256"]
@@ -64,8 +64,8 @@ def test_vendored_pack_is_the_complete_accepted_controller_snapshot():
 
     report = validate_contract_pack()
     assert report.errors == ()
-    assert report.valid_fixture_count == 89
-    assert report.invalid_fixture_count == 62
+    assert report.valid_fixture_count == 92
+    assert report.invalid_fixture_count == 65
 
 
 def test_every_manifest_target_decodes_to_its_assigned_typed_python_dto():
