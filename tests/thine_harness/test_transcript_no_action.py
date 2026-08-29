@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
@@ -18,6 +19,8 @@ from thine_harness.input_pump import (
     TranscriptAvailability,
     TranscriptClaimNotFound,
     TranscriptInputPump,
+    TenMinuteTranscriptDriver,
+    next_ten_minute_boundary_ms,
 )
 from thine_harness.run_coordinator import RunCoordinator
 from thine_harness.run_finalizer import TranscriptNoActionFinalizer
@@ -339,6 +342,35 @@ def test_transcript_availability_scan_enqueues_once_without_claiming(tmp_path: P
     assert state.transcript_run_record(
         user_id="daily-user", logical_run_id=queued[0].logical_run_id
     ).queue_state == "queued"
+
+
+def test_transcript_driver_uses_fixed_ten_minute_boundaries_and_wakes_for_data(
+    tmp_path: Path,
+):
+    now = int(datetime(2026, 8, 29, 5, 1, tzinfo=timezone.utc).timestamp() * 1000)
+    # 05:01 UTC is 10:31 Asia/Kolkata, so the next local boundary is 10:40.
+    assert next_ten_minute_boundary_ms(now, "Asia/Kolkata") == now + 9 * 60_000
+
+    transcript = _TranscriptPort()
+    transcript.available = True
+    state = DurableRunState(tmp_path / "state.sqlite3")
+    pump = TranscriptInputPump(state, transcript_port=transcript, clock_ms=lambda: now)
+    wakeups: list[str] = []
+    driver = TenMinuteTranscriptDriver(
+        pump=pump,
+        user_id="daily-user",
+        wake_coordinator=lambda: wakeups.append("wake"),
+        timezone_name="Asia/Kolkata",
+        clock_ms=lambda: now,
+    )
+    try:
+        tick_id = driver.scan_now()
+    finally:
+        driver.close()
+
+    assert tick_id is not None
+    assert wakeups == ["wake"]
+    assert len(state.diagnostics("daily-user").queue) == 1
 
 
 def test_lost_claim_response_reuses_request_and_does_not_duplicate_inference(
@@ -703,3 +735,83 @@ def test_real_gpt_transcript_path_commits_memory_then_loads_it_on_next_tick(
     assert second_inspection.decision_outcome == "no_action"
     assert agent.hook_count == 2
     assert agent.measurement_count == 1
+
+
+def test_empty_claim_is_acknowledged_without_invoking_the_model(tmp_path: Path):
+    class EmptyTranscriptPort(_TranscriptPort):
+        def claim(self, request):
+            self.claim_requests.append(request)
+            request_id = request.payload.claim_request_id
+            claim = TranscriptClaim.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "claim_id": f"audio-claim:{request_id}",
+                "claim_request_id": request_id,
+                "lease_owner": request.payload.lease_owner,
+                "claimed_at_ms": 100,
+                "lease_expires_at_ms": 600_100,
+                "claim_state": "claimed",
+                "acknowledged_at_ms": None,
+                "released_at_ms": None,
+                "release_reason": None,
+                "window_token_count": 0,
+                "window_source_duration_ms": 0,
+                "input_continuation_cursor": None,
+                "next_continuation_cursor": None,
+                "window_complete": True,
+                "entries": [],
+                "extensions": {},
+            })
+            self.claim_by_request[request_id] = claim
+            return claim
+
+        def acknowledge(self, claim_id, run_id, memory_version):
+            request = (str(claim_id), str(run_id), str(memory_version))
+            self.ack_requests.append(request)
+            return TranscriptAck.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "ack_id": f"ack:{claim_id}",
+                "claim_id": str(claim_id),
+                "run_id": str(run_id),
+                "memory_version": str(memory_version),
+                "acknowledged_at_ms": 500,
+                "deleted_buffer_entry_ids": [],
+                "durable_receipt_written": True,
+                "canonical_transcript_retained": True,
+                "extensions": {},
+            })
+
+    transcript = EmptyTranscriptPort()
+    state = DurableRunState(tmp_path / "empty-claim.sqlite3")
+    pump = TranscriptInputPump(state, transcript_port=transcript, clock_ms=lambda: 100)
+    agent = _RealGPTContractAgent()
+    coordinator = RunCoordinator(
+        state,
+        runtime=RealTranscriptAgentRuntime(
+            state,
+            agent=agent,
+            binding=TranscriptClaimToolBinding(),
+        ),
+        feature_port=_NoFeatureEffects(),
+        input_port=pump,
+        finalizer=TranscriptAgentFinalizer(
+            state, transcript_port=transcript, clock_ms=lambda: 100
+        ),
+        clock_ms=lambda: 100,
+    )
+    pump.enqueue_availability(
+        user_id="daily-user",
+        source_hint="audio-buffer-raced-away",
+        occurred_at_ms=90,
+        received_at_ms=95,
+    )
+
+    result = coordinator.run_next("daily-user")
+
+    assert result is not None and result.status == "completed"
+    assert agent.primary_prompts == []
+    assert len(transcript.ack_requests) == 1
+    record = state.transcript_run_record(
+        user_id="daily-user", logical_run_id=result.logical_run_id
+    )
+    assert record.decision_outcome == "no_action"
+    assert record.working_memory_outcome == "unchanged"

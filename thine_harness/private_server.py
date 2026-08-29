@@ -13,7 +13,11 @@ from .action_dispatcher import ActionDispatcher
 from .communications import BackendCommunicationClient, CommunicationToolBinding
 from .private_service import create_private_service_app
 from .home_state import HomeStateProjector, register_home_state_tools
-from .input_pump import BackendTranscriptClient, TranscriptInputPump
+from .input_pump import (
+    BackendTranscriptClient,
+    TenMinuteTranscriptDriver,
+    TranscriptInputPump,
+)
 from .maintenance import AuthoritativeReadToolBinding, AuthoritativeStateReader
 from .interactions import (
     BackendInteractionClient,
@@ -213,9 +217,8 @@ def build_product_p0_controller(
         notification_binding.reconcile_due(user_id)
         schedules.fire_due_once(user_id)
         schedules.promote_oldest_overdue(user_id)
-        transcript_tick = transcript_input.scan_available(user_id)
         speaker_tick = speaker_input.enqueue_next(user_id, coordinator=coordinator)
-        return transcript_tick, speaker_tick
+        return speaker_tick
 
     controller = P0ChatController(
         store=store,
@@ -274,6 +277,14 @@ def build_product_p0_controller(
         p0_context_bindings=(topic_binding,),
         policy_context=topic_binding.prompt_context,
         extra_closables=(transcript, interactions, speakers, communications),
+    )
+    controller.add_closable(
+        TenMinuteTranscriptDriver(
+            pump=transcript_input,
+            user_id=private_config.firebase_uid,
+            wake_coordinator=controller.wake_background,
+            timezone_name="Asia/Kolkata",
+        )
     )
     controller.add_closable(
         HalfHourInteractionDriver(

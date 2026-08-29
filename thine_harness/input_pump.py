@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import ipaddress
+import threading
 import time
 from typing import Callable, cast, Literal, Protocol
 from urllib.parse import urlparse
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -609,6 +612,26 @@ class PreparedTranscriptInput:
     explicit_retry: ExplicitRetry | None = None
 
 
+def next_ten_minute_boundary_ms(now_ms: int, timezone_name: str) -> int:
+    """Return the next UTC instant on a local :00/:10/.../:50 boundary."""
+    if now_ms < 0:
+        raise ValueError("now_ms must be non-negative")
+    try:
+        zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError("timezone_name must be a configured IANA timezone") from exc
+    candidate_ms = ((now_ms // 60_000) + 1) * 60_000
+    # A timezone transition cannot remove every ten-minute boundary for three hours.
+    for _ in range(180):
+        local = datetime.fromtimestamp(candidate_ms / 1000, tz=timezone.utc).astimezone(
+            zone
+        )
+        if local.minute % 10 == 0 and local.second == 0:
+            return candidate_ms
+        candidate_ms += 60_000
+    raise RuntimeError("could not resolve the next local ten-minute boundary")
+
+
 class TranscriptInputPump:
     """Persist availability, then claim only from inside a leased invocation."""
 
@@ -833,6 +856,61 @@ class TranscriptInputPump:
         )
 
 
+class TenMinuteTranscriptDriver:
+    """Wake transcript processing only on fixed local ten-minute boundaries."""
+
+    def __init__(
+        self,
+        *,
+        pump: TranscriptInputPump,
+        user_id: str,
+        wake_coordinator: Callable[[], None],
+        timezone_name: str = "Asia/Kolkata",
+        clock_ms: Callable[[], int] | None = None,
+    ) -> None:
+        self._pump = pump
+        self._user_id = user_id
+        self._wake_coordinator = wake_coordinator
+        self._timezone_name = timezone_name
+        self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
+        self._closed = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="thine-transcript-ten-minute-driver",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def close(self) -> None:
+        self._closed.set()
+        self._thread.join(timeout=2)
+
+    def scan_now(self) -> str | None:
+        tick_id = self._pump.scan_available(self._user_id)
+        if tick_id is not None:
+            self._wake_coordinator()
+        return tick_id
+
+    def _run(self) -> None:
+        while not self._closed.is_set():
+            now_ms = self._clock_ms()
+            boundary_ms = next_ten_minute_boundary_ms(
+                now_ms, self._timezone_name
+            )
+            delay = max((boundary_ms - now_ms) / 1000, 0.01)
+            if self._closed.wait(delay):
+                return
+            while not self._closed.is_set():
+                try:
+                    self.scan_now()
+                    break
+                except Exception:
+                    # A local backend restart must not permanently lose this
+                    # boundary. Retry transport until it succeeds or closes.
+                    if self._closed.wait(1.0):
+                        return
+
+
 class FakeTranscriptNoActionRuntime:
     """Deterministic decision Adapter for the model-free vertical slice."""
 
@@ -866,6 +944,7 @@ __all__ = [
     "BackendTranscriptClient",
     "FakeTranscriptNoActionRuntime",
     "PreparedTranscriptInput",
+    "TenMinuteTranscriptDriver",
     "TranscriptClaimNotFound",
     "TranscriptAvailability",
     "TranscriptInputPump",
@@ -876,4 +955,5 @@ __all__ = [
     "TranscriptRetryRequest",
     "TranscriptRetryInspection",
     "TranscriptRetryResult",
+    "next_ten_minute_boundary_ms",
 ]

@@ -234,6 +234,11 @@ class TranscriptAgentArtifact:
     tool_discoveries: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class EmptyTranscriptClaimNoAction:
+    """Finalize an availability race without entering the model session."""
+
+
 def _cache_identity(agent: Any) -> CacheIdentity:
     from agent.prompt_cache_scope import resolve_prompt_cache_scope
     from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
@@ -297,6 +302,10 @@ class RealTranscriptAgentRuntime:
         prepared = context.prepared_input
         if not isinstance(prepared, PreparedTranscriptInput):
             raise ValueError("real transcript inference requires one durable claim")
+        if not prepared.claim.payload.entries:
+            return InvocationOutcome.no_action(
+                finalization_context=EmptyTranscriptClaimNoAction()
+            )
         payload = context.tick.payload
         current = self._state.working_memory_snapshot(str(payload.user_id))
         communication_context = (
@@ -457,6 +466,17 @@ class TranscriptAgentFinalizer:
         lease: ActiveRunLease,
     ) -> RunFinalizationResult:
         artifact = outcome.finalization_context
+        if isinstance(artifact, EmptyTranscriptClaimNoAction):
+            pending = self._state.finalize_transcript_no_action(
+                user_id=lease.user_id,
+                logical_run_id=lease.logical_run_id,
+                owner=lease.owner,
+                attempt_id=lease.attempt_id,
+                lease_token=lease.lease_token,
+                now_ms=self._clock_ms(),
+                claim_is_empty=True,
+            )
+            return self._ack_pending(pending)
         if not isinstance(artifact, TranscriptAgentArtifact):
             raise ValueError("real transcript finalization requires its model artifact")
         hook_context = HermesCachedStopHookContext(

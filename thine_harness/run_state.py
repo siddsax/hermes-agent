@@ -3206,6 +3206,7 @@ class DurableRunState:
         memory_token_count: int | None = None,
         tokenizer_status: str = "unresolved_fail_closed",
         agent_inspection: dict[str, Any] | None = None,
+        claim_is_empty: bool = False,
     ) -> PendingTranscriptAck:
         """Atomically finalize no-action memory and enter the ack-only suffix."""
         with self._transaction() as connection:
@@ -3237,9 +3238,13 @@ class DurableRunState:
             ):
                 raise DurableStateError("transcript run has no durable claimed input")
             claim_payload = TranscriptClaim.from_json(claim["claim_json"]).payload
-            if not claim_payload.entries:
+            if not claim_payload.entries and not claim_is_empty:
                 raise DurableStateError(
                     "empty transcript claim cannot enter inference finalization"
+                )
+            if claim_payload.entries and claim_is_empty:
+                raise DurableStateError(
+                    "non-empty transcript claim cannot use empty-claim finalization"
                 )
 
             connection.execute(
