@@ -11,7 +11,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from thine_harness.action_dispatcher import ActionDispatcher
-from thine_harness.communications import PushRegistrationStatus
+from thine_harness.communications import (
+    BackendCommunicationClient,
+    PushRegistrationStatus,
+)
+from thine_harness.contracts.notifications import NotificationIntent
 from thine_harness.home_state import HomeStateProjector
 from thine_harness.maintenance import AuthoritativeStateReader, RetentionResetService
 from thine_harness.operator_dashboard import (
@@ -24,7 +28,10 @@ from thine_harness.operator_dashboard import (
 )
 from thine_harness.operator_dashboard_server import create_operator_dashboard_app
 from thine_harness.private_server import build_product_p0_controller
-from thine_harness.private_topology import BackendPrivateConfig, PrivateServiceConfig
+from thine_harness.private_topology import (
+    load_backend_private_config,
+    load_private_service_config,
+)
 from thine_harness.run_state import DurableRunState
 from thine_harness.schedules import OneShotScheduleService
 from thine_harness.topics_preferences import TopicPreferenceService
@@ -196,30 +203,96 @@ def test_product_controller_projects_registration_from_real_loopback_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     requests: list[dict[str, str | None]] = []
+    standalone_outcomes: dict[str, dict[str, object]] = {}
 
     class _BackendHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            self._capture("GET")
+            if self.path == "/v1/communications/push-registration":
+                self._respond(
+                    {
+                        "has_registration": True,
+                        "registration_count": 3,
+                        "last_observed_at_ms": NOW - 25,
+                    },
+                    status=200,
+                )
+                return
+            if self.path == "/v1/communications/permission":
+                self._respond({
+                    "schema_version": {"major": 1, "minor": 0},
+                    "user_preference": "enabled",
+                    "os_permission": "authorized",
+                    "last_permission_ask_at_ms": None,
+                    "last_permission_ask_topic_id": None,
+                    "observed_at_ms": NOW,
+                    "extensions": {},
+                })
+                return
+            receipt_prefix = "/v1/communications/standalone-notification/"
+            if self.path.startswith(receipt_prefix):
+                action_id = self.path.removeprefix(receipt_prefix)
+                outcome = standalone_outcomes.get(action_id)
+                self._respond(outcome or {}, status=200 if outcome is not None else 404)
+                return
+            self._respond({"error": "route_not_found"}, status=404)
+
+        def do_POST(self) -> None:
+            self._capture("POST")
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length)) if length else None
+            if self.path == "/v1/communications/background-message":
+                assert isinstance(payload, dict)
+                self._respond({
+                    "schema_version": {"major": 1, "minor": 0},
+                    "action_id": payload["action_id"],
+                    "communication_kind": "background_message",
+                    "outcome": "accepted",
+                    "provider_correlation_id": "push-background",
+                    "persisted_message_id": payload["persisted_message_id"],
+                    "permission_state": "authorized",
+                    "allowance_consumed": True,
+                    "completed_at_ms": NOW,
+                    "extensions": {},
+                })
+                return
+            if self.path == "/v1/communications/standalone-notification":
+                assert isinstance(payload, dict)
+                action_id = str(payload["action_id"])
+                outcome: dict[str, object] = {
+                    "schema_version": {"major": 1, "minor": 0},
+                    "action_id": action_id,
+                    "communication_kind": "standalone_notification",
+                    "outcome": "accepted",
+                    "provider_correlation_id": "push-standalone",
+                    "persisted_message_id": None,
+                    "permission_state": "authorized",
+                    "allowance_consumed": True,
+                    "completed_at_ms": NOW,
+                    "extensions": {},
+                }
+                standalone_outcomes[action_id] = outcome
+                self._respond(outcome)
+                return
+            # The product controller's background scanner asks the same local
+            # backend whether a speaker event is waiting. Empty is valid.
+            if self.path == "/v1/speaker-mappings/next":
+                self._respond(None)
+                return
+            self._respond({"error": "route_not_found"}, status=404)
+
+        def _capture(self, method: str) -> None:
             requests.append({
-                "method": "GET",
+                "method": method,
                 "path": self.path,
                 "authorization": self.headers.get("Authorization"),
                 "user_id": self.headers.get("X-Thine-Firebase-UID"),
                 "request_id": self.headers.get("X-Request-ID"),
             })
-            self._respond({
-                "has_registration": True,
-                "registration_count": 3,
-                "last_observed_at_ms": NOW - 25,
-            })
 
-        def do_POST(self) -> None:
-            # The product controller's background scanner asks the same local
-            # backend whether a speaker event is waiting. Empty is valid.
-            self._respond(None)
-
-        def _respond(self, payload: object) -> None:
+        def _respond(self, payload: object, *, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -234,24 +307,67 @@ def test_product_controller_projects_registration_from_real_loopback_backend(
     hermes_home = tmp_path / "hermes-home"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config = {
+        "thine_harness": {
+            "private_service": {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": 8789,
+                "firebase_uid": USER,
+                "request_timeout_seconds": 2,
+                "credential": {"env": "HERMES_CONTROL_TOKEN", "file": ""},
+            },
+            "private_backend": {
+                "origin": f"http://127.0.0.1:{backend.server_address[1]}",
+                "request_timeout_seconds": 2,
+                "credential": {"env": "BACKEND_PRIVATE_TOKEN", "file": ""},
+            },
+        }
+    }
+    private_config = load_private_service_config(
+        config,
+        environ={"HERMES_CONTROL_TOKEN": "private-control-token"},
+    )
+    backend_config = load_backend_private_config(
+        config,
+        environ={"BACKEND_PRIVATE_TOKEN": "backend-private-token"},
+    )
     controller = build_product_p0_controller(
-        private_config=PrivateServiceConfig(
-            enabled=True,
-            host="127.0.0.1",
-            port=8789,
-            firebase_uid=USER,
-            request_timeout_seconds=2,
-            credential="private-control-token",
-        ),
-        backend_config=BackendPrivateConfig(
-            origin=f"http://127.0.0.1:{backend.server_address[1]}",
-            firebase_uid=USER,
-            request_timeout_seconds=2,
-            credential="backend-private-token",
-        ),
+        private_config=private_config,
+        backend_config=backend_config,
         database_path=hermes_home / "thine-harness" / "run-state.sqlite3",
         runtime_factory=lambda: object(),  # Not loaded without an admitted Tick.
     )
+    client = BackendCommunicationClient(
+        origin=backend_config.origin,
+        credential=backend_config.credential,
+        user_id=backend_config.firebase_uid,
+        timeout_seconds=backend_config.request_timeout_seconds,
+    )
+    background_intent = NotificationIntent.from_dict({
+        "schema_version": {"major": 1, "minor": 0},
+        "action_id": "background-action",
+        "kind": "background_message_push",
+        "title": "Thine",
+        "body": "Background body",
+        "persisted_message_id": "message-1",
+        "navigation_template": "route.chat",
+        "push_required_for_background_message": True,
+        "created_at_ms": NOW,
+        "extensions": {},
+    })
+    standalone_intent = NotificationIntent.from_dict({
+        "schema_version": {"major": 1, "minor": 0},
+        "action_id": "standalone-action",
+        "kind": "standalone_notification",
+        "title": "Thine",
+        "body": "Standalone body",
+        "persisted_message_id": None,
+        "navigation_template": "route.profile",
+        "push_required_for_background_message": True,
+        "created_at_ms": NOW,
+        "extensions": {},
+    })
     try:
         dashboard = controller.operator_dashboard
         assert isinstance(dashboard, OperatorDashboard)
@@ -259,11 +375,23 @@ def test_product_controller_projects_registration_from_real_loopback_backend(
             create_operator_dashboard_app(dashboard),
             client=("127.0.0.1", 50000),
         ).get("/api/snapshot")
+        permission = client.permission()
+        background = client.deliver(background_intent)
+        missing_receipt = client.standalone_receipt("missing")
+        standalone = client.deliver_standalone(standalone_intent)
+        receipt = client.standalone_receipt("standalone-action")
     finally:
+        client.close()
         controller.close()
         backend.shutdown()
         backend.server_close()
         backend_thread.join(timeout=2)
+
+    assert permission.payload.os_permission == "authorized"
+    assert background.payload.action_id == "background-action"
+    assert missing_receipt is None
+    assert receipt is not None
+    assert standalone.to_json() == receipt.to_json()
 
     assert response.status_code == 200
     communications = response.json()["panels"]["communications"]
@@ -273,22 +401,32 @@ def test_product_controller_projects_registration_from_real_loopback_backend(
         "registration_count": 3,
         "last_observed_at_ms": NOW - 25,
     }
-    registration_requests = [
+    communication_requests = [
         request
         for request in requests
-        if request["path"]
-        == "/_local-hermes/private/v1/communications/push-registration"
+        if str(request["path"]).startswith("/v1/communications/")
     ]
-    assert registration_requests == [
-        {
-            "method": "GET",
-            "path": "/_local-hermes/private/v1/communications/push-registration",
-            "authorization": "Bearer backend-private-token",
-            "user_id": USER,
-            "request_id": registration_requests[0]["request_id"],
-        }
+    assert [request["path"] for request in communication_requests] == [
+        "/v1/communications/push-registration",
+        "/v1/communications/permission",
+        "/v1/communications/background-message",
+        "/v1/communications/standalone-notification/missing",
+        "/v1/communications/standalone-notification",
+        "/v1/communications/standalone-notification/standalone-action",
     ]
-    assert registration_requests[0]["request_id"]
+    assert [request["method"] for request in communication_requests] == [
+        "GET",
+        "GET",
+        "POST",
+        "GET",
+        "POST",
+        "GET",
+    ]
+    for request in communication_requests:
+        assert request["authorization"] == "Bearer backend-private-token"
+        assert request["user_id"] == USER
+        assert request["request_id"]
+    assert len({request["request_id"] for request in communication_requests}) == 6
 
 
 def test_runtime_config_comes_from_coordinator_diagnostics(tmp_path: Path) -> None:
