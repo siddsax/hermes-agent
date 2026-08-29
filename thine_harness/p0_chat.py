@@ -2047,6 +2047,11 @@ class P0ChatController:
         )
         if self._store.has_recoverable_work() or background_scan is not None:
             self._driver.wake()
+        self.operator_dashboard: object | None = None
+
+    def attach_operator_dashboard(self, dashboard: object) -> None:
+        """Attach the in-process, loopback-only operator Interface."""
+        self.operator_dashboard = dashboard
 
     def admit(
         self,

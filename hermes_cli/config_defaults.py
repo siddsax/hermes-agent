@@ -3698,6 +3698,11 @@ DEFAULT_CONFIG = {
                 "file": "",
             },
         },
+        "operator_dashboard": {
+            "enabled": False,
+            "host": "127.0.0.1",
+            "port": 8791,
+        },
     },
 
     # Hermes Desktop (Electron app) launch options. These only affect

@@ -441,7 +441,27 @@ class RunCoordinator:
         self._lease_owner = lease_owner
         self._invocation_lock = threading.Lock()
         self._active_lock = threading.Lock()
-        self._active: tuple[str, str, InvocationControl] | None = None
+        self._active: tuple[str, str, str, str, int, InvocationControl] | None = None
+
+    def active_snapshot(self, user_id: str) -> dict[str, object] | None:
+        """Return bounded process-live state without exposing coordinator internals."""
+        with self._active_lock:
+            active = self._active
+        if active is None or active[0] != user_id:
+            return None
+        active_user, kind, logical_run_id, attempt_id, started_at_ms, control = active
+        return {
+            "user_id": active_user,
+            "kind": kind,
+            "logical_run_id": logical_run_id,
+            "attempt_id": attempt_id,
+            "started_at_ms": started_at_ms,
+            "elapsed_ms": max(0, self._clock_ms() - started_at_ms),
+            "interruption_request": {
+                "requested": control.preemption_requested,
+                "reason": control.reason,
+            },
+        }
 
     def enqueue(self, tick: Tick) -> str:
         tick_id = self._state.enqueue(tick, now_ms=self._clock_ms())
@@ -455,7 +475,7 @@ class RunCoordinator:
             with self._active_lock:
                 active = self._active
             if active is not None:
-                active_user, active_kind, control = active
+                active_user, active_kind, _, _, _, control = active
                 if active_user == payload.user_id and active_kind != "p0_user_chat":
                     control.request_preemption("p0_user_tick")
 
@@ -490,7 +510,14 @@ class RunCoordinator:
             payload = leased.tick.payload
             control = InvocationControl()
             with self._active_lock:
-                self._active = (user_id, str(payload.kind), control)
+                self._active = (
+                    user_id,
+                    str(payload.kind),
+                    str(payload.logical_run_id),
+                    leased.attempt_id,
+                    self._clock_ms(),
+                    control,
+                )
             if payload.kind != "p0_user_chat" and self._state.has_queued_p0(user_id):
                 control.request_preemption("p0_user_tick")
             renewal_stop = threading.Event()

@@ -259,6 +259,15 @@ class StandaloneNotificationToolBinding:
                 completed.append(reconciled.action_id)
         return tuple(completed)
 
+    def reconcile_one(self, user_id: str, action_id: str) -> CommunicationActionRecord:
+        """Retry exactly one standalone-notification transport reservation."""
+        record = self._dispatcher.record(action_id)
+        if record.user_id != user_id or record.action_kind != "standalone_notification":
+            raise KeyError(action_id)
+        if record.state not in {"reserved", "executing", "retry_pending"}:
+            raise ValueError("notification action is not retryable")
+        return self._deliver(record)
+
     def _deliver(self, record: CommunicationActionRecord) -> CommunicationActionRecord:
         if record.state in {"succeeded", "terminal_negative"}:
             return record
