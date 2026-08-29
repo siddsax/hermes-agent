@@ -501,6 +501,7 @@ def build_product_p0_controller(
                 schedules=schedules,
                 maintenance=maintenance,
                 communications=communications,
+                speaker_state=communications,
                 run_diagnostics=controller.coordinator.diagnostics,
                 live_run=controller.coordinator.active_snapshot,
             ),

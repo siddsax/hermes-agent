@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from thine_harness.action_dispatcher import ActionDispatcher
 from thine_harness.communications import (
     BackendCommunicationClient,
+    BackendSpeakerMappingState,
     PushRegistrationStatus,
 )
 from thine_harness.contracts.notifications import (
@@ -28,6 +29,7 @@ from thine_harness.operator_dashboard import (
     OperatorDashboardConfigurationError,
     OperatorDashboardControl,
     OperatorDashboardReadService,
+    BackendSpeakerReadPort,
     PushRegistrationReadPort,
     load_operator_dashboard_config,
 )
@@ -53,6 +55,7 @@ def _dashboard(
     run_diagnostics: Callable[[str], object] | None = None,
     live_run: Callable[[str], dict[str, object] | None] | None = None,
     communications: PushRegistrationReadPort | None = None,
+    speaker_state: BackendSpeakerReadPort | None = None,
     state: DurableRunState | None = None,
     home: HomeStateProjector | None = None,
     retry_quarantine: Callable[[str, str], str] | None = None,
@@ -76,6 +79,7 @@ def _dashboard(
             schedules=schedules,
             maintenance=maintenance,
             communications=communications,
+            speaker_state=speaker_state,
             run_diagnostics=run_diagnostics,
             live_run=live_run,
             clock_ms=lambda: NOW,
@@ -262,7 +266,7 @@ def test_product_attached_dashboard_reads_redacted_push_registration_status(
                 "last_permission_ask_at_ms": None,
                 "last_permission_ask_topic_id": None,
                 "observed_at_ms": NOW - 75,
-                "extensions": {},
+                "extensions": {"created_at_ms": NOW + 9_999_999},
             })
 
         def push_registration_status(self) -> PushRegistrationStatus:
@@ -282,7 +286,7 @@ def test_product_attached_dashboard_reads_redacted_push_registration_status(
         "last_permission_ask_at_ms": None,
         "last_permission_ask_topic_id": None,
         "observed_at_ms": NOW - 75,
-        "extensions": {},
+        "extensions": {"created_at_ms": NOW + 9_999_999},
     }
     assert panels["communications"]["data"]["push_registration"] == {
         "has_registration": True,
@@ -335,6 +339,112 @@ def test_push_registration_failure_is_communications_panel_scoped_and_redacted(
     assert communications["freshness"]["owner_observed_at_ms"] == NOW - 75
     assert panels["schedules"]["status"] == "ok"
     assert "private-device-token-must-not-leak" not in str(communications)
+
+
+def test_speakers_panel_projects_bounded_authoritative_backend_state(
+    tmp_path: Path,
+) -> None:
+    class _SpeakerState:
+        def speaker_mapping_state(
+            self, *, inspected_at_ms: int
+        ) -> BackendSpeakerMappingState:
+            assert inspected_at_ms == NOW
+            return BackendSpeakerMappingState.from_dict({
+                "schema_version": "backend-maintenance.v1",
+                "source": "authoritative_dataplane_tables",
+                "projection": False,
+                "inspected_at_ms": NOW,
+                "counts": {
+                    "speaker_mapping_events": 7,
+                    "speaker_mapping_outcomes": 6,
+                },
+                "cursors": {"speaker_mapping_normal": 41},
+                "recent": {
+                    "speaker_mappings": [
+                        {
+                            "cursor": 41,
+                            "event_id": "speaker-event-41",
+                            "kind": "speaker_tag_updated",
+                            "changed_at_ms": NOW - 20,
+                        }
+                    ]
+                },
+                "quarantines": [
+                    {
+                        "kind": "speaker_mapping",
+                        "quarantine_id": "speaker-quarantine-1",
+                        "source_id": "speaker-event-40",
+                        "recorded_at_ms": NOW - 10,
+                        "retry_count": 1,
+                    },
+                    {
+                        "kind": "interaction",
+                        "quarantine_id": "interaction-quarantine-1",
+                        "source_id": "interaction-1",
+                        "recorded_at_ms": NOW - 5,
+                        "retry_count": 0,
+                    },
+                ],
+            })
+
+    speakers = _dashboard(tmp_path, speaker_state=_SpeakerState()).snapshot()["panels"][
+        "speakers"
+    ]
+
+    assert speakers["status"] == "ok"
+    assert speakers["data"]["canonical_mappings"] == {
+        "source": "authoritative_dataplane_tables",
+        "inspected_at_ms": NOW,
+        "event_count": 7,
+        "outcome_count": 6,
+        "normal_cursor": 41,
+        "recent_mappings": [
+            {
+                "cursor": 41,
+                "event_id": "speaker-event-41",
+                "kind": "speaker_tag_updated",
+                "changed_at_ms": NOW - 20,
+            }
+        ],
+        "quarantines": [
+            {
+                "kind": "speaker_mapping",
+                "quarantine_id": "speaker-quarantine-1",
+                "source_id": "speaker-event-40",
+                "recorded_at_ms": NOW - 10,
+                "retry_count": 1,
+            }
+        ],
+    }
+    assert speakers["freshness"]["owner_observed_at_ms"] == NOW - 10
+
+
+def test_speaker_backend_failure_preserves_hermes_mapping_projection(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _FailingSpeakerState:
+        def speaker_mapping_state(
+            self, *, inspected_at_ms: int
+        ) -> BackendSpeakerMappingState:
+            del inspected_at_ms
+            raise RuntimeError("private-speaker-payload-must-not-leak")
+
+    with caplog.at_level(logging.ERROR, logger="thine_harness.operator_dashboard"):
+        speakers = _dashboard(
+            tmp_path, speaker_state=_FailingSpeakerState()
+        ).snapshot()["panels"]["speakers"]
+
+    assert speakers["status"] == "partial"
+    assert speakers["error"] == "canonical_speaker_state_unavailable"
+    assert speakers["data"]["cursor"] == 0
+    assert speakers["data"]["hermes_retained_mapping_inputs"] == []
+    assert speakers["data"]["canonical_mappings"] == {
+        "status": "error",
+        "owner": "thine.dataplane.speaker_mappings",
+        "error": "owner_read_failed:RuntimeError",
+    }
+    assert "private-speaker-payload-must-not-leak" not in str(speakers)
 
 
 def test_product_controller_projects_registration_from_real_loopback_backend(
@@ -412,6 +522,34 @@ def test_product_controller_projects_registration_from_real_loopback_backend(
                 }
                 standalone_outcomes[action_id] = outcome
                 self._respond(outcome)
+                return
+            if self.path == "/v1/maintenance/inspect":
+                assert isinstance(payload, dict)
+                assert set(payload) == {"inspected_at_ms"}
+                inspected_at_ms = payload["inspected_at_ms"]
+                assert isinstance(inspected_at_ms, int)
+                self._respond({
+                    "schema_version": "backend-maintenance.v1",
+                    "source": "authoritative_dataplane_tables",
+                    "projection": False,
+                    "inspected_at_ms": inspected_at_ms,
+                    "counts": {
+                        "speaker_mapping_events": 4,
+                        "speaker_mapping_outcomes": 3,
+                    },
+                    "cursors": {"speaker_mapping_normal": 12},
+                    "recent": {
+                        "speaker_mappings": [
+                            {
+                                "cursor": 12,
+                                "event_id": "speaker-event-12",
+                                "kind": "speaker_tag_updated",
+                                "changed_at_ms": NOW - 15,
+                            }
+                        ]
+                    },
+                    "quarantines": [],
+                })
                 return
             # The product controller's background scanner asks the same local
             # backend whether a speaker event is waiting. Empty is valid.
@@ -540,6 +678,24 @@ def test_product_controller_projects_registration_from_real_loopback_backend(
         "registration_count": 3,
         "last_observed_at_ms": NOW - 25,
     }
+    speakers = response.json()["panels"]["speakers"]
+    assert speakers["status"] == "ok"
+    assert speakers["data"]["canonical_mappings"]["normal_cursor"] == 12
+    assert speakers["data"]["canonical_mappings"]["recent_mappings"] == [
+        {
+            "cursor": 12,
+            "event_id": "speaker-event-12",
+            "kind": "speaker_tag_updated",
+            "changed_at_ms": NOW - 15,
+        }
+    ]
+    maintenance_requests = [
+        request for request in requests if request["path"] == "/v1/maintenance/inspect"
+    ]
+    assert [request["method"] for request in maintenance_requests] == ["POST"]
+    assert maintenance_requests[0]["authorization"] == "Bearer backend-private-token"
+    assert maintenance_requests[0]["user_id"] == USER
+    assert maintenance_requests[0]["request_id"]
     communication_requests = [
         request
         for request in requests
@@ -611,6 +767,7 @@ def test_runtime_config_comes_from_coordinator_diagnostics(tmp_path: Path) -> No
 
 def test_dashboard_queue_reads_newest_bounded_rows_and_targets_active_receipts(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = DurableRunState(tmp_path / "state.sqlite3")
     home = HomeStateProjector(tmp_path / "home.sqlite3", clock_ms=lambda: NOW)
@@ -628,8 +785,10 @@ def test_dashboard_queue_reads_newest_bounded_rows_and_targets_active_receipts(
                     completed_tool_results_json,
                     successful_action_receipts_json,
                     partial_visible_assistant_output
-                ) VALUES (?, ?, ?, 'continuation', 'resume', '[]', ?, '',
-                          '[]', '[]', '[]', '')
+                ) VALUES (?, ?, ?, 'continuation', 'SECRET-remaining-work', '[]', ?,
+                          'SECRET-original-input', '[{"content":"SECRET-context"}]',
+                          '[{"result":"SECRET-tool-result"}]',
+                          '[{"receipt":"SECRET-action"}]', 'SECRET-visible-output')
                 """,
                 (f"checkpoint-{index}", USER, logical_run_id, index + 1),
             )
@@ -639,7 +798,8 @@ def test_dashboard_queue_reads_newest_bounded_rows_and_targets_active_receipts(
                     receipt_id, user_id, logical_run_id, action_id,
                     intent_fingerprint, provider_reference, result_json,
                     acknowledged_at_ms
-                ) VALUES (?, ?, ?, ?, ?, 'provider', '{}', ?)
+                ) VALUES (?, ?, ?, ?, ?, 'SECRET-provider',
+                          '{"secret":"SECRET-result"}', ?)
                 """,
                 (
                     f"receipt-{index}",
@@ -662,19 +822,34 @@ def test_dashboard_queue_reads_newest_bounded_rows_and_targets_active_receipts(
             "runtime": {"model": "gpt-5.6-sol"},
         }
 
-    panels = _dashboard(
+    def unbounded_diagnostics_must_not_run(_user_id: str) -> object:
+        raise AssertionError("dashboard called unbounded diagnostics")
+
+    monkeypatch.setattr(state, "diagnostics", unbounded_diagnostics_must_not_run)
+
+    dashboard = _dashboard(
         tmp_path,
         state=state,
         home=home,
         run_diagnostics=coordinator_diagnostics,
         live_run=lambda _user_id: {"logical_run_id": "run:diagnostic-0"},
-    ).snapshot()["panels"]
+    )
+    response = TestClient(
+        create_operator_dashboard_app(dashboard), client=("127.0.0.1", 50000)
+    ).get("/api/snapshot")
+    assert response.status_code == 200
+    assert "SECRET" not in response.text
+    panels = response.json()["panels"]
 
     assert [
         item["checkpoint_id"] for item in panels["queue"]["data"]["checkpoints"]
     ] == [f"checkpoint-{index}" for index in range(54, 4, -1)]
     assert len(panels["queue"]["data"]["tool_receipts"]) == 50
+    assert len(panels["debug_timeline"]["data"]["tool_receipts"]) == 50
     assert panels["current_run"]["data"]["active"]["completed_tool_receipts"] == 1
+    assert panels["queue"]["source"] == (
+        "hermes.run_state.operator_diagnostics;hermes.maintenance.quarantines"
+    )
 
 
 def test_owner_failure_is_isolated_and_freshness_is_truthful(

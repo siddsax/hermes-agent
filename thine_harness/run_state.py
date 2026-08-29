@@ -4201,7 +4201,9 @@ class DurableRunState:
         with self._connect() as connection:
             queue_rows = connection.execute(
                 """
-                SELECT * FROM queue_items
+                SELECT tick_id, logical_run_id, kind, priority, state,
+                       enqueue_sequence, updated_at_ms
+                FROM queue_items
                 WHERE user_id = ?
                   AND state NOT IN ('completed', 'failed_terminal', 'quarantined')
                 ORDER BY priority_rank, enqueue_sequence
@@ -4211,7 +4213,9 @@ class DurableRunState:
             ).fetchall()
             lease_rows = connection.execute(
                 """
-                SELECT * FROM queue_items
+                SELECT logical_run_id, lease_owner, lease_expires_at_ms,
+                       state, updated_at_ms
+                FROM queue_items
                 WHERE user_id = ? AND lease_owner IS NOT NULL
                 ORDER BY enqueue_sequence DESC
                 LIMIT ?
@@ -4220,7 +4224,9 @@ class DurableRunState:
             ).fetchall()
             attempt_rows = connection.execute(
                 """
-                SELECT * FROM attempts WHERE user_id = ?
+                SELECT attempt_id, logical_run_id, ordinal, status,
+                       failure_code, started_at_ms, finished_at_ms
+                FROM attempts WHERE user_id = ?
                 ORDER BY started_at_ms DESC, logical_run_id DESC, ordinal DESC
                 LIMIT ?
                 """,
@@ -4228,7 +4234,8 @@ class DurableRunState:
             ).fetchall()
             checkpoint_rows = connection.execute(
                 """
-                SELECT * FROM checkpoints WHERE user_id = ?
+                SELECT checkpoint_id, logical_run_id, cause, updated_at_ms
+                FROM checkpoints WHERE user_id = ?
                 ORDER BY updated_at_ms DESC, rowid DESC
                 LIMIT ?
                 """,
@@ -4236,7 +4243,8 @@ class DurableRunState:
             ).fetchall()
             receipt_rows = connection.execute(
                 """
-                SELECT * FROM tool_receipts WHERE user_id = ?
+                SELECT receipt_id, logical_run_id, action_id, acknowledged_at_ms
+                FROM tool_receipts WHERE user_id = ?
                 ORDER BY acknowledged_at_ms DESC, receipt_id DESC
                 LIMIT ?
                 """,
@@ -4244,7 +4252,9 @@ class DurableRunState:
             ).fetchall()
             quarantine_rows = connection.execute(
                 """
-                SELECT * FROM quarantines WHERE user_id = ?
+                SELECT quarantine_id, logical_run_id, tick_id, source_kind,
+                       source_id, attempt_ordinal, failure_code, quarantined_at_ms
+                FROM quarantines WHERE user_id = ?
                 ORDER BY quarantined_at_ms DESC, quarantine_id DESC
                 LIMIT ?
                 """,
@@ -4263,65 +4273,75 @@ class DurableRunState:
                     ).fetchone()[0]
                 )
             )
-        diagnostics = StateDiagnostics(
-            queue=tuple(
-                QueueDiagnostic(
-                    tick_id=str(row["tick_id"]),
-                    logical_run_id=str(row["logical_run_id"]),
-                    kind=str(row["kind"]),
-                    priority=str(row["priority"]),
-                    state=str(row["state"]),
-                    enqueue_sequence=int(row["enqueue_sequence"]),
-                )
-                for row in queue_rows
-            ),
-            leases=tuple(
-                LeaseDiagnostic(
-                    logical_run_id=str(row["logical_run_id"]),
-                    owner=str(row["lease_owner"]),
-                    expires_at_ms=int(row["lease_expires_at_ms"]),
-                    state=str(row["state"]),
-                )
-                for row in lease_rows
-            ),
-            attempts=tuple(
-                AttemptDiagnostic(
-                    attempt_id=str(row["attempt_id"]),
-                    logical_run_id=str(row["logical_run_id"]),
-                    ordinal=int(row["ordinal"]),
-                    status=str(row["status"]),
-                    failure_code=(
-                        None
-                        if row["failure_code"] is None
-                        else str(row["failure_code"])
-                    ),
-                    started_at_ms=int(row["started_at_ms"]),
-                    finished_at_ms=(
-                        None
-                        if row["finished_at_ms"] is None
-                        else int(row["finished_at_ms"])
-                    ),
-                )
-                for row in attempt_rows
-            ),
-            checkpoints=tuple(
-                self._checkpoint_from_row(row) for row in checkpoint_rows
-            ),
-            receipts=tuple(self._receipt_from_row(row) for row in receipt_rows),
-            quarantines=tuple(
-                QuarantineDiagnostic(
-                    quarantine_id=str(row["quarantine_id"]),
-                    logical_run_id=str(row["logical_run_id"]),
-                    tick_id=str(row["tick_id"]),
-                    source_kind=str(row["source_kind"]),
-                    source_id=str(row["source_id"]),
-                    attempt_ordinal=int(row["attempt_ordinal"]),
-                    failure_code=str(row["failure_code"]),
-                    quarantined_at_ms=int(row["quarantined_at_ms"]),
-                )
-                for row in quarantine_rows
-            ),
-        )
+        queue = [
+            {
+                "tick_id": str(row["tick_id"]),
+                "logical_run_id": str(row["logical_run_id"]),
+                "kind": str(row["kind"]),
+                "priority": str(row["priority"]),
+                "state": str(row["state"]),
+                "enqueue_sequence": int(row["enqueue_sequence"]),
+            }
+            for row in queue_rows
+        ]
+        leases = [
+            {
+                "logical_run_id": str(row["logical_run_id"]),
+                "owner": str(row["lease_owner"]),
+                "expires_at_ms": int(row["lease_expires_at_ms"]),
+                "state": str(row["state"]),
+            }
+            for row in lease_rows
+        ]
+        attempts = [
+            {
+                "attempt_id": str(row["attempt_id"]),
+                "logical_run_id": str(row["logical_run_id"]),
+                "ordinal": int(row["ordinal"]),
+                "status": str(row["status"]),
+                "failure_code": (
+                    None if row["failure_code"] is None else str(row["failure_code"])
+                ),
+                "started_at_ms": int(row["started_at_ms"]),
+                "finished_at_ms": (
+                    None
+                    if row["finished_at_ms"] is None
+                    else int(row["finished_at_ms"])
+                ),
+            }
+            for row in attempt_rows
+        ]
+        checkpoints = [
+            {
+                "checkpoint_id": str(row["checkpoint_id"]),
+                "logical_run_id": str(row["logical_run_id"]),
+                "cause": str(row["cause"]),
+                "updated_at_ms": int(row["updated_at_ms"]),
+            }
+            for row in checkpoint_rows
+        ]
+        receipts = [
+            {
+                "receipt_id": str(row["receipt_id"]),
+                "logical_run_id": str(row["logical_run_id"]),
+                "action_id": str(row["action_id"]),
+                "acknowledged_at_ms": int(row["acknowledged_at_ms"]),
+            }
+            for row in receipt_rows
+        ]
+        quarantines = [
+            {
+                "quarantine_id": str(row["quarantine_id"]),
+                "logical_run_id": str(row["logical_run_id"]),
+                "tick_id": str(row["tick_id"]),
+                "source_kind": str(row["source_kind"]),
+                "source_id": str(row["source_id"]),
+                "attempt_ordinal": int(row["attempt_ordinal"]),
+                "failure_code": str(row["failure_code"]),
+                "quarantined_at_ms": int(row["quarantined_at_ms"]),
+            }
+            for row in quarantine_rows
+        ]
         observed_candidates = (
             [int(row["updated_at_ms"]) for row in queue_rows]
             + [int(row["updated_at_ms"]) for row in lease_rows]
@@ -4338,7 +4358,12 @@ class DurableRunState:
             + [int(row["quarantined_at_ms"]) for row in quarantine_rows]
         )
         return {
-            **diagnostics_as_dict(diagnostics),
+            "queue": queue,
+            "leases": leases,
+            "attempts": attempts,
+            "checkpoints": checkpoints,
+            "receipts": receipts,
+            "quarantines": quarantines,
             "active_run_receipt_count": active_receipt_count,
             "owner_observed_at_ms": (
                 max(observed_candidates) if observed_candidates else None

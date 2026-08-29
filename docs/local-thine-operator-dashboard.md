@@ -53,14 +53,21 @@ The registration summary contains only whether a registration exists, its
 count, and when one was last observed; device tokens and provider credentials
 never enter the dashboard projection.
 
+The product-attached speakers panel uses the same authenticated backend client
+to call the closed `POST /v1/maintenance/inspect` helper. It strictly projects
+only the speaker event/outcome counts, normal cursor, newest 50 mapping
+identities, and newest 50 speaker quarantines; unrelated backend maintenance
+state and mapping payload content never enter the dashboard. If that backend
+read fails, Hermes-retained mapping inputs and its cursor remain visible while
+the canonical portion is marked unavailable.
+
 Those values use the existing private backend communications client. The
-standalone dashboard has no backend client,
-so the communications panel is explicitly partial and reports both live
-permission and push registration as unavailable. A failed backend value is
-isolated and exposes neither a response body nor registration content.
+standalone dashboard has no backend client, so communications and canonical
+speaker state are explicitly partial. A failed backend value is isolated and
+exposes neither a response body nor registration content.
 
 Operator controls always use a preview followed by exact confirmation. They
-include schedule run-now/cancel, Home replacement/reactivation, explicit
+include schedule run-now/edit/cancel, Home replacement/reactivation, explicit
 quarantine/action retry when the corresponding owner helper is attached, and
 scoped/full reset. Reset execution ignores client assertions and checks the
 private service's process-lifecycle marker; it refuses while the harness is

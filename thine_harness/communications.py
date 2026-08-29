@@ -96,17 +96,18 @@ class PushRegistrationStatus:
     def from_dict(cls, payload: object) -> PushRegistrationStatus:
         if not isinstance(payload, Mapping):
             raise ValueError("push registration status must be an object")
+        typed_payload = cast(Mapping[str, object], payload)
         expected = {
             "has_registration",
             "registration_count",
             "last_observed_at_ms",
         }
-        if set(payload) != expected:
+        if set(typed_payload) != expected:
             raise ValueError("push registration status has an invalid shape")
 
-        has_registration = payload["has_registration"]
-        registration_count = payload["registration_count"]
-        last_observed_at_ms = payload["last_observed_at_ms"]
+        has_registration = typed_payload["has_registration"]
+        registration_count = typed_payload["registration_count"]
+        last_observed_at_ms = typed_payload["last_observed_at_ms"]
         if not isinstance(has_registration, bool):
             raise ValueError("has_registration must be a boolean")
         if (
@@ -134,6 +135,156 @@ class PushRegistrationStatus:
             "has_registration": self.has_registration,
             "registration_count": self.registration_count,
             "last_observed_at_ms": self.last_observed_at_ms,
+        }
+
+
+@dataclass(frozen=True)
+class BackendSpeakerMappingState:
+    """Strict redacted projection of backend-owned speaker mapping state."""
+
+    source: str
+    inspected_at_ms: int
+    event_count: int
+    outcome_count: int
+    normal_cursor: int
+    recent_mappings: tuple[dict[str, JSONValue], ...]
+    quarantines: tuple[dict[str, JSONValue], ...]
+
+    @classmethod
+    def from_dict(cls, payload: object) -> BackendSpeakerMappingState:
+        if not isinstance(payload, Mapping):
+            raise ValueError("backend maintenance inspection must be an object")
+        typed_payload = cast(Mapping[str, object], payload)
+        if typed_payload.get("schema_version") != "backend-maintenance.v1":
+            raise ValueError("backend maintenance schema version is unsupported")
+        if typed_payload.get("source") != "authoritative_dataplane_tables":
+            raise ValueError("backend maintenance source is not authoritative")
+        if typed_payload.get("projection") is not False:
+            raise ValueError("backend maintenance response must not be a projection")
+
+        inspected_at_ms = cls._nonnegative_int(
+            typed_payload.get("inspected_at_ms"), "inspected_at_ms"
+        )
+        counts = cls._mapping(typed_payload.get("counts"), "counts")
+        cursors = cls._mapping(typed_payload.get("cursors"), "cursors")
+        recent = cls._mapping(typed_payload.get("recent"), "recent")
+        recent_raw = recent.get("speaker_mappings")
+        quarantines_raw = typed_payload.get("quarantines")
+        if not isinstance(recent_raw, list) or len(recent_raw) > 50:
+            raise ValueError("recent speaker mappings must be a bounded array")
+        if not isinstance(quarantines_raw, list):
+            raise ValueError("backend quarantines must be an array")
+
+        recent_mappings = tuple(cls._recent_mapping(item) for item in recent_raw)
+        speaker_quarantines = sorted(
+            (
+                cls._speaker_quarantine(item)
+                for item in quarantines_raw
+                if cls._quarantine_kind(item) == "speaker_mapping"
+            ),
+            key=lambda item: int(item["recorded_at_ms"]),
+            reverse=True,
+        )[:50]
+        return cls(
+            source="authoritative_dataplane_tables",
+            inspected_at_ms=inspected_at_ms,
+            event_count=cls._nonnegative_int(
+                counts.get("speaker_mapping_events"), "speaker_mapping_events"
+            ),
+            outcome_count=cls._nonnegative_int(
+                counts.get("speaker_mapping_outcomes"), "speaker_mapping_outcomes"
+            ),
+            normal_cursor=cls._nonnegative_int(
+                cursors.get("speaker_mapping_normal"), "speaker_mapping_normal"
+            ),
+            recent_mappings=recent_mappings,
+            quarantines=tuple(speaker_quarantines),
+        )
+
+    def to_dict(self) -> dict[str, JSONValue]:
+        return {
+            "source": self.source,
+            "inspected_at_ms": self.inspected_at_ms,
+            "event_count": self.event_count,
+            "outcome_count": self.outcome_count,
+            "normal_cursor": self.normal_cursor,
+            "recent_mappings": list(self.recent_mappings),
+            "quarantines": list(self.quarantines),
+        }
+
+    @staticmethod
+    def _mapping(value: object, name: str) -> Mapping[str, object]:
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{name} must be an object")
+        return cast(Mapping[str, object], value)
+
+    @staticmethod
+    def _nonnegative_int(value: object, name: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a nonnegative integer")
+        return value
+
+    @staticmethod
+    def _quarantine_kind(value: object) -> object:
+        if not isinstance(value, Mapping):
+            return None
+        return cast(Mapping[str, object], value).get("kind")
+
+    @classmethod
+    def _recent_mapping(cls, value: object) -> dict[str, JSONValue]:
+        item = cls._mapping(value, "speaker mapping")
+        expected = {"cursor", "event_id", "kind", "changed_at_ms"}
+        if set(item) != expected:
+            raise ValueError("speaker mapping has an invalid shape")
+        cursor = cls._nonnegative_int(item["cursor"], "speaker mapping cursor")
+        event_id = item["event_id"]
+        kind = item["kind"]
+        changed_at_ms = item["changed_at_ms"]
+        if not isinstance(event_id, str) or not event_id:
+            raise ValueError("speaker mapping event_id must be a nonempty string")
+        if kind is not None and not isinstance(kind, str):
+            raise ValueError("speaker mapping kind must be a string or null")
+        if changed_at_ms is not None:
+            changed_at_ms = cls._nonnegative_int(
+                changed_at_ms, "speaker mapping changed_at_ms"
+            )
+        return {
+            "cursor": cursor,
+            "event_id": event_id,
+            "kind": kind,
+            "changed_at_ms": changed_at_ms,
+        }
+
+    @classmethod
+    def _speaker_quarantine(cls, value: object) -> dict[str, JSONValue]:
+        item = cls._mapping(value, "speaker mapping quarantine")
+        expected = {
+            "kind",
+            "quarantine_id",
+            "source_id",
+            "recorded_at_ms",
+            "retry_count",
+        }
+        if set(item) != expected:
+            raise ValueError("speaker mapping quarantine has an invalid shape")
+        quarantine_id = item["quarantine_id"]
+        source_id = item["source_id"]
+        if item["kind"] != "speaker_mapping":
+            raise ValueError("speaker mapping quarantine has the wrong kind")
+        if not isinstance(quarantine_id, str) or not quarantine_id:
+            raise ValueError("speaker quarantine_id must be a nonempty string")
+        if not isinstance(source_id, str) or not source_id:
+            raise ValueError("speaker source_id must be a nonempty string")
+        return {
+            "kind": "speaker_mapping",
+            "quarantine_id": quarantine_id,
+            "source_id": source_id,
+            "recorded_at_ms": cls._nonnegative_int(
+                item["recorded_at_ms"], "speaker recorded_at_ms"
+            ),
+            "retry_count": cls._nonnegative_int(
+                item["retry_count"], "speaker retry_count"
+            ),
         }
 
 
@@ -190,6 +341,17 @@ class BackendCommunicationClient:
         )
         response.raise_for_status()
         return PushRegistrationStatus.from_dict(self._json_object(response))
+
+    def speaker_mapping_state(
+        self, *, inspected_at_ms: int
+    ) -> BackendSpeakerMappingState:
+        response = self._client.post(
+            "/v1/maintenance/inspect",
+            headers=self._headers(),
+            json={"inspected_at_ms": inspected_at_ms},
+        )
+        response.raise_for_status()
+        return BackendSpeakerMappingState.from_dict(self._json_object(response))
 
     def deliver(self, intent: NotificationIntent) -> NotificationOutcome:
         response = self._client.post(
