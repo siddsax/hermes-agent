@@ -403,6 +403,37 @@ class TranscriptClaimNotFound(LookupError):
     """The backend has no durable claim for this request identity yet."""
 
 
+@dataclass(frozen=True)
+class TranscriptAvailability:
+    """Content-free backend hint used only to enqueue an availability Tick."""
+
+    available: bool
+    source_hint: str | None
+    occurred_at_ms: int | None
+
+    @classmethod
+    def from_dict(cls, value: dict[str, JSONValue]) -> "TranscriptAvailability":
+        _require_exact_fields(
+            value,
+            {"available", "source_hint", "occurred_at_ms"},
+            label="transcript availability response",
+        )
+        available = _require_boolean(value["available"], label="available")
+        source_hint = value["source_hint"]
+        occurred_at_ms = value["occurred_at_ms"]
+        if available:
+            return cls(
+                available=True,
+                source_hint=_require_string(source_hint, label="source_hint"),
+                occurred_at_ms=_require_integer(
+                    occurred_at_ms, label="occurred_at_ms"
+                ),
+            )
+        if source_hint is not None or occurred_at_ms is not None:
+            raise ValueError("unavailable transcript hint must carry null metadata")
+        return cls(available=False, source_hint=None, occurred_at_ms=None)
+
+
 class BackendTranscriptClient:
     """Typed loopback client exposing only frozen transcript helper operations."""
 
@@ -448,6 +479,11 @@ class BackendTranscriptClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def availability(self) -> TranscriptAvailability:
+        return TranscriptAvailability.from_dict(
+            self._post("/v1/transcripts/availability", {})
+        )
 
     def claim(self, request: TranscriptClaimRequest) -> TranscriptClaim:
         return TranscriptClaim.from_dict(
@@ -586,6 +622,25 @@ class TranscriptInputPump:
         self._state = state
         self._transcript_port = transcript_port
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
+
+    def scan_available(self, user_id: str) -> str | None:
+        availability_reader = getattr(self._transcript_port, "availability", None)
+        if not callable(availability_reader):
+            raise TypeError("transcript port does not expose availability")
+        availability = availability_reader()
+        if not isinstance(availability, TranscriptAvailability):
+            raise TypeError("transcript availability has an invalid type")
+        if not availability.available:
+            return None
+        if availability.source_hint is None or availability.occurred_at_ms is None:
+            raise ValueError("available transcript hint is incomplete")
+        now_ms = self._clock_ms()
+        return self.enqueue_availability(
+            user_id=user_id,
+            source_hint=availability.source_hint,
+            occurred_at_ms=availability.occurred_at_ms,
+            received_at_ms=now_ms,
+        )
 
     def enqueue_availability(
         self,
@@ -812,6 +867,7 @@ __all__ = [
     "FakeTranscriptNoActionRuntime",
     "PreparedTranscriptInput",
     "TranscriptClaimNotFound",
+    "TranscriptAvailability",
     "TranscriptInputPump",
     "TranscriptQuarantineRequest",
     "TranscriptQuarantineInspectionResult",

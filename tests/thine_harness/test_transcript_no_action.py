@@ -14,6 +14,7 @@ from thine_harness.contracts.transcripts import (
 from thine_harness.input_pump import (
     BackendTranscriptClient,
     FakeTranscriptNoActionRuntime,
+    TranscriptAvailability,
     TranscriptClaimNotFound,
     TranscriptInputPump,
 )
@@ -123,6 +124,14 @@ class _TranscriptPort:
         self.lookup_requests: list[str] = []
         self.ack_requests: list[tuple[str, str, str]] = []
         self.claim_by_request: dict[str, TranscriptClaim] = {}
+        self.available = False
+
+    def availability(self):
+        return TranscriptAvailability(
+            available=self.available,
+            source_hint="audio-buffer:41" if self.available else None,
+            occurred_at_ms=90 if self.available else None,
+        )
 
     def claim(self, request):
         self.claim_requests.append(request)
@@ -276,6 +285,30 @@ def test_transcript_is_claimed_only_after_lease_then_no_action_is_finalized_and_
     assert coordinator.run_next("daily-user") is None
 
 
+def test_transcript_availability_scan_enqueues_once_without_claiming(tmp_path: Path):
+    transcript = _TranscriptPort()
+    transcript.available = True
+    state, pump, coordinator = _coordinator(
+        tmp_path / "state.sqlite3",
+        transcript_port=transcript,
+        runtime=FakeTranscriptNoActionRuntime(),
+        feature_port=_NoFeatureEffects(),
+        clock=lambda: 100,
+    )
+
+    first = pump.scan_available("daily-user")
+    second = pump.scan_available("daily-user")
+
+    assert first == second
+    assert transcript.claim_requests == []
+    queued = coordinator.diagnostics("daily-user").queue
+    assert len(queued) == 1
+    assert queued[0].tick_id == first
+    assert state.transcript_run_record(
+        user_id="daily-user", logical_run_id=queued[0].logical_run_id
+    ).queue_state == "queued"
+
+
 def test_lost_claim_response_reuses_request_and_does_not_duplicate_inference(
     tmp_path: Path,
 ):
@@ -370,6 +403,15 @@ def test_backend_transcript_client_uses_only_explicit_loopback_helpers():
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         body = __import__("json").loads(request.content)
+        if request.url.path == "/v1/transcripts/availability":
+            return httpx.Response(
+                200,
+                json={
+                    "available": True,
+                    "source_hint": "audio-buffer:41",
+                    "occurred_at_ms": 90,
+                },
+            )
         if request.url.path == "/v1/transcripts/claims":
             return httpx.Response(
                 200,
@@ -404,14 +446,21 @@ def test_backend_transcript_client_uses_only_explicit_loopback_helpers():
     )
 
     try:
+        availability = client.availability()
         claim = client.claim(request)
         ack = client.acknowledge(claim.payload.claim_id, "run-1", "0")
     finally:
         client.close()
 
+    assert availability == TranscriptAvailability(
+        available=True,
+        source_hint="audio-buffer:41",
+        occurred_at_ms=90,
+    )
     assert claim.payload.claim_request_id == "claim-request-1"
     assert ack.payload.canonical_transcript_retained is True
     assert [request.url.path for request in requests] == [
+        "/v1/transcripts/availability",
         "/v1/transcripts/claims",
         "/v1/transcripts/claims/ack",
     ]
