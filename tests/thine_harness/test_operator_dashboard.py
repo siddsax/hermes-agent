@@ -52,7 +52,7 @@ def _dashboard(
     tmp_path: Path,
     *,
     harness_stopped: bool = False,
-    run_diagnostics: Callable[[str], object] | None = None,
+    runtime_configuration: Callable[[], object] | None = None,
     live_run: Callable[[str], dict[str, object] | None] | None = None,
     communications: PushRegistrationReadPort | None = None,
     speaker_state: BackendSpeakerReadPort | None = None,
@@ -80,7 +80,7 @@ def _dashboard(
             maintenance=maintenance,
             communications=communications,
             speaker_state=speaker_state,
-            run_diagnostics=run_diagnostics,
+            runtime_configuration=runtime_configuration,
             live_run=live_run,
             clock_ms=lambda: NOW,
         ),
@@ -243,6 +243,18 @@ def test_snapshot_has_bounded_owner_sourced_panels_and_explicit_gaps(
         snapshot["panels"]["transcripts"]["data"]["canonical_transcripts"]["status"]
         == "unavailable"
     )
+    assert (
+        snapshot["panels"]["transcripts"]["freshness"]["components"][
+            "canonical_transcripts"
+        ]["status"]
+        == "unavailable"
+    )
+    assert (
+        snapshot["panels"]["home"]["freshness"]["components"]["last_mobile_ack"][
+            "status"
+        ]
+        == "unavailable"
+    )
     assert "hermes_retained_mapping_inputs" in snapshot["panels"]["speakers"]["data"]
     assert snapshot["panels"]["working_memory"]["data"]["restore_available"] is False
     communications = snapshot["panels"]["communications"]
@@ -337,6 +349,10 @@ def test_push_registration_failure_is_communications_panel_scoped_and_redacted(
     }
     assert "actions" in communications["data"]
     assert communications["freshness"]["owner_observed_at_ms"] == NOW - 75
+    assert (
+        communications["freshness"]["components"]["push_registration"]["status"]
+        == "error"
+    )
     assert panels["schedules"]["status"] == "ok"
     assert "private-device-token-must-not-leak" not in str(communications)
 
@@ -416,6 +432,10 @@ def test_speakers_panel_projects_bounded_authoritative_backend_state(
             }
         ],
     }
+    assert (
+        speakers["freshness"]["components"]["canonical_mappings"]["status"]
+        == "observed"
+    )
     assert speakers["freshness"]["owner_observed_at_ms"] == NOW - 10
 
 
@@ -444,7 +464,68 @@ def test_speaker_backend_failure_preserves_hermes_mapping_projection(
         "owner": "thine.dataplane.speaker_mappings",
         "error": "owner_read_failed:RuntimeError",
     }
+    assert (
+        speakers["freshness"]["components"]["canonical_mappings"]["status"] == "error"
+    )
     assert "private-speaker-payload-must-not-leak" not in str(speakers)
+
+
+def test_speaker_hermes_failure_preserves_authoritative_backend_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SpeakerState:
+        def speaker_mapping_state(
+            self, *, inspected_at_ms: int
+        ) -> BackendSpeakerMappingState:
+            return BackendSpeakerMappingState.from_dict({
+                "schema_version": "backend-maintenance.v1",
+                "source": "authoritative_dataplane_tables",
+                "projection": False,
+                "inspected_at_ms": inspected_at_ms,
+                "counts": {
+                    "speaker_mapping_events": 2,
+                    "speaker_mapping_outcomes": 2,
+                },
+                "cursors": {"speaker_mapping_normal": 9},
+                "recent": {
+                    "speaker_mappings": [
+                        {
+                            "cursor": 9,
+                            "event_id": "speaker-event-9",
+                            "kind": "speaker_tag_updated",
+                            "changed_at_ms": NOW - 30,
+                        }
+                    ]
+                },
+                "quarantines": [],
+            })
+
+    def fail_cursor(_self: DurableRunState, _user_id: str) -> int:
+        raise RuntimeError("local-speaker-secret-must-not-leak")
+
+    monkeypatch.setattr(DurableRunState, "speaker_cursor", fail_cursor)
+    response = TestClient(
+        create_operator_dashboard_app(
+            _dashboard(tmp_path, speaker_state=_SpeakerState())
+        ),
+        client=("127.0.0.1", 50000),
+    ).get("/api/snapshot")
+
+    assert response.status_code == 200
+    assert "local-speaker-secret-must-not-leak" not in response.text
+    speakers = response.json()["panels"]["speakers"]
+    assert speakers["status"] == "partial"
+    assert speakers["error"] == "hermes_speaker_state_unavailable"
+    assert speakers["data"]["cursor"] == {
+        "status": "error",
+        "owner": "hermes.run_state.speaker_cursor",
+        "error": "owner_read_failed:RuntimeError",
+    }
+    assert speakers["data"]["hermes_retained_mapping_inputs"] == []
+    assert speakers["data"]["canonical_mappings"]["normal_cursor"] == 9
+    assert speakers["freshness"]["owner_observed_at_ms"] == NOW - 30
+    assert speakers["freshness"]["components"]["cursor"]["status"] == "error"
 
 
 def test_product_controller_projects_registration_from_real_loopback_backend(
@@ -645,6 +726,15 @@ def test_product_controller_projects_registration_from_real_loopback_backend(
         "created_at_ms": NOW,
         "extensions": {},
     })
+
+    def unbounded_diagnostics_must_not_run(
+        _self: DurableRunState, _user_id: str
+    ) -> object:
+        raise AssertionError("product dashboard called unbounded diagnostics")
+
+    monkeypatch.setattr(
+        DurableRunState, "diagnostics", unbounded_diagnostics_must_not_run
+    )
     try:
         dashboard = controller.operator_dashboard
         assert isinstance(dashboard, OperatorDashboard)
@@ -689,6 +779,9 @@ def test_product_controller_projects_registration_from_real_loopback_backend(
             "changed_at_ms": NOW - 15,
         }
     ]
+    current_run = response.json()["panels"]["current_run"]
+    assert current_run["status"] == "ok"
+    assert current_run["data"]["runtime"]["model"] == "gpt-5.6-sol"
     maintenance_requests = [
         request for request in requests if request["path"] == "/v1/maintenance/inspect"
     ]
@@ -726,34 +819,22 @@ def test_product_controller_projects_registration_from_real_loopback_backend(
     assert len({request["request_id"] for request in communication_requests}) == 7
 
 
-def test_runtime_config_comes_from_coordinator_diagnostics(tmp_path: Path) -> None:
-    def diagnostics(_user_id: str) -> dict[str, object]:
+def test_runtime_config_comes_from_dedicated_coordinator_helper(tmp_path: Path) -> None:
+    def runtime_configuration() -> dict[str, object]:
         return {
-            "queue": [],
-            "leases": [],
-            "attempts": [],
-            "checkpoints": [],
-            "receipts": [
-                {"logical_run_id": "run-live"},
-                {"logical_run_id": "run-other"},
-                {"logical_run_id": "run-live"},
-            ],
-            "quarantines": [],
-            "runtime": {
-                "provider": "test-provider",
-                "model": "non-default-model",
-                "api_mode": "test-mode",
-                "reasoning_effort": "high",
-                "context_window_tokens": 1234,
-                "tool_search_enabled": False,
-                "tool_search_listing": True,
-                "tool_namespaces": ["test-tools"],
-            },
+            "provider": "test-provider",
+            "model": "non-default-model",
+            "api_mode": "test-mode",
+            "reasoning_effort": "high",
+            "context_window_tokens": 1234,
+            "tool_search_enabled": False,
+            "tool_search_listing": True,
+            "tool_namespaces": ["test-tools"],
         }
 
     panel = _dashboard(
         tmp_path,
-        run_diagnostics=diagnostics,
+        runtime_configuration=runtime_configuration,
         live_run=lambda _user_id: {
             "logical_run_id": "run-live",
             "interruption_request": {"requested": False, "reason": None},
@@ -811,15 +892,9 @@ def test_dashboard_queue_reads_newest_bounded_rows_and_targets_active_receipts(
                 ),
             )
 
-    def coordinator_diagnostics(_user_id: str) -> dict[str, object]:
+    def runtime_configuration() -> dict[str, object]:
         return {
-            "queue": [],
-            "leases": [],
-            "attempts": [],
-            "checkpoints": [],
-            "receipts": [],
-            "quarantines": [],
-            "runtime": {"model": "gpt-5.6-sol"},
+            "model": "gpt-5.6-sol",
         }
 
     def unbounded_diagnostics_must_not_run(_user_id: str) -> object:
@@ -831,7 +906,7 @@ def test_dashboard_queue_reads_newest_bounded_rows_and_targets_active_receipts(
         tmp_path,
         state=state,
         home=home,
-        run_diagnostics=coordinator_diagnostics,
+        runtime_configuration=runtime_configuration,
         live_run=lambda _user_id: {"logical_run_id": "run:diagnostic-0"},
     )
     response = TestClient(
