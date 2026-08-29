@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import logging
 from pathlib import Path
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
 
 from thine_harness.action_dispatcher import ActionDispatcher
+from thine_harness.communications import PushRegistrationStatus
 from thine_harness.home_state import HomeStateProjector
 from thine_harness.maintenance import AuthoritativeStateReader, RetentionResetService
 from thine_harness.operator_dashboard import (
@@ -15,9 +19,12 @@ from thine_harness.operator_dashboard import (
     OperatorDashboardConfigurationError,
     OperatorDashboardControl,
     OperatorDashboardReadService,
+    PushRegistrationReadPort,
     load_operator_dashboard_config,
 )
 from thine_harness.operator_dashboard_server import create_operator_dashboard_app
+from thine_harness.private_server import build_product_p0_controller
+from thine_harness.private_topology import BackendPrivateConfig, PrivateServiceConfig
 from thine_harness.run_state import DurableRunState
 from thine_harness.schedules import OneShotScheduleService
 from thine_harness.topics_preferences import TopicPreferenceService
@@ -33,6 +40,7 @@ def _dashboard(
     harness_stopped: bool = False,
     run_diagnostics: Callable[[str], object] | None = None,
     live_run: Callable[[str], dict[str, object] | None] | None = None,
+    communications: PushRegistrationReadPort | None = None,
 ) -> OperatorDashboard:
     tmp_path.mkdir(parents=True, exist_ok=True)
     state = DurableRunState(tmp_path / "run-state.sqlite3")
@@ -48,6 +56,7 @@ def _dashboard(
             topics=TopicPreferenceService(state, clock_ms=lambda: NOW),
             schedules=schedules,
             maintenance=maintenance,
+            communications=communications,
             run_diagnostics=run_diagnostics,
             live_run=live_run,
             clock_ms=lambda: NOW,
@@ -130,6 +139,156 @@ def test_snapshot_has_bounded_owner_sourced_panels_and_explicit_gaps(
     )
     assert "hermes_retained_mapping_inputs" in snapshot["panels"]["speakers"]["data"]
     assert snapshot["panels"]["working_memory"]["data"]["restore_available"] is False
+    communications = snapshot["panels"]["communications"]
+    assert communications["status"] == "partial"
+    assert communications["data"]["push_registration"] == {
+        "status": "unavailable",
+        "owner": "thine.backend.push_transport",
+        "reason": "standalone dashboard has no backend communication client",
+    }
+
+
+def test_product_attached_dashboard_reads_redacted_push_registration_status(
+    tmp_path: Path,
+) -> None:
+    class _Communications:
+        def push_registration_status(self) -> PushRegistrationStatus:
+            return PushRegistrationStatus.from_dict({
+                "has_registration": True,
+                "registration_count": 2,
+                "last_observed_at_ms": NOW - 50,
+            })
+
+    panels = _dashboard(tmp_path, communications=_Communications()).snapshot()["panels"]
+
+    assert panels["communications"]["status"] == "ok"
+    assert panels["communications"]["data"]["push_registration"] == {
+        "has_registration": True,
+        "registration_count": 2,
+        "last_observed_at_ms": NOW - 50,
+    }
+
+
+def test_push_registration_failure_is_communications_panel_scoped_and_redacted(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _FailingCommunications:
+        def push_registration_status(self) -> PushRegistrationStatus:
+            raise RuntimeError("private-device-token-must-not-leak")
+
+    with caplog.at_level(logging.ERROR, logger="thine_harness.operator_dashboard"):
+        panels = _dashboard(
+            tmp_path, communications=_FailingCommunications()
+        ).snapshot()["panels"]
+
+    communications = panels["communications"]
+    assert communications["status"] == "error"
+    assert communications["error"] == "owner_read_failed:RuntimeError"
+    assert communications["data"] == {}
+    assert communications["freshness"]["status"] == "unknown"
+    assert panels["schedules"]["status"] == "ok"
+    assert "private-device-token-must-not-leak" not in str(communications)
+
+
+def test_product_controller_projects_registration_from_real_loopback_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, str | None]] = []
+
+    class _BackendHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            requests.append({
+                "method": "GET",
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "user_id": self.headers.get("X-Thine-Firebase-UID"),
+                "request_id": self.headers.get("X-Request-ID"),
+            })
+            self._respond({
+                "has_registration": True,
+                "registration_count": 3,
+                "last_observed_at_ms": NOW - 25,
+            })
+
+        def do_POST(self) -> None:
+            # The product controller's background scanner asks the same local
+            # backend whether a speaker event is waiting. Empty is valid.
+            self._respond(None)
+
+        def _respond(self, payload: object) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *args: object) -> None:
+            del args
+
+    backend = ThreadingHTTPServer(("127.0.0.1", 0), _BackendHandler)
+    backend_thread = threading.Thread(target=backend.serve_forever, daemon=True)
+    backend_thread.start()
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    controller = build_product_p0_controller(
+        private_config=PrivateServiceConfig(
+            enabled=True,
+            host="127.0.0.1",
+            port=8789,
+            firebase_uid=USER,
+            request_timeout_seconds=2,
+            credential="private-control-token",
+        ),
+        backend_config=BackendPrivateConfig(
+            origin=f"http://127.0.0.1:{backend.server_address[1]}",
+            firebase_uid=USER,
+            request_timeout_seconds=2,
+            credential="backend-private-token",
+        ),
+        database_path=hermes_home / "thine-harness" / "run-state.sqlite3",
+        runtime_factory=lambda: object(),  # Not loaded without an admitted Tick.
+    )
+    try:
+        dashboard = controller.operator_dashboard
+        assert isinstance(dashboard, OperatorDashboard)
+        response = TestClient(
+            create_operator_dashboard_app(dashboard),
+            client=("127.0.0.1", 50000),
+        ).get("/api/snapshot")
+    finally:
+        controller.close()
+        backend.shutdown()
+        backend.server_close()
+        backend_thread.join(timeout=2)
+
+    assert response.status_code == 200
+    communications = response.json()["panels"]["communications"]
+    assert communications["status"] == "ok"
+    assert communications["data"]["push_registration"] == {
+        "has_registration": True,
+        "registration_count": 3,
+        "last_observed_at_ms": NOW - 25,
+    }
+    registration_requests = [
+        request
+        for request in requests
+        if request["path"]
+        == "/_local-hermes/private/v1/communications/push-registration"
+    ]
+    assert registration_requests == [
+        {
+            "method": "GET",
+            "path": "/_local-hermes/private/v1/communications/push-registration",
+            "authorization": "Bearer backend-private-token",
+            "user_id": USER,
+            "request_id": registration_requests[0]["request_id"],
+        }
+    ]
+    assert registration_requests[0]["request_id"]
 
 
 def test_runtime_config_comes_from_coordinator_diagnostics(tmp_path: Path) -> None:

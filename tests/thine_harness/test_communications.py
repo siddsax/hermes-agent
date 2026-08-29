@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import httpx
+import pytest
 
 from thine_harness.action_dispatcher import (
     ActionDispatcher,
@@ -16,6 +18,7 @@ from thine_harness.communications import (
     COMMUNICATION_STATUS_TOOL_NAME,
     COMMUNICATION_STATUS_TOOL_SCHEMA,
     CommunicationToolBinding,
+    PushRegistrationStatus,
 )
 from thine_harness.contracts.notifications import (
     NotificationIntent,
@@ -411,6 +414,105 @@ def test_backend_client_posts_only_frozen_intent_and_replays_exactly():
     posted = json.loads(requests[1].content)
     assert posted == intent.to_dict()
     assert requests[1].headers["x-thine-firebase-uid"] == "daily-user"
+
+
+def test_push_registration_status_is_a_strict_frozen_wire_value() -> None:
+    status = PushRegistrationStatus.from_dict({
+        "has_registration": True,
+        "registration_count": 2,
+        "last_observed_at_ms": 1_900_000_000_000,
+    })
+
+    assert status.to_dict() == {
+        "has_registration": True,
+        "registration_count": 2,
+        "last_observed_at_ms": 1_900_000_000_000,
+    }
+    with pytest.raises(FrozenInstanceError):
+        status.registration_count = 3  # type: ignore[misc]
+
+    invalid_payloads: tuple[object, ...] = (
+        [],
+        {
+            "has_registration": True,
+            "registration_count": 1,
+        },
+        {
+            "has_registration": True,
+            "registration_count": 1,
+            "last_observed_at_ms": 1,
+            "device_token": "must-not-be-accepted",
+        },
+        {
+            "has_registration": 1,
+            "registration_count": 1,
+            "last_observed_at_ms": 1,
+        },
+        {
+            "has_registration": True,
+            "registration_count": True,
+            "last_observed_at_ms": 1,
+        },
+        {
+            "has_registration": True,
+            "registration_count": -1,
+            "last_observed_at_ms": 1,
+        },
+        {
+            "has_registration": True,
+            "registration_count": 1,
+            "last_observed_at_ms": False,
+        },
+        {
+            "has_registration": True,
+            "registration_count": 1,
+            "last_observed_at_ms": -1,
+        },
+    )
+    for payload in invalid_payloads:
+        with pytest.raises(ValueError):
+            PushRegistrationStatus.from_dict(payload)
+
+
+def test_backend_client_reads_redacted_push_registration_status() -> None:
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "has_registration": True,
+                "registration_count": 2,
+                "last_observed_at_ms": 1_900_000_000_000,
+            },
+        )
+
+    client = BackendCommunicationClient(
+        origin="http://127.0.0.1:8790",
+        credential="private-token",
+        user_id="daily-user",
+        transport=httpx.MockTransport(handle),
+    )
+    try:
+        status = client.push_registration_status()
+    finally:
+        client.close()
+
+    assert status.to_dict() == {
+        "has_registration": True,
+        "registration_count": 2,
+        "last_observed_at_ms": 1_900_000_000_000,
+    }
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.method == "GET"
+    assert request.url.path == (
+        "/_local-hermes/private/v1/communications/push-registration"
+    )
+    assert request.headers["authorization"] == "Bearer private-token"
+    assert request.headers["x-thine-firebase-uid"] == "daily-user"
+    assert request.headers["x-request-id"]
 
 
 def test_background_router_activates_tools_only_for_the_routed_tick(tmp_path: Path):

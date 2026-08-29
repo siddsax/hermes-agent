@@ -31,9 +31,18 @@ process-local token embedded in the same-origin page.
 The page shows queue/lease/attempt/checkpoint/receipt state, current-run status,
 transcript claims, Working Memory and its last 50 versions, Home head/history,
 interaction and speaker ingestion state, communication delivery and permission
-state, schedules, topics/preferences, retention/reset policy, and the last 50
-redacted invocation records. Each panel names its authoritative helper and
-reports freshness and errors.
+state, a redacted push-registration summary, schedules, topics/preferences,
+retention/reset policy, and the last 50 redacted invocation records. Each panel
+names its authoritative helper and reports freshness and errors. The
+push-registration summary contains only whether a registration exists, its
+count, and when one was last observed; device tokens and provider credentials
+never enter the dashboard projection.
+
+The product-attached dashboard reads that summary through the existing private
+backend communications client. The standalone dashboard has no backend client,
+so the communications panel is explicitly partial and reports push registration
+as unavailable. A failed backend read is isolated to the communications panel
+and exposes no response body or registration content.
 
 Operator controls always use a preview followed by exact confirmation. They
 include schedule run-now/cancel, Home replacement/reactivation, explicit
