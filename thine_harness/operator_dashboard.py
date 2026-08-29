@@ -16,7 +16,8 @@ from typing import Any, Protocol, cast
 import uuid
 
 from .action_dispatcher import ActionDispatcher
-from .communications import PushRegistrationStatus
+from .communications import BackendSpeakerMappingState, PushRegistrationStatus
+from .contracts.notifications import NotificationPermission
 from .home_state import HomeStateProjector
 from .interactions import inspect_interaction_inputs
 from .maintenance import (
@@ -26,7 +27,7 @@ from .maintenance import (
     RetentionResetService,
 )
 from .schedules import OneShotScheduleService
-from .run_state import DurableRunState, diagnostics_as_dict
+from .run_state import DurableRunState
 from .topics_preferences import TopicPreferenceService
 
 
@@ -53,7 +54,15 @@ class ActionRetryPort(Protocol):
 
 
 class PushRegistrationReadPort(Protocol):
+    def permission(self) -> NotificationPermission: ...
+
     def push_registration_status(self) -> PushRegistrationStatus: ...
+
+
+class BackendSpeakerReadPort(Protocol):
+    def speaker_mapping_state(
+        self, *, inspected_at_ms: int
+    ) -> BackendSpeakerMappingState: ...
 
 
 def load_operator_dashboard_config(
@@ -114,7 +123,8 @@ class OperatorDashboardReadService:
         schedules: OneShotScheduleService,
         maintenance: RetentionResetService,
         communications: PushRegistrationReadPort | None = None,
-        run_diagnostics: Callable[[str], object] | None = None,
+        speaker_state: BackendSpeakerReadPort | None = None,
+        runtime_configuration: Callable[[], object] | None = None,
         live_run: Callable[[str], Mapping[str, object] | None] | None = None,
         clock_ms: Callable[[], int] | None = None,
     ) -> None:
@@ -125,7 +135,8 @@ class OperatorDashboardReadService:
         self._schedules = schedules
         self._maintenance = maintenance
         self._communications = communications
-        self._run_diagnostics = run_diagnostics
+        self._speaker_state = speaker_state
+        self._runtime_configuration_reader = runtime_configuration
         self._live_run = live_run
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
 
@@ -142,25 +153,20 @@ class OperatorDashboardReadService:
         panels = {
             "queue": self._capture(
                 now_ms,
-                (
-                    "hermes.run_coordinator.diagnostics"
-                    if self._run_diagnostics is not None
-                    else "hermes.run_state.diagnostics"
-                )
-                + ";hermes.maintenance.quarantines",
+                "hermes.run_state.operator_diagnostics;hermes.maintenance.quarantines",
                 lambda: self._queue_data(user_id, limit),
             ),
             "current_run": self._capture(
                 now_ms,
                 (
-                    "hermes.run_coordinator.diagnostics+active_snapshot"
-                    if self._run_diagnostics is not None
+                    "hermes.run_coordinator.runtime_configuration+active_snapshot"
+                    if self._runtime_configuration_reader is not None
                     else "hermes.run_coordinator.unavailable"
                 ),
                 lambda: self._current_run_data(user_id),
                 partial_error=(
                     "standalone dashboard is not attached to the live coordinator"
-                    if self._run_diagnostics is None
+                    if self._runtime_configuration_reader is None
                     else None
                 ),
             ),
@@ -215,31 +221,8 @@ class OperatorDashboardReadService:
                     "retention_days": 7,
                 },
             ),
-            "speakers": self._capture(
-                now_ms,
-                "hermes.run_state.speaker_cursor+recent_speaker_mappings",
-                lambda: {
-                    "cursor": self._state.speaker_cursor(user_id),
-                    "hermes_retained_mapping_inputs": list(
-                        self._state.recent_speaker_mappings(user_id, limit=limit)
-                    ),
-                    "canonical_mappings": unavailable(
-                        "thine.dataplane",
-                        "backend owner has no bounded dashboard read helper in this process",
-                    ),
-                },
-                partial_error="canonical speaker mappings are backend-owned and unavailable here",
-            ),
-            "communications": self._capture(
-                now_ms,
-                "hermes.action_dispatcher.operator_snapshot;hermes.topic_preference_service.inspect;thine.backend.push_transport.push_registration",
-                lambda: self._communications_data(user_id, limit),
-                partial_error=(
-                    "push registration status is unavailable in standalone mode"
-                    if self._communications is None
-                    else None
-                ),
-            ),
+            "speakers": self._speakers_panel(now_ms, user_id, limit),
+            "communications": self._communications_panel(now_ms, user_id, limit),
             "schedules": self._capture(
                 now_ms,
                 "hermes.one_shot_schedule_service.list",
@@ -256,9 +239,9 @@ class OperatorDashboardReadService:
             ),
             "retention_reset": self._capture(
                 now_ms,
-                "hermes.retention_reset_service.retention_policy",
+                "hermes.retention_reset_service.operator_snapshot",
                 lambda: {
-                    "policy": self._maintenance.retention_policy(),
+                    **self._maintenance.operator_snapshot(user_id, limit=limit),
                     "reset_scopes": [
                         "working_memory_topics",
                         "queues_schedules_receipts",
@@ -271,13 +254,13 @@ class OperatorDashboardReadService:
             ),
             "debug_timeline": self._capture(
                 now_ms,
-                "hermes.maintenance.debug_invocations;hermes.run_state.diagnostics",
+                "hermes.maintenance.debug_invocations;hermes.run_state.operator_diagnostics",
                 lambda: {
                     "redacted": True,
                     "invocations": self._reader.debug_invocations(user_id, limit=limit),
-                    "tool_receipts": diagnostics_as_dict(
-                        self._state.diagnostics(user_id)
-                    )["receipts"][-limit:],
+                    "tool_receipts": self._state.operator_diagnostics(
+                        user_id, limit=limit
+                    )["receipts"],
                 },
             ),
         }
@@ -292,80 +275,374 @@ class OperatorDashboardReadService:
             "panels": panels,
         }
 
-    def _communications_data(self, user_id: str, limit: int) -> dict[str, object]:
+    def _communications_panel(
+        self, now_ms: int, user_id: str, limit: int
+    ) -> dict[str, object]:
+        source = (
+            "hermes.action_dispatcher.operator_snapshot;"
+            "hermes.topic_preference_service.inspect;"
+            "thine.backend.push_transport.permission+push_registration"
+        )
+        try:
+            local = self._actions.operator_snapshot(user_id, limit=limit)
+            last_permission_request = self._topics.inspect(
+                user_id, "enable_notifications"
+            )
+        except Exception:
+            logger.error(
+                "operator dashboard owner read failed",
+                extra={"dashboard_source": source},
+                exc_info=True,
+            )
+            return self._panel(
+                now_ms,
+                source,
+                {},
+                observed_at_ms=None,
+                status="error",
+                error="owner_read_failed",
+            )
+
+        backend_permission: object
         push_registration: object
+        value_failed = False
         if self._communications is None:
+            backend_permission = unavailable(
+                "thine.backend.push_transport",
+                "standalone dashboard has no backend communication client",
+            )
             push_registration = unavailable(
                 "thine.backend.push_transport",
                 "standalone dashboard has no backend communication client",
             )
+            value_failed = True
         else:
-            push_registration = (
-                self._communications.push_registration_status().to_dict()
+            communications = self._communications
+            assert communications is not None
+            backend_permission, permission_failed = self._communication_value(
+                "permission",
+                lambda: communications.permission().to_dict(),
             )
-        return {
-            **self._actions.operator_snapshot(user_id, limit=limit),
-            "last_permission_request": self._topics.inspect(
-                user_id, "enable_notifications"
-            ),
+            push_registration, registration_failed = self._communication_value(
+                "push_registration",
+                lambda: communications.push_registration_status().to_dict(),
+            )
+            value_failed = permission_failed or registration_failed
+        recorded_permission = local.pop("permission", None)
+        data = {
+            **local,
+            "recorded_permission": recorded_permission,
+            "permission": backend_permission,
+            "last_permission_request": last_permission_request,
             "push_registration": push_registration,
         }
+        local_actions_observed_at_ms = self._latest_record_timestamp(
+            data.get("actions"), "updated_at_ms"
+        )
+        recorded_permission_observed_at_ms = self._mapping_timestamp(
+            recorded_permission, "observed_at_ms"
+        )
+        permission_observed_at_ms = self._mapping_timestamp(
+            backend_permission, "observed_at_ms"
+        )
+        push_observed_at_ms = self._mapping_timestamp(
+            push_registration, "last_observed_at_ms"
+        )
+        permission_request_observed_at_ms = self._mapping_timestamp(
+            last_permission_request, "updated_at_ms"
+        )
+        observed_candidates = [
+            value
+            for value in (
+                local_actions_observed_at_ms,
+                recorded_permission_observed_at_ms,
+                permission_observed_at_ms,
+                push_observed_at_ms,
+                permission_request_observed_at_ms,
+            )
+            if value is not None
+        ]
+        return self._panel(
+            now_ms,
+            source,
+            data,
+            observed_at_ms=max(observed_candidates) if observed_candidates else None,
+            status="partial" if value_failed else "ok",
+            error=("one_or_more_owner_values_unavailable" if value_failed else None),
+            components={
+                "actions": self._freshness_value(
+                    local_actions_observed_at_ms, now_ms, data.get("actions")
+                ),
+                "recorded_permission": self._freshness_value(
+                    recorded_permission_observed_at_ms, now_ms, recorded_permission
+                ),
+                "permission": self._freshness_value(
+                    permission_observed_at_ms, now_ms, backend_permission
+                ),
+                "last_permission_request": self._freshness_value(
+                    permission_request_observed_at_ms,
+                    now_ms,
+                    last_permission_request,
+                ),
+                "push_registration": self._freshness_value(
+                    push_observed_at_ms, now_ms, push_registration
+                ),
+            },
+        )
+
+    def _speakers_panel(
+        self, now_ms: int, user_id: str, limit: int
+    ) -> dict[str, object]:
+        source = (
+            "hermes.run_state.speaker_cursor+recent_speaker_mappings;"
+            "thine.backend.maintenance.inspect.speaker_mappings"
+        )
+        local_failed = False
+        try:
+            cursor: object = self._state.speaker_cursor(user_id)
+        except Exception as exc:
+            logger.error(
+                "operator dashboard speaker owner read failed",
+                extra={
+                    "dashboard_value": "cursor",
+                    "failure_type": type(exc).__name__,
+                },
+            )
+            cursor = {
+                "status": "error",
+                "owner": "hermes.run_state.speaker_cursor",
+                "error": f"owner_read_failed:{type(exc).__name__}",
+            }
+            local_failed = True
+        try:
+            retained_inputs: object = list(
+                self._state.recent_speaker_mappings(user_id, limit=limit)
+            )
+        except Exception as exc:
+            logger.error(
+                "operator dashboard speaker owner read failed",
+                extra={
+                    "dashboard_value": "retained_inputs",
+                    "failure_type": type(exc).__name__,
+                },
+            )
+            retained_inputs = {
+                "status": "error",
+                "owner": "hermes.run_state.recent_speaker_mappings",
+                "error": f"owner_read_failed:{type(exc).__name__}",
+            }
+            local_failed = True
+
+        backend_failed = False
+        if self._speaker_state is None:
+            canonical: object = unavailable(
+                "thine.dataplane.speaker_mappings",
+                "standalone dashboard has no backend maintenance client",
+            )
+            backend_failed = True
+        else:
+            try:
+                canonical = self._speaker_state.speaker_mapping_state(
+                    inspected_at_ms=now_ms
+                ).to_dict()
+            except Exception as exc:
+                logger.error(
+                    "operator dashboard speaker owner read failed",
+                    extra={"failure_type": type(exc).__name__},
+                )
+                canonical = {
+                    "status": "error",
+                    "owner": "thine.dataplane.speaker_mappings",
+                    "error": f"owner_read_failed:{type(exc).__name__}",
+                }
+                backend_failed = True
+
+        retained_observed_at_ms = self._latest_record_timestamp(
+            retained_inputs, "updated_at_ms"
+        )
+        canonical_observed_at_ms = self._speaker_mapping_observed_at_ms(canonical)
+        observed_candidates = [
+            value
+            for value in (retained_observed_at_ms, canonical_observed_at_ms)
+            if value is not None
+        ]
+        data = {
+            "cursor": cursor,
+            "hermes_retained_mapping_inputs": retained_inputs,
+            "canonical_mappings": canonical,
+        }
+        return self._panel(
+            now_ms,
+            source,
+            data,
+            observed_at_ms=max(observed_candidates) if observed_candidates else None,
+            status="partial" if local_failed or backend_failed else "ok",
+            error=(
+                "one_or_more_owner_values_unavailable"
+                if local_failed and backend_failed
+                else "hermes_speaker_state_unavailable"
+                if local_failed
+                else "canonical_speaker_state_unavailable"
+                if backend_failed
+                else None
+            ),
+            components={
+                "cursor": self._freshness_value(None, now_ms, cursor),
+                "hermes_retained_mapping_inputs": self._freshness_value(
+                    retained_observed_at_ms, now_ms, retained_inputs
+                ),
+                "canonical_mappings": self._freshness_value(
+                    canonical_observed_at_ms, now_ms, canonical
+                ),
+            },
+        )
+
+    @staticmethod
+    def _speaker_mapping_observed_at_ms(value: object) -> int | None:
+        if not isinstance(value, Mapping):
+            return None
+        typed = cast(Mapping[object, object], value)
+        recent = typed.get("recent_mappings")
+        quarantines = typed.get("quarantines")
+        candidates = [
+            OperatorDashboardReadService._latest_record_timestamp(
+                recent, "changed_at_ms"
+            ),
+            OperatorDashboardReadService._latest_record_timestamp(
+                quarantines, "recorded_at_ms"
+            ),
+        ]
+        present = [item for item in candidates if item is not None]
+        return max(present) if present else None
+
+    @staticmethod
+    def _latest_record_timestamp(value: object, key: str) -> int | None:
+        if not isinstance(value, (list, tuple)):
+            return None
+        candidates: list[int] = []
+        for item in value:
+            if not isinstance(item, Mapping):
+                continue
+            typed_item = cast(Mapping[str, object], item)
+            candidate = typed_item.get(key)
+            if (
+                isinstance(candidate, int)
+                and not isinstance(candidate, bool)
+                and candidate >= 0
+            ):
+                candidates.append(candidate)
+        return max(candidates) if candidates else None
+
+    @staticmethod
+    def _freshness_value(
+        observed_at_ms: int | None, read_at_ms: int, value: object = None
+    ) -> dict[str, object]:
+        status = OperatorDashboardReadService._sentinel_status(value)
+        return {
+            "status": status or ("observed" if observed_at_ms is not None else "read"),
+            "owner_observed_at_ms": observed_at_ms,
+            "age_ms": (
+                None if observed_at_ms is None else max(0, read_at_ms - observed_at_ms)
+            ),
+        }
+
+    @staticmethod
+    def _sentinel_status(value: object) -> str | None:
+        if not isinstance(value, Mapping):
+            return None
+        status = cast(Mapping[str, object], value).get("status")
+        return (
+            status
+            if isinstance(status, str) and status in {"error", "unavailable"}
+            else None
+        )
+
+    @staticmethod
+    def _mapping_timestamp(value: object, key: str) -> int | None:
+        if not isinstance(value, Mapping):
+            return None
+        typed_value = cast(Mapping[str, object], value)
+        candidate = typed_value.get(key)
+        if (
+            isinstance(candidate, int)
+            and not isinstance(candidate, bool)
+            and candidate >= 0
+        ):
+            return candidate
+        return None
+
+    @staticmethod
+    def _communication_value(
+        name: str, loader: Callable[[], object]
+    ) -> tuple[object, bool]:
+        try:
+            return loader(), False
+        except Exception as exc:
+            logger.error(
+                "operator dashboard communication owner read failed",
+                extra={"dashboard_value": name, "failure_type": type(exc).__name__},
+            )
+            return (
+                {
+                    "status": "error",
+                    "owner": "thine.backend.push_transport",
+                    "error": f"owner_read_failed:{type(exc).__name__}",
+                },
+                True,
+            )
 
     def _queue_data(self, user_id: str, limit: int) -> dict[str, object]:
-        diagnostics = self._diagnostics_mapping(user_id)
+        diagnostics = self._state.operator_diagnostics(user_id, limit=limit)
         return {
-            "items": cast(list[object], diagnostics["queue"])[-limit:],
-            "leases": cast(list[object], diagnostics["leases"])[-limit:],
-            "attempts": cast(list[object], diagnostics["attempts"])[-limit:],
-            "checkpoints": cast(list[object], diagnostics["checkpoints"])[-limit:],
-            "tool_receipts": cast(list[object], diagnostics["receipts"])[-limit:],
-            "quarantines": self._reader.quarantines(user_id),
+            "owner_observed_at_ms": diagnostics["owner_observed_at_ms"],
+            "items": diagnostics["queue"],
+            "leases": diagnostics["leases"],
+            "attempts": diagnostics["attempts"],
+            "checkpoints": diagnostics["checkpoints"],
+            "tool_receipts": diagnostics["receipts"],
+            "quarantines": self._reader.quarantines(user_id, limit=limit),
         }
 
     def _current_run_data(self, user_id: str) -> dict[str, object]:
-        if self._run_diagnostics is None:
+        if self._runtime_configuration_reader is None:
             return {
                 "active": unavailable(
                     "hermes.run_coordinator",
                     "standalone dashboard is not attached to the live coordinator",
                 ),
                 "runtime": unavailable(
-                    "hermes.run_coordinator.diagnostics",
+                    "hermes.run_coordinator.runtime_configuration",
                     "standalone dashboard is not attached to the live coordinator",
                 ),
             }
-        diagnostics = self._diagnostics_mapping(user_id)
         live = self._live_run(user_id) if self._live_run is not None else None
+        logical_run_id = None if live is None else live.get("logical_run_id")
+        diagnostics = self._state.operator_diagnostics(
+            user_id,
+            limit=HISTORY_LIMIT,
+            active_logical_run_id=(
+                logical_run_id if isinstance(logical_run_id, str) else None
+            ),
+        )
+        runtime = self._runtime_configuration()
         if live is not None:
             live = dict(live)
-            logical_run_id = live.get("logical_run_id")
-            receipts_value = diagnostics.get("receipts", [])
-            if not isinstance(receipts_value, list):
-                raise TypeError("run diagnostics receipts must be a list")
-            receipts = cast(list[object], receipts_value)
-            live["completed_tool_receipts"] = sum(
-                1
-                for receipt in receipts
-                if isinstance(receipt, dict)
-                and cast(dict[str, object], receipt).get("logical_run_id")
-                == logical_run_id
-            )
+            live["completed_tool_receipts"] = diagnostics["active_run_receipt_count"]
             live["token_estimate"] = unavailable(
                 "hermes.agent_runtime",
                 "provider usage is authoritative only after the current segment returns",
             )
-        return {"active": live, "runtime": diagnostics["runtime"]}
+        return {"active": live, "runtime": runtime}
 
-    def _diagnostics_mapping(self, user_id: str) -> dict[str, object]:
-        if self._run_diagnostics is None:
-            return cast(
-                dict[str, object], diagnostics_as_dict(self._state.diagnostics(user_id))
+    def _runtime_configuration(self) -> object:
+        if self._runtime_configuration_reader is None:
+            return unavailable(
+                "hermes.run_coordinator.runtime_configuration",
+                "standalone dashboard is not attached to the live coordinator",
             )
-        value = self._run_diagnostics(user_id)
-        as_dict = getattr(value, "as_dict", None)
-        value = as_dict() if callable(as_dict) else value
+        value = self._runtime_configuration_reader()
         if not isinstance(value, Mapping):
-            raise TypeError("run diagnostics helper returned an invalid value")
+            raise TypeError("runtime configuration helper returned an invalid value")
         return dict(cast(Mapping[str, object], value))
 
     @staticmethod
@@ -396,9 +673,10 @@ class OperatorDashboardReadService:
             now_ms,
             source,
             data,
-            observed_at_ms=now_ms,
+            observed_at_ms=OperatorDashboardReadService._latest_owner_timestamp(data),
             status="partial" if partial_error else "ok",
             error=partial_error,
+            components=OperatorDashboardReadService._component_freshness(data, now_ms),
         )
 
     @staticmethod
@@ -410,22 +688,62 @@ class OperatorDashboardReadService:
         observed_at_ms: int | None,
         status: str,
         error: str | None,
+        components: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
+        freshness_status = (
+            "unknown"
+            if status == "error"
+            else "observed"
+            if observed_at_ms is not None
+            else "read"
+        )
         return {
             "source": source,
             "generated_at_ms": now_ms,
             "freshness": {
-                "status": "observed" if observed_at_ms is not None else "unknown",
+                "status": freshness_status,
+                "read_at_ms": now_ms,
+                "owner_observed_at_ms": observed_at_ms,
                 "observed_at_ms": observed_at_ms,
                 "snapshot_generated_at_ms": now_ms,
                 "age_ms": (
                     None if observed_at_ms is None else max(0, now_ms - observed_at_ms)
                 ),
+                "components": dict(components or {}),
             },
             "status": status,
             "error": error,
             "data": data,
         }
+
+    @staticmethod
+    def _latest_owner_timestamp(value: object) -> int | None:
+        if isinstance(value, Mapping):
+            return OperatorDashboardReadService._mapping_timestamp(
+                value, "owner_observed_at_ms"
+            )
+        return None
+
+    @staticmethod
+    def _component_freshness(data: object, read_at_ms: int) -> dict[str, object]:
+        if not isinstance(data, Mapping):
+            return {}
+        components: dict[str, object] = {}
+        for name, value in data.items():
+            if not isinstance(value, (Mapping, list, tuple)):
+                continue
+            observed_at_ms = OperatorDashboardReadService._latest_owner_timestamp(value)
+            components[str(name)] = {
+                "status": OperatorDashboardReadService._sentinel_status(value)
+                or ("observed" if observed_at_ms is not None else "read"),
+                "owner_observed_at_ms": observed_at_ms,
+                "age_ms": (
+                    None
+                    if observed_at_ms is None
+                    else max(0, read_at_ms - observed_at_ms)
+                ),
+            }
+        return components
 
 
 class OperatorDashboardControl:

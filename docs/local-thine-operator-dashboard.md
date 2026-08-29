@@ -32,20 +32,42 @@ The page shows queue/lease/attempt/checkpoint/receipt state, current-run status,
 transcript claims, Working Memory and its last 50 versions, Home head/history,
 interaction and speaker ingestion state, communication delivery and permission
 state, a redacted push-registration summary, schedules, topics/preferences,
-retention/reset policy, and the last 50 redacted invocation records. Each panel
-names its authoritative helper and reports freshness and errors. The
-push-registration summary contains only whether a registration exists, its
+recent durable retention/reset events and plans, current live-work count, and
+the last 50 redacted invocation records. Queue, Attempt, checkpoint, receipt,
+and quarantine rows are bounded in SQLite before they enter the projection;
+checkpoints and receipts are the newest 50, and the active-run receipt count is
+queried for that run rather than inferred from the bounded timeline.
+
+Each panel names its authoritative helper and reports two different clocks:
+`read_at_ms` is when the dashboard called the helper, while
+`owner_observed_at_ms` is the newest durable observation or mutation represented
+by that value. An empty but successful owner read therefore says `read` and does
+not pretend that state changed during refresh. Composite panels include the
+same freshness fields per source value, and the page renders those component
+clocks under **source freshness**.
+
+The product-attached communications panel independently reads the backend-owned
+notification permission and redacted push-registration summary. A failure in
+one leaves local action/allowance history and the other backend value visible.
+The registration summary contains only whether a registration exists, its
 count, and when one was last observed; device tokens and provider credentials
 never enter the dashboard projection.
 
-The product-attached dashboard reads that summary through the existing private
-backend communications client. The standalone dashboard has no backend client,
-so the communications panel is explicitly partial and reports push registration
-as unavailable. A failed backend read is isolated to the communications panel
-and exposes no response body or registration content.
+The product-attached speakers panel uses the same authenticated backend client
+to call the closed `POST /v1/maintenance/inspect` helper. It strictly projects
+only the speaker event/outcome counts, normal cursor, newest 50 mapping
+identities, and newest 50 speaker quarantines; unrelated backend maintenance
+state and mapping payload content never enter the dashboard. If that backend
+read fails, Hermes-retained mapping inputs and its cursor remain visible while
+the canonical portion is marked unavailable.
+
+Those values use the existing private backend communications client. The
+standalone dashboard has no backend client, so communications and canonical
+speaker state are explicitly partial. A failed backend value is isolated and
+exposes neither a response body nor registration content.
 
 Operator controls always use a preview followed by exact confirmation. They
-include schedule run-now/cancel, Home replacement/reactivation, explicit
+include schedule run-now/edit/cancel, Home replacement/reactivation, explicit
 quarantine/action retry when the corresponding owner helper is attached, and
 scoped/full reset. Reset execution ignores client assertions and checks the
 private service's process-lifecycle marker; it refuses while the harness is

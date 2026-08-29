@@ -302,6 +302,11 @@ class HarnessRuntimeConfiguration:
             tool_namespaces=tuple(item.namespace for item in PRODUCT_TOOL_NAMESPACES),
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        result = cast(dict[str, Any], asdict(self))
+        result["tool_namespaces"] = list(self.tool_namespaces)
+        return result
+
 
 @dataclass(frozen=True)
 class HarnessDiagnostics:
@@ -334,9 +339,7 @@ class HarnessDiagnostics:
 
     def as_dict(self) -> dict[str, Any]:
         result = cast(dict[str, Any], diagnostics_as_dict(self.state))
-        runtime = asdict(self.runtime)
-        runtime["tool_namespaces"] = list(self.runtime.tool_namespaces)
-        result["runtime"] = runtime
+        result["runtime"] = self.runtime.to_dict()
         return result
 
 
@@ -846,6 +849,10 @@ class RunCoordinator:
             state=self._state.diagnostics(user_id),
             runtime=self._runtime_configuration,
         )
+
+    def runtime_configuration(self) -> dict[str, Any]:
+        """Return accepted runtime configuration without loading durable history."""
+        return self._runtime_configuration.to_dict()
 
 
 __all__ = [
