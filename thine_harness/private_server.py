@@ -500,6 +500,7 @@ def build_product_p0_controller(
                 topics=topic_service,
                 schedules=schedules,
                 maintenance=maintenance,
+                communications=communications,
                 run_diagnostics=controller.coordinator.diagnostics,
                 live_run=controller.coordinator.active_snapshot,
             ),

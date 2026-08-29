@@ -84,6 +84,59 @@ class StandaloneNotificationPort(Protocol):
     def standalone_receipt(self, action_id: str) -> NotificationOutcome | None: ...
 
 
+@dataclass(frozen=True)
+class PushRegistrationStatus:
+    """Redacted backend-owned summary of the current user's push registrations."""
+
+    has_registration: bool
+    registration_count: int
+    last_observed_at_ms: int | None
+
+    @classmethod
+    def from_dict(cls, payload: object) -> PushRegistrationStatus:
+        if not isinstance(payload, Mapping):
+            raise ValueError("push registration status must be an object")
+        expected = {
+            "has_registration",
+            "registration_count",
+            "last_observed_at_ms",
+        }
+        if set(payload) != expected:
+            raise ValueError("push registration status has an invalid shape")
+
+        has_registration = payload["has_registration"]
+        registration_count = payload["registration_count"]
+        last_observed_at_ms = payload["last_observed_at_ms"]
+        if not isinstance(has_registration, bool):
+            raise ValueError("has_registration must be a boolean")
+        if (
+            isinstance(registration_count, bool)
+            or not isinstance(registration_count, int)
+            or registration_count < 0
+        ):
+            raise ValueError("registration_count must be a nonnegative integer")
+        if last_observed_at_ms is not None and (
+            isinstance(last_observed_at_ms, bool)
+            or not isinstance(last_observed_at_ms, int)
+            or last_observed_at_ms < 0
+        ):
+            raise ValueError(
+                "last_observed_at_ms must be a nonnegative integer or null"
+            )
+        return cls(
+            has_registration=has_registration,
+            registration_count=registration_count,
+            last_observed_at_ms=last_observed_at_ms,
+        )
+
+    def to_dict(self) -> dict[str, JSONValue]:
+        return {
+            "has_registration": self.has_registration,
+            "registration_count": self.registration_count,
+            "last_observed_at_ms": self.last_observed_at_ms,
+        }
+
+
 class BackendCommunicationClient:
     """Authenticated client for the backend's closed communication helpers."""
 
@@ -129,6 +182,14 @@ class BackendCommunicationClient:
         )
         response.raise_for_status()
         return NotificationPermission.from_dict(self._json_object(response))
+
+    def push_registration_status(self) -> PushRegistrationStatus:
+        response = self._client.get(
+            "/_local-hermes/private/v1/communications/push-registration",
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        return PushRegistrationStatus.from_dict(self._json_object(response))
 
     def deliver(self, intent: NotificationIntent) -> NotificationOutcome:
         response = self._client.post(

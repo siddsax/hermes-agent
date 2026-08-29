@@ -16,6 +16,7 @@ from typing import Any, Protocol, cast
 import uuid
 
 from .action_dispatcher import ActionDispatcher
+from .communications import PushRegistrationStatus
 from .home_state import HomeStateProjector
 from .interactions import inspect_interaction_inputs
 from .maintenance import (
@@ -49,6 +50,10 @@ class QuarantineRetryPort(Protocol):
 
 class ActionRetryPort(Protocol):
     def __call__(self, action_id: str) -> Mapping[str, object]: ...
+
+
+class PushRegistrationReadPort(Protocol):
+    def push_registration_status(self) -> PushRegistrationStatus: ...
 
 
 def load_operator_dashboard_config(
@@ -108,6 +113,7 @@ class OperatorDashboardReadService:
         topics: TopicPreferenceService,
         schedules: OneShotScheduleService,
         maintenance: RetentionResetService,
+        communications: PushRegistrationReadPort | None = None,
         run_diagnostics: Callable[[str], object] | None = None,
         live_run: Callable[[str], Mapping[str, object] | None] | None = None,
         clock_ms: Callable[[], int] | None = None,
@@ -118,6 +124,7 @@ class OperatorDashboardReadService:
         self._topics = topics
         self._schedules = schedules
         self._maintenance = maintenance
+        self._communications = communications
         self._run_diagnostics = run_diagnostics
         self._live_run = live_run
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
@@ -225,13 +232,13 @@ class OperatorDashboardReadService:
             ),
             "communications": self._capture(
                 now_ms,
-                "hermes.action_dispatcher.operator_snapshot;hermes.topic_preference_service.inspect",
-                lambda: {
-                    **self._actions.operator_snapshot(user_id, limit=limit),
-                    "last_permission_request": self._topics.inspect(
-                        user_id, "enable_notifications"
-                    ),
-                },
+                "hermes.action_dispatcher.operator_snapshot;hermes.topic_preference_service.inspect;thine.backend.push_transport.push_registration",
+                lambda: self._communications_data(user_id, limit),
+                partial_error=(
+                    "push registration status is unavailable in standalone mode"
+                    if self._communications is None
+                    else None
+                ),
             ),
             "schedules": self._capture(
                 now_ms,
@@ -283,6 +290,25 @@ class OperatorDashboardReadService:
             "authoritative": False,
             "limit": limit,
             "panels": panels,
+        }
+
+    def _communications_data(self, user_id: str, limit: int) -> dict[str, object]:
+        push_registration: object
+        if self._communications is None:
+            push_registration = unavailable(
+                "thine.backend.push_transport",
+                "standalone dashboard has no backend communication client",
+            )
+        else:
+            push_registration = (
+                self._communications.push_registration_status().to_dict()
+            )
+        return {
+            **self._actions.operator_snapshot(user_id, limit=limit),
+            "last_permission_request": self._topics.inspect(
+                user_id, "enable_notifications"
+            ),
+            "push_registration": push_registration,
         }
 
     def _queue_data(self, user_id: str, limit: int) -> dict[str, object]:
@@ -670,6 +696,7 @@ __all__ = [
     "OperatorDashboardConfigurationError",
     "OperatorDashboardControl",
     "OperatorDashboardReadService",
+    "PushRegistrationReadPort",
     "QuarantineRetryPort",
     "load_operator_dashboard_config",
     "unavailable",
