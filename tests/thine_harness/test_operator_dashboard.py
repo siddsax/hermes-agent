@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import logging
 from pathlib import Path
 
 import pytest
@@ -127,6 +128,7 @@ def test_snapshot_has_bounded_owner_sourced_panels_and_explicit_gaps(
         snapshot["panels"]["transcripts"]["data"]["canonical_transcripts"]["status"]
         == "unavailable"
     )
+    assert "hermes_retained_mapping_inputs" in snapshot["panels"]["speakers"]["data"]
     assert snapshot["panels"]["working_memory"]["data"]["restore_available"] is False
 
 
@@ -170,7 +172,9 @@ def test_runtime_config_comes_from_coordinator_diagnostics(tmp_path: Path) -> No
 
 
 def test_owner_failure_is_isolated_and_freshness_is_truthful(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     def fail_transcripts(
         _self: DurableRunState, _user_id: str, *, limit: int = 50
@@ -179,7 +183,8 @@ def test_owner_failure_is_isolated_and_freshness_is_truthful(
         raise RuntimeError("private detail must not leak")
 
     monkeypatch.setattr(DurableRunState, "recent_transcript_runs", fail_transcripts)
-    panels = _dashboard(tmp_path).snapshot()["panels"]
+    with caplog.at_level(logging.ERROR, logger="thine_harness.operator_dashboard"):
+        panels = _dashboard(tmp_path).snapshot()["panels"]
 
     assert panels["transcripts"]["status"] == "error"
     assert panels["transcripts"]["error"] == "owner_read_failed:RuntimeError"
@@ -187,6 +192,14 @@ def test_owner_failure_is_isolated_and_freshness_is_truthful(
     assert panels["transcripts"]["freshness"]["observed_at_ms"] is None
     assert panels["working_memory"]["status"] == "ok"
     assert panels["working_memory"]["freshness"]["observed_at_ms"] == NOW
+    failures = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "operator dashboard owner read failed"
+    ]
+    assert len(failures) == 1
+    assert failures[0].dashboard_source == "hermes.run_state.recent_transcript_runs"
+    assert failures[0].exc_info is not None
 
 
 def test_reset_requires_preview_exact_confirmation_and_harness_stop(

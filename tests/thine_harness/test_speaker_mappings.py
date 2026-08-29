@@ -43,6 +43,7 @@ def _event(
     canonical_speaker_id: str | None = None,
     old_name: str | None = None,
     new_name: str | None = "Taylor",
+    extensions: dict[str, object] | None = None,
 ) -> SpeakerMappingEvent:
     source_ids = source_speaker_ids or [f"SPEAKER_{cursor}"]
     return SpeakerMappingEvent.from_dict({
@@ -57,7 +58,7 @@ def _event(
         "new_name": new_name,
         "changed_at_ms": 100 + cursor,
         "transcript_text_included": False,
-        "extensions": {},
+        "extensions": extensions or {},
     })
 
 
@@ -127,6 +128,79 @@ class _SpeakerPort:
 class _NoEffects:
     def apply(self, command):  # pragma: no cover - mapping no-op has no effect
         raise AssertionError(command)
+
+
+def _retain_mapping(state: DurableRunState, event: SpeakerMappingEvent) -> None:
+    port = _SpeakerPort([event])
+    pump = SpeakerMappingInputPump(state, speaker_port=port, clock_ms=lambda: 200)
+    coordinator = RunCoordinator(
+        state,
+        runtime=FakeSpeakerMappingNoActionRuntime(),
+        feature_port=_NoEffects(),
+        input_port=pump,
+        clock_ms=lambda: 200,
+    )
+    assert pump.enqueue_next("daily-user", coordinator=coordinator) is not None
+
+
+def test_recent_rename_mapping_exposes_only_safe_event_fields(tmp_path: Path) -> None:
+    state = DurableRunState(tmp_path / "state.sqlite3")
+    _retain_mapping(
+        state,
+        _event(
+            "speaker-event-rename",
+            1,
+            source_speaker_ids=["SPEAKER_UNKNOWN_1"],
+            canonical_speaker_id="speaker-canonical-1",
+            old_name=None,
+            new_name="Taylor",
+            extensions={"transcript_text": "sensitive transcript content"},
+        ),
+    )
+
+    result = state.recent_speaker_mappings("daily-user")
+
+    assert result[0]["mapping"] == {
+        "kind": "rename",
+        "source_speaker_ids": ["SPEAKER_UNKNOWN_1"],
+        "canonical_speaker_id": "speaker-canonical-1",
+        "old_name": None,
+        "new_name": "Taylor",
+        "changed_at_ms": 101,
+    }
+    serialized = json.dumps(result)
+    assert "event_json" not in serialized
+    assert "transcript" not in serialized.lower()
+    assert "sensitive transcript content" not in serialized
+
+
+def test_recent_merge_mapping_exposes_sources_and_canonical_target(
+    tmp_path: Path,
+) -> None:
+    state = DurableRunState(tmp_path / "state.sqlite3")
+    _retain_mapping(
+        state,
+        _event(
+            "speaker-event-merge",
+            1,
+            kind="merge",
+            source_speaker_ids=["speaker-source-1", "speaker-source-2"],
+            canonical_speaker_id="speaker-canonical-1",
+            old_name="Taylor",
+            new_name="Team",
+        ),
+    )
+
+    result = state.recent_speaker_mappings("daily-user")
+
+    assert result[0]["mapping"] == {
+        "kind": "merge",
+        "source_speaker_ids": ["speaker-source-1", "speaker-source-2"],
+        "canonical_speaker_id": "speaker-canonical-1",
+        "old_name": "Taylor",
+        "new_name": "Team",
+        "changed_at_ms": 101,
+    }
 
 
 def test_unknown_mapping_is_durably_enqueued_after_cursor_and_acknowledged(

@@ -4261,19 +4261,33 @@ class DurableRunState:
             rows = connection.execute(
                 """
                 SELECT event_id, cursor, original_logical_run_id, state,
-                       quarantine_id, ack_json, created_at_ms, updated_at_ms
+                       quarantine_id, event_json, ack_json,
+                       created_at_ms, updated_at_ms
                 FROM speaker_mapping_inputs WHERE user_id = ?
                 ORDER BY cursor DESC LIMIT ?
                 """,
                 (user_id, limit),
             ).fetchall()
-        return tuple(
-            {
-                **{key: value for key, value in dict(row).items() if key != "ack_json"},
-                "acknowledgement_recorded": row["ack_json"] is not None,
+        result: list[dict[str, object]] = []
+        for row in rows:
+            event = SpeakerMappingEvent.from_json(str(row["event_json"]))
+            payload = event.payload
+            item = {
+                key: value
+                for key, value in dict(row).items()
+                if key not in {"event_json", "ack_json"}
             }
-            for row in rows
-        )
+            item["mapping"] = {
+                "kind": payload.kind,
+                "source_speaker_ids": list(payload.source_speaker_ids),
+                "canonical_speaker_id": payload.canonical_speaker_id,
+                "old_name": payload.old_name,
+                "new_name": payload.new_name,
+                "changed_at_ms": payload.changed_at_ms,
+            }
+            item["acknowledgement_recorded"] = row["ack_json"] is not None
+            result.append(item)
+        return tuple(result)
 
     def _recover_expired_locked(
         self, connection: sqlite3.Connection, *, user_id: str, now_ms: int

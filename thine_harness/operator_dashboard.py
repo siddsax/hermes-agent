@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import ipaddress
+import logging
 import time
 from typing import Any, Protocol, cast
 import uuid
@@ -26,6 +27,9 @@ from .maintenance import (
 from .schedules import OneShotScheduleService
 from .run_state import DurableRunState, diagnostics_as_dict
 from .topics_preferences import TopicPreferenceService
+
+
+logger = logging.getLogger(__name__)
 
 
 class OperatorDashboardConfigurationError(ValueError):
@@ -209,7 +213,7 @@ class OperatorDashboardReadService:
                 "hermes.run_state.speaker_cursor+recent_speaker_mappings",
                 lambda: {
                     "cursor": self._state.speaker_cursor(user_id),
-                    "inputs": list(
+                    "hermes_retained_mapping_inputs": list(
                         self._state.recent_speaker_mappings(user_id, limit=limit)
                     ),
                     "canonical_mappings": unavailable(
@@ -349,6 +353,11 @@ class OperatorDashboardReadService:
         try:
             data = loader()
         except Exception as exc:
+            logger.error(
+                "operator dashboard owner read failed",
+                extra={"dashboard_source": source},
+                exc_info=True,
+            )
             return OperatorDashboardReadService._panel(
                 now_ms,
                 source,
