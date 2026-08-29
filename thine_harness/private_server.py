@@ -12,7 +12,7 @@ import uvicorn
 from .action_dispatcher import ActionDispatcher
 from .communications import BackendCommunicationClient, CommunicationToolBinding
 from .private_service import create_private_service_app
-from .home_state import HomeStateProjector
+from .home_state import HomeStateProjector, register_home_state_tools
 from .input_pump import BackendTranscriptClient, TranscriptInputPump
 from .maintenance import AuthoritativeReadToolBinding, AuthoritativeStateReader
 from .interactions import (
@@ -96,8 +96,16 @@ def build_product_p0_controller(
     backend_config: BackendPrivateConfig,
     database_path: Path,
     runtime_factory: Callable[[], HermesInvocationRuntime] | None = None,
+    home_state: HomeStateProjector | None = None,
 ) -> P0ChatController:
     """Construct production adapters while deferring model login until first work."""
+    home_projector = home_state or HomeStateProjector(
+        database_path.parent / "home-state.sqlite3"
+    )
+    register_home_state_tools(
+        home_projector,
+        user_id=private_config.firebase_uid,
+    )
     backend = BackendPrivateChatClient(
         origin=backend_config.origin,
         credential=backend_config.credential,
@@ -160,7 +168,7 @@ def build_product_p0_controller(
     )
     authoritative_reader = AuthoritativeStateReader(
         store.run_state,
-        home=HomeStateProjector(database_path.parent / "home-state.sqlite3"),
+        home=home_projector,
         topics=topic_service,
         schedules=schedules,
     )
@@ -298,13 +306,14 @@ def main() -> int:
                 "thine_harness.private_service.enabled is false"
             )
         backend_config = load_backend_private_config()
+        home_state = HomeStateProjector(
+            get_hermes_home() / "thine-harness" / "home-state.sqlite3"
+        )
         controller = build_product_p0_controller(
             private_config=config,
             backend_config=backend_config,
             database_path=get_hermes_home() / "thine-harness" / "run-state.sqlite3",
-        )
-        home_state = HomeStateProjector(
-            get_hermes_home() / "thine-harness" / "home-state.sqlite3"
+            home_state=home_state,
         )
         try:
             build_private_service_server(

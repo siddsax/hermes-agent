@@ -1059,7 +1059,10 @@ def test_product_runtime_is_one_long_lived_gpt_5_6_sol_medium_agent_without_proo
     assert arguments["skip_memory"] is True
     assert arguments["skip_background_review"] is True
     assert arguments["pass_session_id"] is True
-    assert arguments["enabled_toolsets"] == ["local-thine-transcripts"]
+    assert arguments["enabled_toolsets"] == [
+        "local-thine-transcripts",
+        "local-thine",
+    ]
     assert "max_iterations" not in arguments
     assert "max_tokens" not in arguments
     assert "proof" not in str(arguments["ephemeral_system_prompt"]).lower()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 
 import httpx
@@ -27,7 +28,38 @@ from thine_harness.transcript_agent import (
     RunInspectionToolBinding,
     TranscriptAgentFinalizer,
     TranscriptClaimToolBinding,
+    build_real_transcript_runtime,
 )
+
+
+def test_real_background_runtime_includes_home_toolset(tmp_path: Path) -> None:
+    constructed: dict[str, object] = {}
+
+    def agent_factory(**kwargs):
+        constructed.update(kwargs)
+        return SimpleNamespace(
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            api_mode="codex_responses",
+            reasoning_config={"enabled": True, "effort": "medium"},
+            context_compressor=SimpleNamespace(context_length=272_000),
+            skip_memory=True,
+            skip_background_review=True,
+            _fallback_chain=[],
+            _fallback_model=None,
+        )
+
+    build_real_transcript_runtime(
+        DurableRunState(tmp_path / "run-state.sqlite3"),
+        firebase_uid="daily-user",
+        token_loader=lambda: {"access_token": "codex-test-token"},
+        agent_factory=agent_factory,
+    )
+
+    assert constructed["enabled_toolsets"] == [
+        "local-thine-transcripts",
+        "local-thine",
+    ]
 
 
 def _claimed_transcript(
