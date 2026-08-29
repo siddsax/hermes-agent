@@ -1895,6 +1895,7 @@ class HarnessCoordinatorDriver:
 
     def _run(self) -> None:
         waiting = {
+            "input_retry_pending",
             "awaiting_reply_persistence",
             "memory_finalization_pending",
             "terminal_event_pending",

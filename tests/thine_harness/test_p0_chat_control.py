@@ -18,6 +18,7 @@ from thine_harness.contracts.chat import (
 from thine_harness.contracts.control import HermesControlRequest
 from thine_harness.p0_chat import (
     BackendPrivateChatClient,
+    HarnessCoordinatorDriver,
     P0FinalizationArtifact,
     P0ChatController,
     P0ChatStore,
@@ -40,6 +41,38 @@ from thine_harness.working_memory import (
 
 
 NOW_MS = 1_787_644_800_000
+
+
+def test_global_coordinator_backs_off_after_input_transport_retry() -> None:
+    first_attempt = threading.Event()
+
+    class _RetryingCoordinator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run_next(self, user_id):
+            assert user_id == "daily-user"
+            self.calls += 1
+            first_attempt.set()
+            return SimpleNamespace(
+                logical_run_id="interaction-run",
+                status="input_retry_pending",
+            )
+
+    coordinator = _RetryingCoordinator()
+    driver = HarnessCoordinatorDriver(
+        coordinator=coordinator,  # type: ignore[arg-type]
+        user_id="daily-user",
+        retry_delay_seconds=0.2,
+        result_callback=lambda *_args: None,
+    )
+    try:
+        driver.wake()
+        assert first_attempt.wait(1)
+        time.sleep(0.05)
+        assert coordinator.calls == 1
+    finally:
+        driver.close()
 
 
 class _BlockedBackend:
