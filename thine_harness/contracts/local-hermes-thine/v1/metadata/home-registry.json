@@ -1,0 +1,72 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "source": {
+    "commit": "041ca7b2f442d3e0f1b700182ac93a68e9bf702c",
+    "path": "docs/local-hermes/mobile-surface-inventory.v1.json"
+  },
+  "hermes_primitives": [
+    {
+      "component_id": "home.hero.greeting",
+      "cardinality": "singleton",
+      "navigation_template": null
+    },
+    {
+      "component_id": "home.action.what-did-i-miss",
+      "cardinality": "singleton",
+      "navigation_template": "route.chat"
+    },
+    {
+      "component_id": "home.card.connectors",
+      "cardinality": "singleton",
+      "navigation_template": "route.connectors"
+    },
+    {
+      "component_id": "home.card.people",
+      "cardinality": "singleton",
+      "navigation_template": "route.speakers-list"
+    }
+  ],
+  "app_owned_chrome": [
+    "home.chrome.header",
+    "home.banner.google-reconnect",
+    "home.card.listening",
+    "home.chrome.footer"
+  ],
+  "allowed_agent_mutations": [
+    "insert",
+    "move",
+    "update",
+    "remove",
+    "clear",
+    "create",
+    "activate_retained_revision"
+  ],
+  "no_dismiss_optimization": true,
+  "navigation_activation": [
+    "home_tap",
+    "os_notification_tap"
+  ],
+  "agent_can_force_current_screen": false,
+  "retained_revisions": 50,
+  "meeting_mode_exclusion": {
+    "hard": true,
+    "source_feature_exists": true,
+    "allowed_presence": [
+      "source_inventory",
+      "exclusion_metadata"
+    ],
+    "forbidden_primitive_kinds": [
+      "component",
+      "node",
+      "action",
+      "destination",
+      "route",
+      "endpoint",
+      "tool",
+      "semantic_event"
+    ]
+  }
+}

@@ -1,0 +1,459 @@
+{
+  "suite_id": "mobile.valid.v1",
+  "cases": [
+    {
+      "case_id": "chat.accepted-immediate",
+      "target": "chat_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "chat-event-1",
+        "stream_id": "stream-1",
+        "step_id": null,
+        "user_message_id": "message-user-1",
+        "assistant_message_id": null,
+        "final_reply_receipt_id": null,
+        "kind": "accepted",
+        "phase": "queue",
+        "safe_display_text": "Your message was accepted",
+        "ephemeral": true,
+        "origin": "user_initiated_chat",
+        "emitted_at_ms": 1787644800000,
+        "heartbeat_max_silence_ms": 5000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "chat.safe-status-ephemeral",
+      "target": "chat_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "chat-event-2",
+        "stream_id": "stream-1",
+        "step_id": "step-1",
+        "user_message_id": "message-user-1",
+        "assistant_message_id": null,
+        "final_reply_receipt_id": null,
+        "kind": "safe_status",
+        "phase": "transcript_lookup",
+        "safe_display_text": "Checking your recent transcript",
+        "ephemeral": true,
+        "origin": "user_initiated_chat",
+        "emitted_at_ms": 1787644801000,
+        "heartbeat_max_silence_ms": 5000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "chat.heartbeat-safe",
+      "target": "chat_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "chat-event-3",
+        "stream_id": "stream-1",
+        "step_id": null,
+        "user_message_id": "message-user-1",
+        "assistant_message_id": null,
+        "final_reply_receipt_id": null,
+        "kind": "heartbeat",
+        "phase": "working",
+        "safe_display_text": "Still working",
+        "ephemeral": true,
+        "origin": "user_initiated_chat",
+        "emitted_at_ms": 1787644806000,
+        "heartbeat_max_silence_ms": 5000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "chat.final-once",
+      "target": "chat_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "chat-event-4",
+        "stream_id": "stream-1",
+        "step_id": null,
+        "user_message_id": "message-user-1",
+        "assistant_message_id": "message-assistant-1",
+        "final_reply_receipt_id": "final-receipt-1",
+        "kind": "final",
+        "phase": "completed",
+        "safe_display_text": "Done",
+        "ephemeral": false,
+        "origin": "user_initiated_chat",
+        "emitted_at_ms": 1787644807000,
+        "heartbeat_max_silence_ms": 5000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "chat.current-status-running",
+      "target": "chat_current_status",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "user_message_id": "message-user-1",
+        "stream_id": "stream-1",
+        "state": "running",
+        "safe_display_text": "Checking your recent transcript",
+        "updated_at_ms": 1787644801000,
+        "replay_transient_progress": false,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "chat.reconnect-canonical-plus-current",
+      "target": "chat_reconnect",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "canonical_message_ids": [
+          "message-user-1"
+        ],
+        "current_status": {
+          "schema_version": {
+            "major": 1,
+            "minor": 0
+          },
+          "user_message_id": "message-user-1",
+          "stream_id": "stream-1",
+          "state": "running",
+          "safe_display_text": "Still working",
+          "updated_at_ms": 1787644802000,
+          "replay_transient_progress": false,
+          "extensions": {}
+        },
+        "future_events_only": true,
+        "outbox_pending_message_ids": [],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "navigation.home-tap-only",
+      "target": "navigation_intent",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "intent_id": "nav-1",
+        "destination_id": "route.connectors",
+        "parameters": {
+          "message_id": null,
+          "open_add_sheet": false
+        },
+        "activation_source": "home_tap",
+        "user_action_id": "interaction-1",
+        "created_at_ms": 1787644800000,
+        "force_current_screen": false,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "home.state-agent-composed",
+      "target": "home_state",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "user_id": "user-local",
+        "revision": 42,
+        "updated_at_ms": 1787644800000,
+        "nodes": [
+          {
+            "node_id": "node-greeting",
+            "component_id": "home.hero.greeting",
+            "visible": true,
+            "order": 0,
+            "content": {
+              "title": "Good afternoon",
+              "body": "One thing worth revisiting",
+              "count": null,
+              "action_key": null
+            },
+            "navigation_template": null
+          },
+          {
+            "node_id": "node-people",
+            "component_id": "home.card.people",
+            "visible": false,
+            "order": 1,
+            "content": {
+              "title": "People",
+              "body": null,
+              "count": 3,
+              "action_key": "open_speakers"
+            },
+            "navigation_template": "route.speakers-list"
+          }
+        ],
+        "app_owned_chrome": [
+          "home.chrome.header",
+          "home.banner.google-reconnect",
+          "home.card.listening",
+          "home.chrome.footer"
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "home.revision-with-reason",
+      "target": "home_revision",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "revision": 42,
+        "parent_revision": 41,
+        "originating_run_id": "run-1",
+        "action_id": "action-home-1",
+        "reason": "Prioritize the unresolved follow-up without navigating the user.",
+        "created_at_ms": 1787644800000,
+        "state": {
+          "schema_version": {
+            "major": 1,
+            "minor": 0
+          },
+          "user_id": "user-local",
+          "revision": 42,
+          "updated_at_ms": 1787644800000,
+          "nodes": [],
+          "app_owned_chrome": [
+            "home.chrome.header",
+            "home.banner.google-reconnect",
+            "home.card.listening",
+            "home.chrome.footer"
+          ],
+          "extensions": {}
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "home.history-bounded",
+      "target": "home_history",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "current_revision": 42,
+        "retention_limit": 50,
+        "revisions": [],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "home.activate-retained-as-new",
+      "target": "home_activation",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "action_id": "action-home-revert-1",
+        "source_revision": 31,
+        "expected_current_revision": 42,
+        "new_revision": 43,
+        "revalidated": true,
+        "navigation_changed": false,
+        "created_at_ms": 1787644800000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "interaction.chat-correlated-not-command",
+      "target": "interaction_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "interaction-1",
+        "user_id": "user-local",
+        "device_id": "iphone-local",
+        "occurred_at_ms": 1787644800000,
+        "received_at_ms": 1787644800100,
+        "screen_id": "route.chat",
+        "surface_id": "chat.composer",
+        "kind": "chat_submission",
+        "object_ref": "message-user-1",
+        "outcome": "accepted",
+        "home_revision": null,
+        "home_node_id": null,
+        "primary_correlation": {
+          "primary_kind": "p0_user_chat",
+          "primary_id": "message-user-1",
+          "previously_delivered": true
+        },
+        "safe_payload": {
+          "action": "send_accepted",
+          "closed_value": null
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "interaction.batch-contiguous",
+      "target": "interaction_batch",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "batch_id": "interaction-batch-1",
+        "user_id": "user-local",
+        "first_cursor": 1,
+        "last_cursor": 1,
+        "window_start_ms": 1787643000000,
+        "window_end_ms": 1787644800000,
+        "events": [
+          {
+            "schema_version": {
+              "major": 1,
+              "minor": 0
+            },
+            "event_id": "interaction-1",
+            "user_id": "user-local",
+            "device_id": "iphone-local",
+            "occurred_at_ms": 1787644700000,
+            "received_at_ms": 1787644700100,
+            "screen_id": "route.home",
+            "surface_id": "home.card.people",
+            "kind": "home_activation",
+            "object_ref": "node-people",
+            "outcome": "succeeded",
+            "home_revision": 42,
+            "home_node_id": "node-people",
+            "primary_correlation": null,
+            "safe_payload": {
+              "action": "component_tap",
+              "closed_value": null
+            },
+            "extensions": {}
+          }
+        ],
+        "delivery_attempt": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "interaction.support-external-redacted",
+      "target": "interaction_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "interaction-support-1",
+        "user_id": "user-local",
+        "device_id": "iphone-local",
+        "occurred_at_ms": 1787644800000,
+        "received_at_ms": 1787644800100,
+        "screen_id": "route.profile",
+        "surface_id": "profile.support",
+        "kind": "support_external_action",
+        "object_ref": null,
+        "outcome": "requested",
+        "home_revision": null,
+        "home_node_id": null,
+        "primary_correlation": null,
+        "safe_payload": {
+          "action": "text_support",
+          "closed_value": null
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "interaction.delivery-ack-not-processed",
+      "target": "interaction_delivery_ack",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "ack_id": "interaction-ack-1",
+        "batch_id": "interaction-batch-1",
+        "ack_cursor": 1,
+        "durably_stored_event_ids": [
+          "interaction-1"
+        ],
+        "model_processed": false,
+        "acknowledged_at_ms": 1787644801000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "notification.permission-visible",
+      "target": "notification_permission",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "user_preference": "enabled",
+        "os_permission": "not_determined",
+        "last_permission_ask_at_ms": 1787040000000,
+        "last_permission_ask_topic_id": "topic-enable-notifications",
+        "observed_at_ms": 1787644800000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "notification.background-message-push-required",
+      "target": "notification_intent",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "action_id": "action-message-1",
+        "kind": "background_message_push",
+        "title": "Thine",
+        "body": "There is an update in Chat",
+        "persisted_message_id": "message-agent-1",
+        "navigation_template": "route.chat",
+        "push_required_for_background_message": true,
+        "created_at_ms": 1787644800000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "notification.message-persists-without-permission",
+      "target": "notification_outcome",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "action_id": "action-message-1",
+        "communication_kind": "background_message",
+        "outcome": "skipped_permission_disabled",
+        "provider_correlation_id": null,
+        "persisted_message_id": "message-agent-1",
+        "permission_state": "denied",
+        "allowance_consumed": true,
+        "completed_at_ms": 1787644801000,
+        "extensions": {}
+      }
+    }
+  ]
+}

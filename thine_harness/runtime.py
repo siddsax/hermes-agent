@@ -1,0 +1,816 @@
+"""Public invocation lifecycle seam for the local Thine Harness.
+
+This module deliberately wraps Hermes' existing agent runtime.  It does not
+create a second agent loop or a plugin surface; callers provide one session
+port and receive a small, transport-neutral lifecycle contract.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+import json
+import threading
+from typing import Any, Callable, Literal, Protocol, Sequence
+
+
+SAFE_BOUNDARY_RESUME_PROMPT = (
+    "Resume this Logical Run from the durable safe-boundary history. The original "
+    "input is already present; do not repeat completed tool effects. Re-plan and "
+    "perform only unfinished work."
+)
+
+
+class InvocationKind(str, Enum):
+    USER_CHAT = "p0_user_chat"
+    BACKGROUND = "p1_background"
+
+
+class InvocationEventKind(str, Enum):
+    ACCEPTED = "accepted"
+    STARTED = "started"
+    PROGRESS = "progress"
+    FINAL = "final"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
+class RuntimeSelectionError(RuntimeError):
+    """The live Hermes session drifted from the required fail-closed model."""
+
+
+@dataclass(frozen=True)
+class InvocationSegmentPolicy:
+    """One bounded Hermes provider segment, independent of fault Attempts."""
+
+    max_duration_seconds: float = 15 * 60
+    max_tool_calls: int = 50
+
+    def __post_init__(self) -> None:
+        if self.max_duration_seconds <= 0:
+            raise ValueError("max_duration_seconds must be positive")
+        if self.max_tool_calls <= 0:
+            raise ValueError("max_tool_calls must be positive")
+
+
+def runtime_selection_fingerprint(agent: Any) -> tuple[str, str, str, str]:
+    """Return provider, model, API mode, and reasoning effort from one agent."""
+    reasoning = getattr(agent, "reasoning_config", None)
+    effort = ""
+    if isinstance(reasoning, dict) and reasoning.get("enabled") is not False:
+        effort = str(reasoning.get("effort") or "")
+    return (
+        str(getattr(agent, "provider", "") or ""),
+        str(getattr(agent, "model", "") or ""),
+        str(getattr(agent, "api_mode", "") or ""),
+        effort,
+    )
+
+
+@dataclass(frozen=True)
+class InvocationEvent:
+    kind: InvocationEventKind
+    phase: str
+    text: str
+    ephemeral: bool = True
+
+    @classmethod
+    def progress(cls, phase: str, text: str) -> "InvocationEvent":
+        return cls(InvocationEventKind.PROGRESS, phase, text)
+
+
+@dataclass(frozen=True)
+class RuntimeModelConfig:
+    provider: str
+    model: str
+    api_mode: str
+    reasoning_effort: str
+    context_window_tokens: int
+
+    @classmethod
+    def openai_gpt_5_6_sol_medium(cls) -> "RuntimeModelConfig":
+        return cls(
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            api_mode="codex_responses",
+            reasoning_effort="medium",
+            context_window_tokens=272_000,
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeDiagnostics:
+    provider: str
+    model: str
+    api_mode: str
+    reasoning_effort: str
+    context_window_tokens: int
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "api_mode": self.api_mode,
+            "reasoning_effort": self.reasoning_effort,
+            "context_window_tokens": self.context_window_tokens,
+        }
+
+
+@dataclass(frozen=True)
+class InvocationRequest:
+    logical_run_id: str
+    kind: InvocationKind
+    prompt: str
+    resume_token: str | None = None
+    context_messages: list[dict[str, Any]] = field(default_factory=list)
+    original_input: str | None = None
+    completed_tool_results: list[dict[str, Any]] = field(default_factory=list)
+    successful_action_receipts: list[dict[str, Any]] = field(default_factory=list)
+    partial_visible_assistant_output: str = ""
+
+
+@dataclass(frozen=True)
+class AgentTurnResult:
+    final_output: str | None = None
+    context_messages: list[dict[str, Any]] = field(default_factory=list)
+    interrupted: bool = False
+    completed: bool = True
+    failed: bool = False
+    failure_reason: str | None = None
+    resume_token: str | None = None
+    usage: dict[str, int] = field(default_factory=dict)
+    remaining_work: str | None = None
+    completed_tool_results: list[dict[str, Any]] = field(default_factory=list)
+    successful_action_receipts: list[dict[str, Any]] = field(default_factory=list)
+    partial_visible_assistant_output: str = ""
+    segment_cap_reason: Literal["duration", "tool_calls"] | None = None
+
+
+@dataclass(frozen=True)
+class BackgroundCheckpoint:
+    """Durable safe-boundary input for resuming one Logical Run."""
+
+    resume_token: str
+    logical_run_id: str
+    input_prompt: str
+    remaining_work: str
+    context_messages: list[dict[str, Any]]
+    completed_tool_results: list[dict[str, Any]]
+    successful_action_receipts: list[dict[str, Any]]
+    partial_visible_assistant_output: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class BackgroundCheckpointPayload:
+    """Provider-safe state persisted atomically with coordinator requeue."""
+
+    original_input: str
+    remaining_work: str
+    context_messages: tuple[dict[str, Any], ...] = ()
+    completed_tool_results: tuple[dict[str, Any], ...] = ()
+    successful_action_receipts: tuple[dict[str, Any], ...] = ()
+    partial_visible_assistant_output: str = ""
+
+    @classmethod
+    def from_turn(
+        cls,
+        request: InvocationRequest,
+        result: AgentTurnResult,
+    ) -> "BackgroundCheckpointPayload":
+        """Capture only committed visible history; hidden reasoning is absent."""
+        return cls(
+            original_input=request.original_input or request.prompt,
+            remaining_work=result.remaining_work or SAFE_BOUNDARY_RESUME_PROMPT,
+            context_messages=tuple(
+                dict(message)
+                for message in (result.context_messages or request.context_messages)
+            ),
+            completed_tool_results=tuple(
+                _merge_checkpoint_records(
+                    request.completed_tool_results,
+                    result.completed_tool_results,
+                )
+            ),
+            successful_action_receipts=tuple(
+                _merge_checkpoint_records(
+                    request.successful_action_receipts,
+                    result.successful_action_receipts,
+                )
+            ),
+            partial_visible_assistant_output=(
+                request.partial_visible_assistant_output
+                + result.partial_visible_assistant_output
+            ),
+        )
+
+
+def _merge_checkpoint_records(
+    previous: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in [*previous, *current]:
+        marker = repr(sorted(record.items(), key=lambda item: item[0]))
+        if marker not in seen:
+            seen.add(marker)
+            merged.append(dict(record))
+    return merged
+
+
+class BackgroundCheckpointStorePort(Protocol):
+    def save(self, checkpoint: BackgroundCheckpoint) -> None: ...
+
+    def load(self, resume_token: str) -> BackgroundCheckpoint: ...
+
+
+class BackgroundCheckpointView(Protocol):
+    @property
+    def remaining_work(self) -> str: ...
+
+    @property
+    def original_input(self) -> str: ...
+
+    @property
+    def context_messages(self) -> tuple[dict[str, Any], ...]: ...
+
+    @property
+    def completed_tool_results(self) -> tuple[dict[str, Any], ...]: ...
+
+    @property
+    def successful_action_receipts(self) -> tuple[dict[str, Any], ...]: ...
+
+    @property
+    def partial_visible_assistant_output(self) -> str: ...
+
+
+def build_background_invocation_request(
+    *,
+    logical_run_id: str,
+    initial_prompt: str,
+    checkpoint: BackgroundCheckpointView | None,
+    newest_working_memory: str,
+    durable_action_receipts: Sequence[dict[str, Any]] = (),
+) -> InvocationRequest:
+    """Build an initial request or a restart-safe safe-boundary continuation."""
+    if checkpoint is None:
+        return InvocationRequest(
+            logical_run_id=logical_run_id,
+            kind=InvocationKind.BACKGROUND,
+            prompt=initial_prompt,
+            resume_token=logical_run_id,
+            original_input=initial_prompt,
+        )
+    receipts = _merge_checkpoint_records(
+        list(checkpoint.successful_action_receipts),
+        [dict(receipt) for receipt in durable_action_receipts],
+    )
+    resume_prompt = (
+        checkpoint.remaining_work
+        + "\n\nThe following state is newer than the original turn. Treat it as "
+        "authoritative. Do not repeat any completed observable effect; inspect "
+        "or reuse its durable receipt instead.\n<newest_working_memory>\n"
+        + newest_working_memory
+        + "\n</newest_working_memory>\n<completed_action_receipts>\n"
+        + json.dumps(
+            receipts,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n</completed_action_receipts>"
+    )
+    return InvocationRequest(
+        logical_run_id=logical_run_id,
+        kind=InvocationKind.BACKGROUND,
+        prompt=resume_prompt,
+        resume_token=logical_run_id,
+        context_messages=[dict(message) for message in checkpoint.context_messages],
+        original_input=checkpoint.original_input or initial_prompt,
+        completed_tool_results=[
+            dict(result) for result in checkpoint.completed_tool_results
+        ],
+        successful_action_receipts=receipts,
+        partial_visible_assistant_output=(checkpoint.partial_visible_assistant_output),
+    )
+
+
+class InvocationControl:
+    """Thread-safe cancellation signal shared with one provider invocation."""
+
+    def __init__(self) -> None:
+        self._cancelled = threading.Event()
+        self._safe_boundary_deferred = threading.Event()
+        self._lock = threading.Lock()
+        self._reason: str | None = None
+        self._callbacks: list[_CancelBinding] = []
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    @property
+    def reason(self) -> str | None:
+        with self._lock:
+            return self._reason
+
+    def wait_cancelled(self, timeout: float | None = None) -> bool:
+        return self._cancelled.wait(timeout)
+
+    def wait_safe_boundary_deferred(self, timeout: float | None = None) -> bool:
+        """Wait until cancellation is observably queued behind an active tool."""
+        return self._safe_boundary_deferred.wait(timeout)
+
+    def cancel(self, reason: str) -> None:
+        callbacks: list[_CancelBinding]
+        with self._lock:
+            if self._cancelled.is_set():
+                return
+            self._reason = reason
+            self._cancelled.set()
+            callbacks = list(self._callbacks)
+        for callback in callbacks:
+            callback.deliver(reason)
+
+    def bind_cancel(self, callback: Callable[[str], None]) -> Callable[[], None]:
+        binding = _CancelBinding(callback)
+        reason: str | None = None
+        with self._lock:
+            if self._cancelled.is_set():
+                reason = self._reason
+            else:
+                self._callbacks.append(binding)
+        if reason is not None:
+            binding.deliver(reason)
+
+        def unbind() -> None:
+            with self._lock:
+                try:
+                    self._callbacks.remove(binding)
+                except ValueError:
+                    pass
+            binding.unbind()
+
+        return unbind
+
+
+class _CancelBinding:
+    """Serialize callback delivery with unbind after a cancellation snapshot."""
+
+    def __init__(self, callback: Callable[[str], None]) -> None:
+        self._callback = callback
+        self._active = True
+        self._lock = threading.Lock()
+
+    def deliver(self, reason: str) -> None:
+        with self._lock:
+            if self._active:
+                self._callback(reason)
+
+    def unbind(self) -> None:
+        with self._lock:
+            self._active = False
+
+
+class _InvocationCancellationState:
+    """Serialize provider return with cancellation owned by one binding."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._provider_returned = threading.Event()
+        self._delivery_attempted = False
+
+    def deliver(self, callback: Callable[[], Any]) -> Any | None:
+        with self._lock:
+            if self._provider_returned.is_set():
+                return None
+            self._delivery_attempted = True
+            return callback()
+
+    def publish_provider_returned(self) -> None:
+        with self._lock:
+            self._provider_returned.set()
+
+    @property
+    def provider_returned(self) -> bool:
+        return self._provider_returned.is_set()
+
+    def must_retire_interrupt(self, *, interrupted: bool) -> bool:
+        with self._lock:
+            return self._delivery_attempted and not interrupted
+
+
+class AgentSessionPort(Protocol):
+    def invoke(
+        self,
+        request: InvocationRequest,
+        *,
+        emit: Callable[[InvocationEvent], None],
+        control: InvocationControl,
+    ) -> AgentTurnResult: ...
+
+
+class HermesAIAgentSession:
+    """Adapter for one existing ``AIAgent`` instance.
+
+    Construction validates the already-resolved runtime rather than mutating
+    it.  A provider-side rejection therefore stays visible to the caller;
+    this adapter never substitutes a provider, model, protocol, or reasoning
+    effort.
+    """
+
+    _USAGE_KEYS = (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+    )
+
+    def __init__(
+        self,
+        *,
+        agent: Any,
+        expected: RuntimeModelConfig,
+        segment_policy: InvocationSegmentPolicy | None = None,
+        timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
+    ):
+        self._agent = agent
+        self._expected = expected
+        self._segment_policy = segment_policy or InvocationSegmentPolicy()
+        self._timer_factory = timer_factory or threading.Timer
+        self.validate_runtime()
+
+    def validate_runtime(self) -> None:
+        """Revalidate the actual provider envelope and no-fallback policy."""
+        agent = self._agent
+        expected = self._expected
+        provider, model, api_mode, reasoning_effort = runtime_selection_fingerprint(
+            agent
+        )
+        actual = {
+            "provider": provider,
+            "model": model,
+            "api_mode": api_mode,
+            "reasoning_effort": reasoning_effort,
+            "context_window_tokens": int(
+                getattr(getattr(agent, "context_compressor", None), "context_length", 0)
+                or 0
+            ),
+        }
+        wanted = RuntimeDiagnostics(**expected.__dict__).as_dict()
+        drift = [
+            f"{key}: expected {wanted[key]!r}, got {actual[key]!r}"
+            for key in wanted
+            if actual[key] != wanted[key]
+        ]
+        fallback_chain = list(getattr(agent, "_fallback_chain", None) or [])
+        if fallback_chain or getattr(agent, "_fallback_model", None):
+            drift.append("fallback chain must be empty")
+        if not bool(getattr(agent, "skip_memory", False)):
+            drift.append("Hermes memory plugin must be disabled for Harness turns")
+        if not bool(getattr(agent, "skip_background_review", False)):
+            drift.append("Hermes background review must be disabled for Harness turns")
+        if drift:
+            raise RuntimeSelectionError("runtime selection drift: " + "; ".join(drift))
+
+    def invoke(
+        self,
+        request: InvocationRequest,
+        *,
+        emit: Callable[[InvocationEvent], None],
+        control: InvocationControl,
+    ) -> AgentTurnResult:
+        invocation_done = threading.Event()
+        cancellation_state = _InvocationCancellationState()
+        cancellation_workers: list[threading.Thread] = []
+        invocation_control = control
+
+        def interrupt_at_safe_boundary(reason: str) -> None:
+            request_at_boundary = getattr(
+                self._agent,
+                "request_interrupt_at_tool_safe_boundary",
+                None,
+            )
+            if callable(request_at_boundary):
+                queued = cancellation_state.deliver(lambda: request_at_boundary(reason))
+                if queued is True:
+                    control._safe_boundary_deferred.set()
+                return
+
+            def deliver() -> None:
+                # Hermes sets _executing_tools around the complete executor,
+                # including canonical result append and persistence. Never use
+                # AIAgent.interrupt() while that fence is active: it explicitly
+                # aborts tool and child-agent workers.
+                while bool(getattr(self._agent, "_executing_tools", False)):
+                    control._safe_boundary_deferred.set()
+                    if invocation_done.wait(0.01):
+                        return
+                if (
+                    not invocation_done.is_set()
+                    and not cancellation_state.provider_returned
+                ):
+                    cancellation_state.deliver(lambda: self._agent.interrupt(reason))
+
+            worker = threading.Thread(
+                target=deliver,
+                name="thine-safe-boundary-cancel",
+                daemon=True,
+            )
+            cancellation_workers.append(worker)
+            worker.start()
+
+        unbind_cancel = control.bind_cancel(interrupt_at_safe_boundary)
+
+        callback_was_present = hasattr(self._agent, "tool_complete_callback")
+        previous_tool_complete = getattr(self._agent, "tool_complete_callback", None)
+        completed_tool_calls = 0
+        completed_tool_calls_lock = threading.Lock()
+
+        def bounded_tool_complete(*args: Any, **kwargs: Any) -> None:
+            nonlocal completed_tool_calls
+            reached_cap = False
+            try:
+                if callable(previous_tool_complete):
+                    previous_tool_complete(*args, **kwargs)
+            finally:
+                with completed_tool_calls_lock:
+                    completed_tool_calls += 1
+                    reached_cap = (
+                        completed_tool_calls == self._segment_policy.max_tool_calls
+                    )
+                if reached_cap:
+                    invocation_control.cancel("segment_cap:tool_calls")
+
+        self._agent.tool_complete_callback = bounded_tool_complete
+        deadline_timer = self._timer_factory(
+            self._segment_policy.max_duration_seconds,
+            lambda: invocation_control.cancel("segment_cap:duration"),
+        )
+        if hasattr(deadline_timer, "daemon"):
+            deadline_timer.daemon = True
+        deadline_timer.start()
+
+        def on_delta(delta: Any) -> None:
+            text = str(delta or "")
+            if text:
+                visible_deltas.append(text)
+                emit(InvocationEvent.progress("assistant_delta", text))
+
+        visible_deltas: list[str] = []
+        try:
+            raw = self._agent.run_conversation(
+                request.prompt,
+                conversation_history=request.context_messages or None,
+                stream_callback=on_delta,
+            )
+            cancellation_state.publish_provider_returned()
+        finally:
+            deadline_timer.cancel()
+            if callback_was_present:
+                self._agent.tool_complete_callback = previous_tool_complete
+            else:
+                delattr(self._agent, "tool_complete_callback")
+            invocation_done.set()
+            unbind_cancel()
+            for worker in cancellation_workers:
+                worker.join(timeout=0.1)
+        self.validate_runtime()
+        completed = bool(raw.get("completed"))
+        failed = bool(raw.get("failed"))
+        interrupted = bool(raw.get("interrupted"))
+        if cancellation_state.must_retire_interrupt(interrupted=interrupted):
+            clear_interrupt = getattr(self._agent, "clear_interrupt", None)
+            if callable(clear_interrupt):
+                clear_interrupt()
+        usage = {key: int(raw.get(key) or 0) for key in self._USAGE_KEYS}
+        messages = list(raw.get("messages") or [])
+        completed_tool_results = [
+            {
+                "tool_call_id": str(message.get("tool_call_id") or ""),
+                "name": str(message.get("tool_name") or message.get("name") or ""),
+                "content": message.get("content"),
+                "effect_disposition": message.get("effect_disposition"),
+            }
+            for message in messages
+            if isinstance(message, dict) and message.get("role") == "tool"
+        ]
+        successful_action_receipts = [
+            {
+                "tool_call_id": result["tool_call_id"],
+                "name": result["name"],
+                "status": "applied",
+            }
+            for result in completed_tool_results
+            if result["effect_disposition"] == "applied"
+        ]
+        return AgentTurnResult(
+            final_output=raw.get("final_response"),
+            context_messages=messages,
+            interrupted=interrupted,
+            completed=completed,
+            failed=failed,
+            failure_reason=(
+                str(raw.get("failure_reason") or raw.get("error") or "") or None
+            ),
+            resume_token=request.resume_token if raw.get("interrupted") else None,
+            usage=usage,
+            remaining_work=(
+                SAFE_BOUNDARY_RESUME_PROMPT if raw.get("interrupted") else None
+            ),
+            completed_tool_results=completed_tool_results,
+            successful_action_receipts=successful_action_receipts,
+            partial_visible_assistant_output="".join(visible_deltas),
+            segment_cap_reason=(
+                None
+                if not interrupted
+                else (
+                    "duration"
+                    if control.reason == "segment_cap:duration"
+                    else (
+                        "tool_calls"
+                        if control.reason == "segment_cap:tool_calls"
+                        else None
+                    )
+                )
+            ),
+        )
+
+
+class HermesInvocationRuntime:
+    """Project one Hermes session onto the Thine invocation port."""
+
+    def __init__(
+        self,
+        *,
+        session: AgentSessionPort,
+        config: RuntimeModelConfig,
+        checkpoint_store: BackgroundCheckpointStorePort | None = None,
+        clock: Callable[[], str] | None = None,
+    ):
+        self._session = session
+        self._config = config
+        self._checkpoint_store = checkpoint_store
+        self._clock = clock or (
+            lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+
+    def diagnostics(self) -> RuntimeDiagnostics:
+        return RuntimeDiagnostics(**self._config.__dict__)
+
+    def invoke(
+        self,
+        request: InvocationRequest,
+        *,
+        emit: Callable[[InvocationEvent], None],
+        control: InvocationControl | None = None,
+    ) -> AgentTurnResult:
+        if request.kind is InvocationKind.BACKGROUND and not request.resume_token:
+            raise ValueError(
+                "background invocation requires a durable resume_token before admission"
+            )
+        if request.kind is InvocationKind.BACKGROUND:
+            if self._checkpoint_store is None:
+                raise ValueError(
+                    "background invocation requires a durable checkpoint_store"
+                )
+            self._checkpoint_store.save(
+                BackgroundCheckpoint(
+                    resume_token=request.resume_token or "",
+                    logical_run_id=request.logical_run_id,
+                    input_prompt=request.original_input or request.prompt,
+                    remaining_work=request.prompt,
+                    context_messages=list(request.context_messages),
+                    completed_tool_results=list(request.completed_tool_results),
+                    successful_action_receipts=list(request.successful_action_receipts),
+                    partial_visible_assistant_output=(
+                        request.partial_visible_assistant_output
+                    ),
+                    updated_at=self._clock(),
+                )
+            )
+        invocation_control = control or InvocationControl()
+        emit(InvocationEvent(InvocationEventKind.ACCEPTED, "queue", "Accepted"))
+        emit(InvocationEvent(InvocationEventKind.STARTED, "runtime", "Started"))
+
+        def emit_progress(event: InvocationEvent) -> None:
+            if event.kind is not InvocationEventKind.PROGRESS:
+                raise ValueError("session ports may emit progress events only")
+            if request.kind is InvocationKind.USER_CHAT:
+                emit(event)
+
+        result = self._session.invoke(
+            request,
+            emit=emit_progress,
+            control=invocation_control,
+        )
+        if result.interrupted:
+            if request.kind is InvocationKind.BACKGROUND:
+                assert self._checkpoint_store is not None
+                payload = BackgroundCheckpointPayload.from_turn(request, result)
+                self._checkpoint_store.save(
+                    BackgroundCheckpoint(
+                        resume_token=request.resume_token or "",
+                        logical_run_id=request.logical_run_id,
+                        input_prompt=payload.original_input,
+                        remaining_work=payload.remaining_work,
+                        context_messages=list(payload.context_messages),
+                        completed_tool_results=list(payload.completed_tool_results),
+                        successful_action_receipts=list(
+                            payload.successful_action_receipts
+                        ),
+                        partial_visible_assistant_output=(
+                            payload.partial_visible_assistant_output
+                        ),
+                        updated_at=self._clock(),
+                    )
+                )
+            emit(
+                InvocationEvent(
+                    InvocationEventKind.INTERRUPTED,
+                    "runtime",
+                    invocation_control.reason or "Interrupted",
+                )
+            )
+            return result
+
+        if result.failed or not result.completed:
+            emit(
+                InvocationEvent(
+                    InvocationEventKind.FAILED,
+                    "runtime",
+                    result.failure_reason
+                    or result.final_output
+                    or "Hermes invocation did not complete",
+                    ephemeral=False,
+                )
+            )
+            return result
+
+        if result.final_output is None:
+            raise RuntimeError("completed invocation did not produce a final output")
+        emit(
+            InvocationEvent(
+                InvocationEventKind.FINAL,
+                "final",
+                result.final_output,
+                ephemeral=False,
+            )
+        )
+        return result
+
+    def resume(
+        self,
+        resume_token: str,
+        *,
+        emit: Callable[[InvocationEvent], None],
+        control: InvocationControl | None = None,
+    ) -> AgentTurnResult:
+        """Start a new invocation of the same Logical Run at its checkpoint."""
+        if self._checkpoint_store is None:
+            raise ValueError("resume requires a durable checkpoint_store")
+        checkpoint = self._checkpoint_store.load(resume_token)
+        return self.invoke(
+            InvocationRequest(
+                logical_run_id=checkpoint.logical_run_id,
+                kind=InvocationKind.BACKGROUND,
+                prompt=checkpoint.remaining_work,
+                resume_token=checkpoint.resume_token,
+                context_messages=list(checkpoint.context_messages),
+                original_input=checkpoint.input_prompt,
+                completed_tool_results=list(checkpoint.completed_tool_results),
+                successful_action_receipts=list(checkpoint.successful_action_receipts),
+                partial_visible_assistant_output=(
+                    checkpoint.partial_visible_assistant_output
+                ),
+            ),
+            emit=emit,
+            control=control,
+        )
+
+
+__all__ = [
+    "AgentSessionPort",
+    "AgentTurnResult",
+    "BackgroundCheckpoint",
+    "BackgroundCheckpointPayload",
+    "BackgroundCheckpointStorePort",
+    "BackgroundCheckpointView",
+    "HermesAIAgentSession",
+    "HermesInvocationRuntime",
+    "InvocationControl",
+    "InvocationEvent",
+    "InvocationEventKind",
+    "InvocationKind",
+    "InvocationRequest",
+    "InvocationSegmentPolicy",
+    "RuntimeDiagnostics",
+    "RuntimeModelConfig",
+    "RuntimeSelectionError",
+    "SAFE_BOUNDARY_RESUME_PROMPT",
+    "build_background_invocation_request",
+    "runtime_selection_fingerprint",
+]

@@ -1,0 +1,426 @@
+{
+  "suite_id": "mobile.invalid.v1",
+  "cases": [
+    {
+      "case_id": "chat.background-entry-rejected",
+      "target": "chat_event",
+      "expected_error": "expected constant 'user_initiated_chat'",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "e",
+        "stream_id": "s",
+        "step_id": null,
+        "user_message_id": "m",
+        "kind": "accepted",
+        "phase": "queue",
+        "safe_display_text": "x",
+        "ephemeral": true,
+        "origin": "background_action",
+        "emitted_at_ms": 1,
+        "heartbeat_max_silence_ms": 5000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "navigation.agent-command-rejected",
+      "target": "navigation_intent",
+      "expected_error": "unknown enum value",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "intent_id": "n",
+        "destination_id": "route.home",
+        "parameters": {
+          "message_id": null,
+          "open_add_sheet": null
+        },
+        "activation_source": "agent_command",
+        "user_action_id": "a",
+        "created_at_ms": 1,
+        "force_current_screen": false,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "home.meeting-mode-node-rejected",
+      "target": "home_state",
+      "expected_error": "unknown enum value",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "user_id": "u",
+        "revision": 1,
+        "updated_at_ms": 1,
+        "nodes": [
+          {
+            "node_id": "meeting",
+            "component_id": "home.card.meeting-mode",
+            "visible": true,
+            "order": 0,
+            "content": {},
+            "navigation_template": null
+          }
+        ],
+        "app_owned_chrome": [
+          "home.chrome.header",
+          "home.banner.google-reconnect",
+          "home.card.listening",
+          "home.chrome.footer"
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "interaction.raw-message-rejected",
+      "target": "interaction_event",
+      "expected_error": "undeclared additive property 'message_text'",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "e",
+        "user_id": "u",
+        "device_id": "d",
+        "occurred_at_ms": 1,
+        "received_at_ms": 1,
+        "screen_id": "route.chat",
+        "surface_id": "chat",
+        "kind": "chat_submission",
+        "object_ref": "m",
+        "outcome": "accepted",
+        "home_revision": null,
+        "home_node_id": null,
+        "primary_correlation": null,
+        "safe_payload": {
+          "action": "send",
+          "closed_value": null,
+          "message_text": "secret"
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "interaction.ack-cannot-claim-model-processing",
+      "target": "interaction_delivery_ack",
+      "expected_error": "expected constant False",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "batch_id": "b",
+        "ack_cursor": 1,
+        "durably_stored_event_ids": [
+          "e"
+        ],
+        "model_processed": true,
+        "acknowledged_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "notification.optional-background-push-rejected",
+      "target": "notification_intent",
+      "expected_error": "expected constant True",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "action_id": "a",
+        "kind": "background_message_push",
+        "title": "t",
+        "body": "b",
+        "persisted_message_id": "m",
+        "navigation_template": "route.chat",
+        "push_required_for_background_message": false,
+        "created_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "chat.final-without-stable-receipt-rejected",
+      "target": "chat_event",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "e-final",
+        "stream_id": "s",
+        "step_id": null,
+        "user_message_id": "um",
+        "assistant_message_id": null,
+        "final_reply_receipt_id": null,
+        "kind": "final",
+        "phase": "completed",
+        "safe_display_text": "Done",
+        "ephemeral": false,
+        "origin": "user_initiated_chat",
+        "emitted_at_ms": 1,
+        "heartbeat_max_silence_ms": 5000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "home.arbitrary-navigation-rejected",
+      "target": "home_state",
+      "expected_error": "unknown enum value",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "user_id": "u",
+        "revision": 1,
+        "updated_at_ms": 1,
+        "nodes": [
+          {
+            "node_id": "n",
+            "component_id": "home.hero.greeting",
+            "visible": true,
+            "order": 0,
+            "content": {
+              "title": "Hi",
+              "body": null,
+              "count": null,
+              "action_key": null
+            },
+            "navigation_template": "route.meeting_mode"
+          }
+        ],
+        "app_owned_chrome": [
+          "home.chrome.header",
+          "home.banner.google-reconnect",
+          "home.card.listening",
+          "home.chrome.footer"
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "home.duplicate-singleton-rejected",
+      "target": "home_state",
+      "expected_error": "Home State contains duplicate singleton component IDs",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "user_id": "u",
+        "revision": 1,
+        "updated_at_ms": 1,
+        "nodes": [
+          {
+            "node_id": "n1",
+            "component_id": "home.hero.greeting",
+            "visible": true,
+            "order": 0,
+            "content": {
+              "title": "Hi",
+              "body": null,
+              "count": null,
+              "action_key": null
+            },
+            "navigation_template": null
+          },
+          {
+            "node_id": "n2",
+            "component_id": "home.hero.greeting",
+            "visible": false,
+            "order": 1,
+            "content": {
+              "title": "Again",
+              "body": null,
+              "count": null,
+              "action_key": null
+            },
+            "navigation_template": null
+          }
+        ],
+        "app_owned_chrome": [
+          "home.chrome.header",
+          "home.banner.google-reconnect",
+          "home.card.listening",
+          "home.chrome.footer"
+        ],
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "interaction.kind-action-mismatch-rejected",
+      "target": "interaction_event",
+      "expected_error": "interaction action is not allowlisted for kind",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "e-mismatch",
+        "user_id": "u",
+        "device_id": "d",
+        "occurred_at_ms": 1,
+        "received_at_ms": 1,
+        "screen_id": "route.chat",
+        "surface_id": "chat.composer",
+        "kind": "chat_submission",
+        "object_ref": "m",
+        "outcome": "accepted",
+        "home_revision": null,
+        "home_node_id": null,
+        "primary_correlation": null,
+        "safe_payload": {
+          "action": "ambient_stop",
+          "closed_value": null
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "interaction.support-external-raw-url-rejected",
+      "target": "interaction_event",
+      "expected_error": "undeclared additive property 'raw_url'",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "e-support-url",
+        "user_id": "u",
+        "device_id": "d",
+        "occurred_at_ms": 1,
+        "received_at_ms": 1,
+        "screen_id": "route.profile",
+        "surface_id": "profile.support",
+        "kind": "support_external_action",
+        "object_ref": null,
+        "outcome": "requested",
+        "home_revision": null,
+        "home_node_id": null,
+        "primary_correlation": null,
+        "safe_payload": {
+          "action": "support",
+          "closed_value": null,
+          "raw_url": "https://should-not-cross.example"
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "notification.background-without-message-rejected",
+      "target": "notification_intent",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "action_id": "a",
+        "kind": "background_message_push",
+        "title": "t",
+        "body": "b",
+        "persisted_message_id": null,
+        "navigation_template": "route.chat",
+        "push_required_for_background_message": true,
+        "created_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "notification.permission-required-consuming-allowance-rejected",
+      "target": "notification_outcome",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "action_id": "a",
+        "communication_kind": "standalone_notification",
+        "outcome": "permission_required",
+        "provider_correlation_id": null,
+        "persisted_message_id": null,
+        "permission_state": "not_determined",
+        "allowance_consumed": true,
+        "completed_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "mobile-outbox.waiting-not-cancellable-rejected",
+      "target": "mobile_chat_outbox",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "local_outbox_id": "mobile-outbox-waiting-invalid",
+        "user_id": "user-local",
+        "user_message_id": "message-waiting-invalid",
+        "idempotency_key": "user-message:message-waiting-invalid",
+        "submission_order": 1,
+        "status": "waiting_for_connection",
+        "backend_submission_id": null,
+        "queue_receipt_id": null,
+        "cancellable": false,
+        "created_at_ms": 1,
+        "updated_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "mobile-outbox.submitting-cancellable-rejected",
+      "target": "mobile_chat_outbox",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "local_outbox_id": "mobile-outbox-submitting-invalid",
+        "user_id": "user-local",
+        "user_message_id": "message-submitting-invalid",
+        "idempotency_key": "user-message:message-submitting-invalid",
+        "submission_order": 1,
+        "status": "submitting",
+        "backend_submission_id": null,
+        "queue_receipt_id": null,
+        "cancellable": true,
+        "created_at_ms": 1,
+        "updated_at_ms": 1,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "mobile-outbox.submitted-without-queue-receipt-rejected",
+      "target": "mobile_chat_outbox",
+      "expected_error": "does not satisfy oneOf",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "local_outbox_id": "o",
+        "user_message_id": "m",
+        "submission_order": 1,
+        "status": "submitted",
+        "backend_submission_id": "s",
+        "queue_receipt_id": null,
+        "cancellable": false,
+        "created_at_ms": 1,
+        "updated_at_ms": 1,
+        "extensions": {}
+      }
+    }
+  ]
+}

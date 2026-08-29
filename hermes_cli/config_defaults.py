@@ -3815,6 +3815,29 @@ DEFAULT_CONFIG = {
         "extra_allowed_hosts": [],
     },
 
+    # Maintained-fork boundary for the local Thine daily-driver. The service
+    # remains disabled in ordinary Hermes installs. All values here are
+    # behavior/routing config; the bearer value itself comes from the named
+    # environment variable or a private file.
+    "thine_harness": {
+        "private_service": {
+            "enabled": False,
+            "host": "127.0.0.1",
+            "port": 8789,
+            "firebase_uid": "",
+            "request_timeout_seconds": 5.0,
+            "credential": {
+                "env": "HERMES_CONTROL_TOKEN",
+                "file": "",
+            },
+        },
+        "operator_dashboard": {
+            "enabled": False,
+            "host": "127.0.0.1",
+            "port": 8792,
+        },
+    },
+
     # Hermes Desktop (Electron app) launch options. These only affect
     # `hermes desktop`; they do not touch the CLI/gateway.
     "desktop": {
@@ -3903,6 +3926,14 @@ DEFAULT_CONFIG = {
 
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
+    "HERMES_CONTROL_TOKEN": {
+        "description": "Shared bearer token for the local Thine backend",
+        "prompt": "Local Thine private control token",
+        "url": None,
+        "password": True,
+        "category": "setting",
+        "advanced": True,
+    },
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": {
         "description": "Nous Portal base URL override",

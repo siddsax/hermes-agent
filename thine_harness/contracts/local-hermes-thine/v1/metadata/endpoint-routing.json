@@ -1,0 +1,67 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "source": {
+    "commit": "041ca7b2f442d3e0f1b700182ac93a68e9bf702c",
+    "path": "docs/local-hermes/mobile-surface-inventory.v1.json"
+  },
+  "phone_thine_origins": [
+    {
+      "origin_id": "thine.primary-http",
+      "protocol": "https",
+      "resolved_origin": "local_backend_tunnel"
+    },
+    {
+      "origin_id": "thine.primary-websocket",
+      "protocol": "wss",
+      "resolved_origin": "local_backend_tunnel"
+    },
+    {
+      "origin_id": "thine.auth",
+      "protocol": "https",
+      "resolved_origin": "local_backend_tunnel"
+    },
+    {
+      "origin_id": "thine.user-data",
+      "protocol": "https",
+      "resolved_origin": "local_backend_tunnel"
+    }
+  ],
+  "phone_route_families": [
+    "auth",
+    "general",
+    "home",
+    "chat",
+    "connectors",
+    "speakers",
+    "push_registration",
+    "realtime_audio",
+    "user_data",
+    "contacts_websocket"
+  ],
+  "inventory_only_excluded_route_families": [
+    "atlas",
+    "meeting_mode",
+    "calendar",
+    "tasks",
+    "notes"
+  ],
+  "routing_rule_for_excluded_live_source": "if_existing_app_code_calls_it_it_still_routes_local_but_never_becomes_a_hermes_primitive",
+  "private_loopback_interfaces": [
+    "thine_data_port",
+    "hermes_control_port",
+    "operator_dashboard"
+  ],
+  "remote_processing_exceptions": [
+    "deployed_modal"
+  ],
+  "external_provider_allowlist": [
+    "openai",
+    "fcm_apns",
+    "user_initiated_external_navigation"
+  ],
+  "production_thine_hosts_allowed": [],
+  "fail_closed": true
+}

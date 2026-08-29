@@ -1,0 +1,153 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "source": {
+    "commit": "041ca7b2f442d3e0f1b700182ac93a68e9bf702c",
+    "path": "docs/local-hermes/mobile-surface-inventory.v1.json"
+  },
+  "default_policy": "deny_unclassified",
+  "allowlisted_kinds": {
+    "navigation_selection": [
+      "route_select",
+      "tab_select",
+      "widget_open",
+      "shortcut_open",
+      "live_activity_open",
+      "universal_link_open"
+    ],
+    "home_activation": [
+      "component_tap",
+      "last_good_fallback",
+      "invalid_state_diagnostic"
+    ],
+    "chat_submission": [
+      "send_accepted",
+      "offline_retry",
+      "pre_submit_cancel",
+      "report_message"
+    ],
+    "speaker_action": [
+      "tag",
+      "rename",
+      "merge",
+      "unlink",
+      "archive",
+      "discard_sample",
+      "sample_play",
+      "sample_pause"
+    ],
+    "integration_change": [
+      "connector_add",
+      "connector_remove",
+      "connector_status"
+    ],
+    "recording_control": [
+      "ambient_start",
+      "ambient_pause",
+      "ambient_resume",
+      "ambient_stop"
+    ],
+    "notification_action": [
+      "open",
+      "dismiss"
+    ],
+    "settings_change": [
+      "closed_key_toggle"
+    ],
+    "permission_action": [
+      "show",
+      "request",
+      "continue",
+      "open_settings",
+      "outcome"
+    ],
+    "notes_action": [
+      "open",
+      "share_request",
+      "copy_request",
+      "edit_request",
+      "calendar_open",
+      "date_select",
+      "retry",
+      "return_today",
+      "transcript_open"
+    ],
+    "task_action": [
+      "prepare",
+      "finish",
+      "undo",
+      "flush",
+      "retry",
+      "error",
+      "dismiss"
+    ],
+    "gift_action": [
+      "impression",
+      "open_page",
+      "share_request",
+      "save_request",
+      "dismiss"
+    ],
+    "transcript_action": [
+      "refresh",
+      "retry",
+      "open_speaker",
+      "share_request"
+    ],
+    "voice_fingerprint_action": [
+      "show",
+      "start",
+      "retry",
+      "skip",
+      "continue"
+    ],
+    "support_external_action": [
+      "feedback_board",
+      "text_support",
+      "feedback",
+      "support",
+      "privacy",
+      "terms"
+    ],
+    "account_action": [
+      "logout_request",
+      "logout_confirm",
+      "delete_request",
+      "delete_confirm"
+    ]
+  },
+  "primary_input_correlations": {
+    "chat_submission": "p0_user_chat",
+    "speaker_action": "speaker_mapping",
+    "previously_delivered": true
+  },
+  "explicit_exclusions": [
+    "meeting_mode",
+    "raw_touch",
+    "raw_scroll",
+    "keystrokes",
+    "free_form_text",
+    "chat_content",
+    "transcript_content",
+    "note_content",
+    "speaker_names",
+    "clipboard",
+    "credentials",
+    "tokens",
+    "raw_notification_payload",
+    "raw_contact_pii",
+    "audio",
+    "waveform",
+    "file_paths",
+    "prefilled_body",
+    "user_name",
+    "app_version",
+    "support_logs",
+    "raw_url",
+    "mail_content"
+  ],
+  "delivery_ack_meaning": "hermes_durably_stored_event_not_model_processed",
+  "tick_policy": "fixed_half_hour_interaction_only"
+}

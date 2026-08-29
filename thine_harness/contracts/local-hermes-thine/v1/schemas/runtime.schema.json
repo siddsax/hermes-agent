@@ -1,0 +1,3593 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.thine.test/contracts/local-hermes-thine/v1/runtime.schema.json",
+  "$defs": {
+    "version": {
+      "type": "object",
+      "required": [
+        "major",
+        "minor"
+      ],
+      "properties": {
+        "major": {
+          "const": 1
+        },
+        "minor": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "extensions": {
+      "type": "object"
+    },
+    "context_message": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "role",
+            "message_id",
+            "content"
+          ],
+          "properties": {
+            "role": {
+              "const": "user"
+            },
+            "message_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "content": {
+              "type": "string",
+              "maxLength": 16000
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "role",
+            "message_id",
+            "content"
+          ],
+          "properties": {
+            "role": {
+              "const": "assistant"
+            },
+            "message_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "content": {
+              "type": "string",
+              "maxLength": 16000
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "role",
+            "tool_result_id",
+            "safe_summary"
+          ],
+          "properties": {
+            "role": {
+              "const": "tool"
+            },
+            "tool_result_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "safe_summary": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "runtime_diagnostics": {
+      "type": "object",
+      "required": [
+        "provider",
+        "model",
+        "api_mode",
+        "reasoning_effort",
+        "context_window_tokens"
+      ],
+      "properties": {
+        "provider": {
+          "const": "openai-codex"
+        },
+        "model": {
+          "const": "gpt-5.6-sol"
+        },
+        "api_mode": {
+          "const": "codex_responses"
+        },
+        "reasoning_effort": {
+          "const": "medium"
+        },
+        "context_window_tokens": {
+          "const": 272000
+        }
+      },
+      "additionalProperties": false
+    },
+    "invocation_reference": {
+      "type": "object",
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "user_message",
+            "transcript_availability",
+            "transcript_claim",
+            "speaker_mapping_event",
+            "interaction_window",
+            "interaction_batch",
+            "schedule",
+            "quarantine_retry"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false
+    },
+    "attempt": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "attempt_id",
+        "logical_run_id",
+        "ordinal",
+        "cause",
+        "status",
+        "started_at_ms",
+        "finished_at_ms",
+        "failure_code",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "attempt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "cause": {
+          "enum": [
+            "initial",
+            "fault_retry"
+          ]
+        },
+        "status": {
+          "enum": [
+            "running",
+            "succeeded",
+            "failed_fault"
+          ]
+        },
+        "started_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "finished_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "failure_code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "cause": {
+                  "const": "initial"
+                },
+                "ordinal": {
+                  "const": 1
+                }
+              }
+            },
+            {
+              "properties": {
+                "cause": {
+                  "const": "fault_retry"
+                },
+                "ordinal": {
+                  "minimum": 2,
+                  "maximum": 3
+                }
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "status": {
+                  "const": "running"
+                },
+                "finished_at_ms": {
+                  "type": "null"
+                },
+                "failure_code": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "succeeded"
+                },
+                "finished_at_ms": {
+                  "type": "integer"
+                },
+                "failure_code": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "status": {
+                  "const": "failed_fault"
+                },
+                "finished_at_ms": {
+                  "type": "integer"
+                },
+                "failure_code": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "tick": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "tick_id",
+        "user_id",
+        "logical_run_id",
+        "kind",
+        "priority",
+        "occurred_at_ms",
+        "received_at_ms",
+        "queued_at_ms",
+        "source_ref",
+        "causation_id",
+        "correlation_id",
+        "attempt_ordinal",
+        "lease",
+        "communication_allowance_snapshot",
+        "payload",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "tick_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "kind": {
+          "enum": [
+            "p0_user_chat",
+            "p1_transcript",
+            "p1_speaker",
+            "p1_interaction",
+            "p2_scheduled"
+          ]
+        },
+        "priority": {
+          "enum": [
+            "p0",
+            "p1",
+            "p2"
+          ]
+        },
+        "occurred_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "received_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queued_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_ref": {
+          "type": "object",
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "user_message",
+                "transcript_availability",
+                "speaker_mapping",
+                "interaction_window",
+                "schedule"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "additionalProperties": false
+        },
+        "causation_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "attempt_ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "lease": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "owner": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "expires_at_ms": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "owner",
+            "expires_at_ms"
+          ],
+          "additionalProperties": false
+        },
+        "communication_allowance_snapshot": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "payload": {
+          "type": "object",
+          "required": [
+            "payload_kind",
+            "reference_id"
+          ],
+          "properties": {
+            "payload_kind": {
+              "enum": [
+                "user_message",
+                "transcript_availability",
+                "speaker_mapping",
+                "interaction_window",
+                "schedule"
+              ]
+            },
+            "reference_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "additionalProperties": false
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "p0_user_chat"
+            },
+            "priority": {
+              "const": "p0"
+            },
+            "source_ref": {
+              "properties": {
+                "kind": {
+                  "const": "user_message"
+                }
+              }
+            },
+            "payload": {
+              "properties": {
+                "payload_kind": {
+                  "const": "user_message"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "p1_transcript"
+            },
+            "priority": {
+              "const": "p1"
+            },
+            "source_ref": {
+              "properties": {
+                "kind": {
+                  "const": "transcript_availability"
+                }
+              }
+            },
+            "payload": {
+              "properties": {
+                "payload_kind": {
+                  "const": "transcript_availability"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "p1_speaker"
+            },
+            "priority": {
+              "const": "p1"
+            },
+            "source_ref": {
+              "properties": {
+                "kind": {
+                  "const": "speaker_mapping"
+                }
+              }
+            },
+            "payload": {
+              "properties": {
+                "payload_kind": {
+                  "const": "speaker_mapping"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "p1_interaction"
+            },
+            "priority": {
+              "const": "p1"
+            },
+            "source_ref": {
+              "properties": {
+                "kind": {
+                  "const": "interaction_window"
+                }
+              }
+            },
+            "payload": {
+              "properties": {
+                "payload_kind": {
+                  "const": "interaction_window"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "p2_scheduled"
+            },
+            "priority": {
+              "enum": [
+                "p2",
+                "p1"
+              ]
+            },
+            "source_ref": {
+              "properties": {
+                "kind": {
+                  "const": "schedule"
+                }
+              }
+            },
+            "payload": {
+              "properties": {
+                "payload_kind": {
+                  "const": "schedule"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "invocation_request": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "invocation_id",
+        "logical_run_id",
+        "tick_id",
+        "mode",
+        "kind",
+        "prompt",
+        "prompt_token_count",
+        "input_ref",
+        "source_ref",
+        "resume_token",
+        "checkpoint_id",
+        "context_messages",
+        "completed_tool_result_ids",
+        "successful_action_receipt_ids",
+        "partial_visible_assistant_output",
+        "input_gap_ids",
+        "runtime_diagnostics",
+        "requested_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "invocation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "tick_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "mode": {
+          "enum": [
+            "new",
+            "resumed"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "p0_user_chat",
+            "p1_transcript",
+            "p1_speaker",
+            "p1_interaction",
+            "p2_scheduled"
+          ]
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16000
+        },
+        "prompt_token_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200000
+        },
+        "input_ref": {
+          "$ref": "#/$defs/invocation_reference"
+        },
+        "source_ref": {
+          "$ref": "#/$defs/invocation_reference"
+        },
+        "resume_token": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "checkpoint_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "context_messages": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "$ref": "#/$defs/context_message"
+          }
+        },
+        "completed_tool_result_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "successful_action_receipt_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "partial_visible_assistant_output": {
+          "type": "string",
+          "maxLength": 16000
+        },
+        "input_gap_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "runtime_diagnostics": {
+          "$ref": "#/$defs/runtime_diagnostics"
+        },
+        "requested_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "mode": {
+                  "const": "new"
+                },
+                "resume_token": {
+                  "type": "null"
+                },
+                "checkpoint_id": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "mode": {
+                  "const": "resumed"
+                },
+                "resume_token": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "checkpoint_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "context_messages": {
+                  "minItems": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "p0_user_chat"
+                },
+                "input_ref": {
+                  "properties": {
+                    "kind": {
+                      "const": "user_message"
+                    }
+                  }
+                },
+                "source_ref": {
+                  "properties": {
+                    "kind": {
+                      "const": "user_message"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "p1_transcript"
+                },
+                "input_ref": {
+                  "properties": {
+                    "kind": {
+                      "const": "transcript_claim"
+                    }
+                  }
+                },
+                "source_ref": {
+                  "properties": {
+                    "kind": {
+                      "const": "transcript_availability"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "p1_speaker"
+                },
+                "input_ref": {
+                  "properties": {
+                    "kind": {
+                      "const": "speaker_mapping_event"
+                    }
+                  }
+                },
+                "source_ref": {
+                  "properties": {
+                    "kind": {
+                      "const": "speaker_mapping_event"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "p1_interaction"
+                },
+                "input_ref": {
+                  "properties": {
+                    "kind": {
+                      "const": "interaction_batch"
+                    }
+                  }
+                },
+                "source_ref": {
+                  "properties": {
+                    "kind": {
+                      "const": "interaction_window"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "p2_scheduled"
+                },
+                "input_ref": {
+                  "properties": {
+                    "kind": {
+                      "const": "schedule"
+                    }
+                  }
+                },
+                "source_ref": {
+                  "properties": {
+                    "kind": {
+                      "const": "schedule"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "invocation_event": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "event_id",
+        "invocation_id",
+        "logical_run_id",
+        "sequence",
+        "kind",
+        "safe_display_text",
+        "ephemeral",
+        "result_ref",
+        "error_code",
+        "usage",
+        "resume_token",
+        "runtime_diagnostics",
+        "emitted_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "invocation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "accepted",
+            "started",
+            "progress",
+            "final",
+            "failed",
+            "interrupted"
+          ]
+        },
+        "safe_display_text": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "ephemeral": {
+          "type": "boolean"
+        },
+        "result_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "error_code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "usage": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens"
+          ],
+          "properties": {
+            "input_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cache_read_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cache_write_tokens": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "resume_token": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "runtime_diagnostics": {
+          "$ref": "#/$defs/runtime_diagnostics"
+        },
+        "emitted_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "accepted",
+                "started",
+                "progress"
+              ]
+            },
+            "ephemeral": {
+              "const": true
+            },
+            "result_ref": {
+              "type": "null"
+            },
+            "error_code": {
+              "type": "null"
+            },
+            "usage": {
+              "type": "null"
+            },
+            "resume_token": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "final"
+            },
+            "ephemeral": {
+              "const": false
+            },
+            "result_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "error_code": {
+              "type": "null"
+            },
+            "usage": {
+              "type": "object"
+            },
+            "resume_token": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "failed"
+            },
+            "ephemeral": {
+              "const": false
+            },
+            "result_ref": {
+              "type": "null"
+            },
+            "error_code": {
+              "type": "string",
+              "minLength": 1
+            },
+            "usage": {
+              "type": "object"
+            },
+            "resume_token": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "interrupted"
+            },
+            "ephemeral": {
+              "const": false
+            },
+            "result_ref": {
+              "type": "null"
+            },
+            "error_code": {
+              "type": "string",
+              "minLength": 1
+            },
+            "usage": {
+              "type": "object"
+            },
+            "resume_token": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "p0_submission_outbox": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "submission_id",
+        "user_id",
+        "user_message_id",
+        "idempotency_key",
+        "status",
+        "queue_receipt_id",
+        "cancellable",
+        "created_at_ms",
+        "updated_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "submission_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "status": {
+          "enum": [
+            "received",
+            "enqueued",
+            "cancelled"
+          ]
+        },
+        "queue_receipt_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "cancellable": {
+          "type": "boolean"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "received"
+            },
+            "queue_receipt_id": {
+              "type": "null"
+            },
+            "cancellable": {
+              "const": true
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "enqueued"
+            },
+            "queue_receipt_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cancellable": {
+              "const": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "cancelled"
+            },
+            "queue_receipt_id": {
+              "type": "null"
+            },
+            "cancellable": {
+              "const": false
+            }
+          }
+        }
+      ]
+    },
+    "final_reply_outbox": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "outbox_id",
+        "assistant_message_id",
+        "user_message_id",
+        "idempotency_key",
+        "logical_run_id",
+        "content_ref",
+        "status",
+        "backend_receipt_id",
+        "created_at_ms",
+        "updated_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "outbox_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "assistant_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "content_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "status": {
+          "enum": [
+            "pending_backend_persistence",
+            "persisted"
+          ]
+        },
+        "backend_receipt_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "pending_backend_persistence"
+            },
+            "backend_receipt_id": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "persisted"
+            },
+            "backend_receipt_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "final_reply_receipt": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "receipt_id",
+        "assistant_message_id",
+        "user_message_id",
+        "backend_message_id",
+        "idempotency_key",
+        "resolution",
+        "persisted_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "receipt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "assistant_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "backend_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "resolution": {
+          "enum": [
+            "persisted_now",
+            "existing_receipt"
+          ]
+        },
+        "persisted_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "run_finalization": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "finalization_id",
+        "logical_run_id",
+        "tick_id",
+        "tick_kind",
+        "phase",
+        "source_ack_id",
+        "final_reply_receipt_id",
+        "recovery_mode",
+        "inference_allowed",
+        "restream_allowed",
+        "working_memory_outcome",
+        "finalized_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "finalization_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "tick_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "tick_kind": {
+          "enum": [
+            "p0_user_chat",
+            "p1_transcript",
+            "p1_speaker",
+            "p1_interaction",
+            "p2_scheduled"
+          ]
+        },
+        "phase": {
+          "enum": [
+            "reply_delivery_pending",
+            "reply_persisted",
+            "memory_finalization_pending",
+            "awaiting_audio_ack",
+            "awaiting_speaker_cursor_ack",
+            "completed"
+          ]
+        },
+        "source_ack_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "final_reply_receipt_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "recovery_mode": {
+          "enum": [
+            "normal",
+            "hook_only",
+            "ack_only"
+          ]
+        },
+        "inference_allowed": {
+          "const": false
+        },
+        "restream_allowed": {
+          "const": false
+        },
+        "working_memory_outcome": {
+          "enum": [
+            "unchanged",
+            "written",
+            "compacted",
+            "skipped_interrupted"
+          ]
+        },
+        "finalized_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "tick_kind": {
+              "const": "p0_user_chat"
+            },
+            "phase": {
+              "const": "reply_delivery_pending"
+            },
+            "source_ack_id": {
+              "type": "null"
+            },
+            "final_reply_receipt_id": {
+              "type": "null"
+            },
+            "recovery_mode": {
+              "const": "ack_only"
+            },
+            "finalized_at_ms": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "tick_kind": {
+              "const": "p0_user_chat"
+            },
+            "phase": {
+              "const": "reply_persisted"
+            },
+            "source_ack_id": {
+              "type": "null"
+            },
+            "final_reply_receipt_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recovery_mode": {
+              "const": "hook_only"
+            },
+            "finalized_at_ms": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "tick_kind": {
+              "const": "p0_user_chat"
+            },
+            "phase": {
+              "const": "memory_finalization_pending"
+            },
+            "source_ack_id": {
+              "type": "null"
+            },
+            "final_reply_receipt_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recovery_mode": {
+              "const": "hook_only"
+            },
+            "finalized_at_ms": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "tick_kind": {
+              "const": "p0_user_chat"
+            },
+            "phase": {
+              "const": "completed"
+            },
+            "source_ack_id": {
+              "type": "null"
+            },
+            "final_reply_receipt_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recovery_mode": {
+              "enum": [
+                "normal",
+                "hook_only"
+              ]
+            },
+            "finalized_at_ms": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "properties": {
+            "tick_kind": {
+              "const": "p1_transcript"
+            },
+            "phase": {
+              "const": "awaiting_audio_ack"
+            },
+            "source_ack_id": {
+              "type": "null"
+            },
+            "final_reply_receipt_id": {
+              "type": "null"
+            },
+            "recovery_mode": {
+              "const": "ack_only"
+            },
+            "finalized_at_ms": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "tick_kind": {
+              "const": "p1_speaker"
+            },
+            "phase": {
+              "const": "awaiting_speaker_cursor_ack"
+            },
+            "source_ack_id": {
+              "type": "null"
+            },
+            "final_reply_receipt_id": {
+              "type": "null"
+            },
+            "recovery_mode": {
+              "const": "ack_only"
+            },
+            "finalized_at_ms": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "tick_kind": {
+              "enum": [
+                "p1_transcript",
+                "p1_speaker",
+                "p1_interaction"
+              ]
+            },
+            "phase": {
+              "const": "completed"
+            },
+            "source_ack_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "final_reply_receipt_id": {
+              "type": "null"
+            },
+            "recovery_mode": {
+              "enum": [
+                "normal",
+                "ack_only"
+              ]
+            },
+            "finalized_at_ms": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "properties": {
+            "tick_kind": {
+              "const": "p2_scheduled"
+            },
+            "phase": {
+              "const": "completed"
+            },
+            "source_ack_id": {
+              "type": "null"
+            },
+            "final_reply_receipt_id": {
+              "type": "null"
+            },
+            "recovery_mode": {
+              "const": "normal"
+            },
+            "finalized_at_ms": {
+              "type": "integer"
+            }
+          }
+        }
+      ]
+    },
+    "run_receipt": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "receipt_id",
+        "logical_run_id",
+        "tick_id",
+        "outcome",
+        "attempts_total",
+        "finalization_id",
+        "recorded_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "receipt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "tick_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "outcome": {
+          "enum": [
+            "completed",
+            "failed_terminal",
+            "quarantined"
+          ]
+        },
+        "attempts_total": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "finalization_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "recorded_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "outcome": {
+              "const": "completed"
+            },
+            "finalization_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "outcome": {
+              "enum": [
+                "failed_terminal",
+                "quarantined"
+              ]
+            },
+            "attempts_total": {
+              "const": 3
+            },
+            "finalization_id": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "input_receipt": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "receipt_id",
+        "source_kind",
+        "source_identity",
+        "logical_run_id",
+        "ack_id",
+        "disposition",
+        "recorded_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "receipt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "source_kind": {
+          "enum": [
+            "transcript",
+            "speaker_mapping",
+            "interaction"
+          ]
+        },
+        "source_identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ack_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "disposition": {
+          "enum": [
+            "acknowledged",
+            "quarantined"
+          ]
+        },
+        "recorded_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "queue_receipt": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "receipt_id",
+        "user_id",
+        "user_message_id",
+        "idempotency_key",
+        "logical_run_id",
+        "tick_id",
+        "resolution",
+        "enqueued_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "receipt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "tick_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "resolution": {
+          "enum": [
+            "enqueued_now",
+            "existing_receipt"
+          ]
+        },
+        "enqueued_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "hermes_control_request": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "request_id",
+        "operation",
+        "user_id",
+        "deadline_at_ms",
+        "timeout_ms",
+        "idempotency_key",
+        "payload_ref",
+        "created_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "operation": {
+          "enum": [
+            "submit_p0",
+            "get_home",
+            "append_interactions",
+            "health",
+            "get_status",
+            "cancel"
+          ]
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "deadline_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120000
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "payload_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "operation": {
+              "enum": [
+                "submit_p0",
+                "append_interactions",
+                "cancel"
+              ]
+            },
+            "payload_ref": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "operation": {
+              "enum": [
+                "get_home",
+                "health",
+                "get_status"
+              ]
+            },
+            "payload_ref": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "hermes_control_response": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "request_id",
+        "operation",
+        "idempotency_key",
+        "deadline_at_ms",
+        "timeout_ms",
+        "status",
+        "result_ref",
+        "error_code",
+        "responded_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "operation": {
+          "enum": [
+            "submit_p0",
+            "get_home",
+            "append_interactions",
+            "health",
+            "get_status",
+            "cancel"
+          ]
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "deadline_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120000
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "timed_out",
+            "rejected"
+          ]
+        },
+        "result_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "error_code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "responded_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "succeeded"
+            },
+            "result_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "error_code": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "timed_out",
+                "rejected"
+              ]
+            },
+            "result_ref": {
+              "type": "null"
+            },
+            "error_code": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "topic_lifecycle": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "topic_id",
+        "user_id",
+        "topic_key",
+        "state",
+        "last_asked_at_ms",
+        "next_eligible_at_ms",
+        "evidence_refs",
+        "authorizing_message_id",
+        "do_not_ask",
+        "updated_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "topic_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "topic_key": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$",
+          "maxLength": 128
+        },
+        "state": {
+          "enum": [
+            "proposed",
+            "asked",
+            "acknowledged",
+            "snoozed",
+            "resolved",
+            "expired"
+          ]
+        },
+        "last_asked_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "next_eligible_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "evidence_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "authorizing_message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "do_not_ask": {
+          "type": "boolean"
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "state": {
+              "const": "proposed"
+            },
+            "last_asked_at_ms": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "state": {
+              "enum": [
+                "asked",
+                "acknowledged",
+                "snoozed",
+                "resolved",
+                "expired"
+              ]
+            },
+            "last_asked_at_ms": {
+              "type": "integer"
+            }
+          }
+        }
+      ]
+    },
+    "dashboard_read_model": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "model_id",
+        "generated_at_ms",
+        "source_state_paths",
+        "item_count",
+        "status",
+        "summary_ref",
+        "authoritative",
+        "redacted",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "model_id": {
+          "enum": [
+            "queue",
+            "current_run",
+            "transcripts",
+            "memory",
+            "actions",
+            "communications",
+            "home",
+            "schedules",
+            "failures",
+            "topics",
+            "interactions",
+            "debug_timeline"
+          ]
+        },
+        "generated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_state_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "item_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "degraded",
+            "unavailable"
+          ]
+        },
+        "summary_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "authoritative": {
+          "const": false
+        },
+        "redacted": {
+          "const": true
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "dashboard_snapshot": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "snapshot_id",
+        "generated_at_ms",
+        "binding",
+        "authoritative",
+        "read_models",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "generated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "binding": {
+          "const": "mac_loopback_only"
+        },
+        "authoritative": {
+          "const": false
+        },
+        "read_models": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/dashboard_read_model"
+          }
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "checkpoint": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "checkpoint_id",
+        "resume_token",
+        "logical_run_id",
+        "input_reference",
+        "remaining_work",
+        "context_messages",
+        "completed_tool_result_ids",
+        "successful_action_receipt_ids",
+        "partial_visible_assistant_output",
+        "updated_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "checkpoint_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "resume_token": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "input_reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "remaining_work": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "context_messages": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "$ref": "#/$defs/context_message"
+          }
+        },
+        "completed_tool_result_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "successful_action_receipt_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "partial_visible_assistant_output": {
+          "type": "string",
+          "maxLength": 16000
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "tool_result": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "tool_result_id",
+        "logical_run_id",
+        "attempt_id",
+        "tool_call_id",
+        "wire_name",
+        "logical_namespace",
+        "status",
+        "effect_disposition",
+        "safe_summary",
+        "payload_ref",
+        "deadline_at_ms",
+        "timeout_ms",
+        "timed_out",
+        "reconciliation",
+        "started_at_ms",
+        "finished_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "tool_result_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "attempt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "tool_call_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "wire_name": {
+          "type": "string",
+          "pattern": "^thine_[a-z0-9_]+$",
+          "maxLength": 128
+        },
+        "logical_namespace": {
+          "enum": [
+            "transcripts",
+            "speakers",
+            "communications",
+            "ui.state",
+            "schedules",
+            "working_memory",
+            "topics",
+            "permissions",
+            "run"
+          ]
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed_retryable",
+            "failed_terminal",
+            "queued_for_reconciliation"
+          ]
+        },
+        "effect_disposition": {
+          "enum": [
+            "none",
+            "applied",
+            "not_applied",
+            "unknown"
+          ]
+        },
+        "safe_summary": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "payload_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "deadline_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120000
+        },
+        "timed_out": {
+          "type": "boolean"
+        },
+        "reconciliation": {
+          "enum": [
+            "not_needed",
+            "pending",
+            "confirmed_applied",
+            "confirmed_not_applied"
+          ]
+        },
+        "started_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "finished_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "queued_for_reconciliation"
+            },
+            "effect_disposition": {
+              "const": "unknown"
+            },
+            "timed_out": {
+              "const": true
+            },
+            "reconciliation": {
+              "const": "pending"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "succeeded",
+                "failed_retryable",
+                "failed_terminal"
+              ]
+            },
+            "timed_out": {
+              "const": false
+            },
+            "reconciliation": {
+              "enum": [
+                "not_needed",
+                "confirmed_applied",
+                "confirmed_not_applied"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "action_identity": {
+      "type": "object",
+      "required": [
+        "action_id",
+        "logical_run_id",
+        "effect_ordinal",
+        "intent_fingerprint"
+      ],
+      "properties": {
+        "action_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "effect_ordinal": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "intent_fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "action_intent": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "identity",
+        "kind",
+        "status",
+        "created_at_ms",
+        "safe_payload",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "identity": {
+          "$ref": "#/$defs/action_identity"
+        },
+        "kind": {
+          "enum": [
+            "background_message",
+            "standalone_notification",
+            "home_mutation",
+            "schedule_create",
+            "preference_change"
+          ]
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "executing",
+            "succeeded",
+            "failed"
+          ]
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "safe_payload": {
+          "type": "object",
+          "required": [
+            "payload_kind",
+            "reference_id"
+          ],
+          "properties": {
+            "payload_kind": {
+              "enum": [
+                "background_message",
+                "standalone_notification",
+                "home_mutation",
+                "schedule_create",
+                "preference_change"
+              ]
+            },
+            "reference_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "additionalProperties": false
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "background_message"
+            },
+            "safe_payload": {
+              "properties": {
+                "payload_kind": {
+                  "const": "background_message"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "standalone_notification"
+            },
+            "safe_payload": {
+              "properties": {
+                "payload_kind": {
+                  "const": "standalone_notification"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "home_mutation"
+            },
+            "safe_payload": {
+              "properties": {
+                "payload_kind": {
+                  "const": "home_mutation"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "schedule_create"
+            },
+            "safe_payload": {
+              "properties": {
+                "payload_kind": {
+                  "const": "schedule_create"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "preference_change"
+            },
+            "safe_payload": {
+              "properties": {
+                "payload_kind": {
+                  "const": "preference_change"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "action_receipt": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "receipt_id",
+        "action_identity",
+        "status",
+        "provider_correlation_id",
+        "accepted_at_ms",
+        "reconciliation_state",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "receipt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "action_identity": {
+          "type": "object",
+          "required": [
+            "action_id",
+            "logical_run_id",
+            "effect_ordinal",
+            "intent_fingerprint"
+          ],
+          "properties": {
+            "action_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "logical_run_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "effect_ordinal": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "intent_fingerprint": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed_terminal",
+            "queued_for_retry"
+          ]
+        },
+        "provider_correlation_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "accepted_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "reconciliation_state": {
+          "enum": [
+            "not_needed",
+            "pending",
+            "confirmed_applied",
+            "confirmed_not_applied"
+          ]
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "working_memory_snapshot": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "user_id",
+        "version",
+        "markdown",
+        "configured_model_token_count",
+        "tokenizer_status",
+        "max_tokens",
+        "debug_retention_versions",
+        "restorable",
+        "committed_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "user_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "markdown": {
+          "type": "string",
+          "maxLength": 64000
+        },
+        "configured_model_token_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 16000
+        },
+        "tokenizer_status": {
+          "enum": [
+            "exact",
+            "unresolved_fail_closed"
+          ]
+        },
+        "max_tokens": {
+          "const": 16000
+        },
+        "debug_retention_versions": {
+          "const": 50
+        },
+        "restorable": {
+          "const": false
+        },
+        "committed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "stop_hook_decision": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "logical_run_id",
+        "outcome",
+        "worth_remembering",
+        "memory_write_performed",
+        "memory_version",
+        "configured_model_token_count",
+        "tokenizer_status",
+        "cache_identity",
+        "hook_only_recovery",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "outcome": {
+          "enum": [
+            "committed",
+            "unchanged",
+            "skipped_interrupted"
+          ]
+        },
+        "worth_remembering": {
+          "type": "boolean"
+        },
+        "memory_write_performed": {
+          "type": "boolean"
+        },
+        "memory_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "configured_model_token_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 16000
+        },
+        "tokenizer_status": {
+          "enum": [
+            "exact",
+            "unresolved_fail_closed"
+          ]
+        },
+        "cache_identity": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "prompt_cache_key",
+            "tool_schema_sha256"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "prompt_cache_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "tool_schema_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "hook_only_recovery": {
+          "type": "boolean"
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "outcome": {
+              "const": "committed"
+            },
+            "worth_remembering": {
+              "const": true
+            },
+            "memory_write_performed": {
+              "const": true
+            },
+            "tokenizer_status": {
+              "const": "exact"
+            },
+            "configured_model_token_count": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "properties": {
+            "outcome": {
+              "enum": [
+                "unchanged",
+                "skipped_interrupted"
+              ]
+            },
+            "worth_remembering": {
+              "const": false
+            },
+            "memory_write_performed": {
+              "const": false
+            }
+          }
+        }
+      ]
+    },
+    "quarantine_record": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "quarantine_id",
+        "source_kind",
+        "source_identity",
+        "immutable_range",
+        "logical_run_id",
+        "fault_attempts_total",
+        "normal_cursor_advanced",
+        "created_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "quarantine_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "source_kind": {
+          "enum": [
+            "transcript",
+            "speaker_mapping",
+            "interaction",
+            "scheduled"
+          ]
+        },
+        "source_identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "immutable_range": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "fault_attempts_total": {
+          "const": 3
+        },
+        "normal_cursor_advanced": {
+          "type": "boolean"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "source_kind": {
+              "const": "transcript"
+            },
+            "immutable_range": {
+              "type": "object",
+              "required": [
+                "range_kind",
+                "aggregation_buffer_ids",
+                "first_sequence_number",
+                "last_sequence_number"
+              ],
+              "properties": {
+                "range_kind": {
+                  "const": "transcript_entries"
+                },
+                "aggregation_buffer_ids": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "first_sequence_number": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "last_sequence_number": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "normal_cursor_advanced": {
+              "const": true
+            }
+          }
+        },
+        {
+          "properties": {
+            "source_kind": {
+              "const": "speaker_mapping"
+            },
+            "immutable_range": {
+              "type": "object",
+              "required": [
+                "range_kind",
+                "mapping_event_id"
+              ],
+              "properties": {
+                "range_kind": {
+                  "const": "speaker_mapping_event"
+                },
+                "mapping_event_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "additionalProperties": false
+            },
+            "normal_cursor_advanced": {
+              "const": true
+            }
+          }
+        },
+        {
+          "properties": {
+            "source_kind": {
+              "const": "interaction"
+            },
+            "immutable_range": {
+              "type": "object",
+              "required": [
+                "range_kind",
+                "first_cursor",
+                "last_cursor"
+              ],
+              "properties": {
+                "range_kind": {
+                  "const": "interaction_cursors"
+                },
+                "first_cursor": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "last_cursor": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "normal_cursor_advanced": {
+              "const": true
+            }
+          }
+        },
+        {
+          "properties": {
+            "source_kind": {
+              "const": "scheduled"
+            },
+            "immutable_range": {
+              "type": "null"
+            },
+            "normal_cursor_advanced": {
+              "const": false
+            }
+          }
+        }
+      ]
+    },
+    "explicit_retry": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "retry_run_id",
+        "quarantine_id",
+        "source_identity",
+        "preserved_receipt_ids",
+        "created_at_ms",
+        "rewinds_normal_cursor",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "retry_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "quarantine_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "source_identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "preserved_receipt_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rewinds_normal_cursor": {
+          "const": false
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "reset_command": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "reset_id",
+        "scope",
+        "confirmed",
+        "confirmed_preferences_revision",
+        "current_preferences_revision",
+        "explicit_preferences_to_delete",
+        "execute",
+        "harness_stopped",
+        "live_work_count",
+        "requested_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "reset_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "scope": {
+          "enum": [
+            "working_memory_topics",
+            "queues_schedules_receipts",
+            "home_state",
+            "all_hermes_state"
+          ]
+        },
+        "confirmed": {
+          "type": "boolean"
+        },
+        "confirmed_preferences_revision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "current_preferences_revision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "explicit_preferences_to_delete": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "current_value"
+            ],
+            "properties": {
+              "key": {
+                "enum": [
+                  "notifications_enabled",
+                  "speaker_tag_nudges_enabled"
+                ]
+              },
+              "current_value": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "execute": {
+          "type": "boolean"
+        },
+        "harness_stopped": {
+          "type": "boolean"
+        },
+        "live_work_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "requested_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "scope": {
+                  "enum": [
+                    "working_memory_topics",
+                    "queues_schedules_receipts",
+                    "home_state"
+                  ]
+                },
+                "explicit_preferences_to_delete": {
+                  "maxItems": 0
+                },
+                "confirmed_preferences_revision": {
+                  "type": "null"
+                },
+                "current_preferences_revision": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "scope": {
+                  "const": "all_hermes_state"
+                },
+                "confirmed": {
+                  "const": true
+                },
+                "confirmed_preferences_revision": {
+                  "type": "integer"
+                },
+                "current_preferences_revision": {
+                  "type": "integer"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "execute": {
+                  "const": true
+                },
+                "harness_stopped": {
+                  "const": true
+                },
+                "live_work_count": {
+                  "const": 0
+                }
+              }
+            },
+            {
+              "properties": {
+                "execute": {
+                  "const": false
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "interaction_cursor_consumption_receipt": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "consumption_receipt_id",
+        "batch_id",
+        "first_cursor",
+        "last_cursor",
+        "logical_run_id",
+        "finalization_id",
+        "consumed_cursor",
+        "consumed_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "consumption_receipt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "batch_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "first_cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "last_cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "logical_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "finalization_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "consumed_cursor": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "consumed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false
+    },
+    "reset_result": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "reset_id",
+        "status",
+        "execution_requested",
+        "preconditions_satisfied",
+        "preserved_authorities",
+        "default_home_recreated",
+        "completed_at_ms",
+        "extensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "reset_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "refused_live_work",
+            "confirmation_required"
+          ]
+        },
+        "execution_requested": {
+          "type": "boolean"
+        },
+        "preconditions_satisfied": {
+          "type": "boolean"
+        },
+        "preserved_authorities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "canonical_transcripts",
+              "speaker_mappings_and_relationships",
+              "aggregation_buffer",
+              "quarantine"
+            ]
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "default_home_recreated": {
+          "type": "boolean"
+        },
+        "completed_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "completed"
+            },
+            "execution_requested": {
+              "const": true
+            },
+            "preconditions_satisfied": {
+              "const": true
+            },
+            "completed_at_ms": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "refused_live_work"
+            },
+            "execution_requested": {
+              "const": true
+            },
+            "preconditions_satisfied": {
+              "const": false
+            },
+            "completed_at_ms": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "confirmation_required"
+            },
+            "execution_requested": {
+              "const": false
+            },
+            "preconditions_satisfied": {
+              "const": false
+            },
+            "completed_at_ms": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

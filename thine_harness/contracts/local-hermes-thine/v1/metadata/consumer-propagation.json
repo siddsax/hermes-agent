@@ -1,0 +1,102 @@
+{
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "source_path": "contracts/local-hermes-thine/v1",
+  "copy_mode": "replace_destination_tree",
+  "provenance_requirements": {
+    "controller_commit": "source repository HEAD that contains this pack",
+    "file_hash_algorithm": "sha256",
+    "file_order": "relative_path_ascending",
+    "coverage": "every_regular_file_below_source_path"
+  },
+  "consumers": {
+    "backend": {
+      "destination_path": "contracts/local-hermes-thine/v1",
+      "provenance_path": "contracts/hermes/contract-pack.provenance.json",
+      "provenance_hash_key": "files",
+      "consumer_assertion_path": "apps/dataplane/src/hermes/contracts/conformance.test.ts",
+      "consumer_assertion_requirements": [
+        "controller_commit"
+      ],
+      "propagation_command": "python3 -m tools.contract_pack_propagation backend --consumer-root \"$backend_root\" --controller-commit \"$controller_contract_commit\" --apply",
+      "copy_verification_command": "python3 -m tools.contract_pack_propagation backend --consumer-root \"$backend_root\" --controller-commit \"$controller_contract_commit\"",
+      "generation_commands": [
+        "pnpm hermes-contracts:generate"
+      ],
+      "verification_commands": [
+        "pnpm hermes-contracts:check",
+        "pnpm --filter @thine/dataplane test -- src/hermes/contracts/conformance.test.ts",
+        "pnpm --filter @thine/hermes-contracts typecheck",
+        "pnpm --filter @thine/dataplane typecheck"
+      ]
+    },
+    "hermes": {
+      "destination_path": "thine_harness/contracts/local-hermes-thine/v1",
+      "provenance_path": "thine_harness/contracts/local-hermes-thine/local-hermes-thine-v1.provenance.json",
+      "provenance_hash_key": "file_sha256",
+      "consumer_assertion_path": "tests/thine_harness/test_contract_conformance_v1.py",
+      "consumer_assertion_requirements": [
+        "controller_commit",
+        "valid_fixture_count",
+        "invalid_fixture_count"
+      ],
+      "propagation_command": "python3 -m tools.contract_pack_propagation hermes --consumer-root \"$hermes_root\" --controller-commit \"$controller_contract_commit\" --apply",
+      "copy_verification_command": "python3 -m tools.contract_pack_propagation hermes --consumer-root \"$hermes_root\" --controller-commit \"$controller_contract_commit\"",
+      "generation_commands": [
+        "python -m thine_harness.contracts._codegen"
+      ],
+      "verification_commands": [
+        "scripts/run_tests.sh tests/thine_harness/test_contract_conformance_v1.py -q",
+        "scripts/run_tests.sh tests/thine_harness -q"
+      ]
+    },
+    "mobile": {
+      "destination_path": "contracts/local-hermes-thine/v1",
+      "provenance_path": "docs/local-hermes/mobile-contract-conformance.md",
+      "provenance_hash_key": "normalized_tree_digest",
+      "consumer_assertion_path": "ThineTests/HermesContracts/HermesContractConformanceTests.swift",
+      "consumer_assertion_requirements": [
+        "valid_swift_fixture_count",
+        "invalid_swift_fixture_count"
+      ],
+      "propagation_command": "python3 -m tools.contract_pack_propagation mobile --consumer-root \"$mobile_root\" --controller-commit \"$controller_contract_commit\" --apply",
+      "copy_verification_command": "python3 -m tools.contract_pack_propagation mobile --consumer-root \"$mobile_root\" --controller-commit \"$controller_contract_commit\"",
+      "fixture_mirrors": {
+        "fixtures/valid/dataplane.json": "ThineTests/HermesContracts/Fixtures/valid_dataplane_v1.json",
+        "fixtures/valid/mobile.json": "ThineTests/HermesContracts/Fixtures/valid_mobile_v1.json",
+        "fixtures/valid/policy.json": "ThineTests/HermesContracts/Fixtures/valid_policy_v1.json",
+        "fixtures/valid/runtime.json": "ThineTests/HermesContracts/Fixtures/valid_runtime_v1.json",
+        "fixtures/invalid/dataplane.json": "ThineTests/HermesContracts/Fixtures/invalid_dataplane_v1.json",
+        "fixtures/invalid/mobile.json": "ThineTests/HermesContracts/Fixtures/invalid_mobile_v1.json",
+        "fixtures/invalid/policy.json": "ThineTests/HermesContracts/Fixtures/invalid_policy_v1.json",
+        "fixtures/invalid/runtime.json": "ThineTests/HermesContracts/Fixtures/invalid_runtime_v1.json"
+      },
+      "manual_binding_update_required": true,
+      "manual_binding_requirements": {
+        "interaction_kind": "support_external_action",
+        "interaction_actions": [
+          "feedback_board",
+          "text_support",
+          "feedback",
+          "support",
+          "privacy",
+          "terms"
+        ],
+        "outbox_cancellability": {
+          "waiting_for_connection": true,
+          "submitting": false
+        }
+      },
+      "binding_paths": [
+        "Ele/Data/Contracts/Hermes/InteractionContracts.swift"
+      ],
+      "generation_commands": [],
+      "verification_commands": [
+        "xcrun swiftc -swift-version 6 -typecheck Ele/Data/Contracts/Hermes/*.swift Ele/Core/Constants/LocalBackendEndpointConfiguration.swift",
+        "xcodebuild -project Ele.xcodeproj -scheme Ele -configuration Debug -destination 'platform=iOS Simulator,id=<simulator-id>' test -only-testing:ThineTests/HermesContractConformanceTests CODE_SIGNING_ALLOWED=NO"
+      ]
+    }
+  }
+}

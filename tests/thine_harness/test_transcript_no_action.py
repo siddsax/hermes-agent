@@ -1,0 +1,817 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Callable
+
+import httpx
+
+from thine_harness.contracts.transcripts import (
+    TranscriptAck,
+    TranscriptCanonicalLookup,
+    TranscriptClaim,
+    TranscriptClaimLookup,
+)
+from thine_harness.input_pump import (
+    BackendTranscriptClient,
+    FakeTranscriptNoActionRuntime,
+    TranscriptAvailability,
+    TranscriptClaimNotFound,
+    TranscriptInputPump,
+    TenMinuteTranscriptDriver,
+    next_ten_minute_boundary_ms,
+)
+from thine_harness.run_coordinator import RunCoordinator
+from thine_harness.run_finalizer import TranscriptNoActionFinalizer
+from thine_harness.run_state import DurableRunState
+from thine_harness.transcript_agent import (
+    INSPECT_CLAIM_TOOL_NAME,
+    RealTranscriptAgentRuntime,
+    RunInspectionToolBinding,
+    TranscriptAgentFinalizer,
+    TranscriptClaimToolBinding,
+    build_real_transcript_runtime,
+)
+
+
+def test_real_background_runtime_includes_home_toolset(tmp_path: Path) -> None:
+    constructed: dict[str, object] = {}
+
+    def agent_factory(**kwargs):
+        constructed.update(kwargs)
+        return SimpleNamespace(
+            provider="openai-codex",
+            model="gpt-5.6-sol",
+            api_mode="codex_responses",
+            reasoning_config={"enabled": True, "effort": "medium"},
+            context_compressor=SimpleNamespace(context_length=272_000),
+            skip_memory=True,
+            skip_background_review=True,
+            _fallback_chain=[],
+            _fallback_model=None,
+        )
+
+    build_real_transcript_runtime(
+        DurableRunState(tmp_path / "run-state.sqlite3"),
+        firebase_uid="daily-user",
+        token_loader=lambda: {"access_token": "codex-test-token"},
+        agent_factory=agent_factory,
+    )
+
+    assert constructed["enabled_toolsets"] == [
+        "local-thine-transcripts",
+        "local-thine",
+    ]
+
+
+def _claimed_transcript(
+    *,
+    claim_request_id: str,
+    lease_owner: str,
+    claim_id: str | None = None,
+) -> TranscriptClaim:
+    return TranscriptClaim.from_dict(
+        {
+            "schema_version": {"major": 1, "minor": 0},
+            "claim_id": claim_id or f"audio-claim:{claim_request_id}",
+            "claim_request_id": claim_request_id,
+            "lease_owner": lease_owner,
+            "claimed_at_ms": 100,
+            "lease_expires_at_ms": 600_100,
+            "claim_state": "claimed",
+            "acknowledged_at_ms": None,
+            "released_at_ms": None,
+            "release_reason": None,
+            "window_token_count": 4,
+            "window_source_duration_ms": 2_000,
+            "input_continuation_cursor": None,
+            "next_continuation_cursor": None,
+            "window_complete": True,
+            "entries": [
+                {
+                    "aggregation_buffer_id": 41,
+                    "buffer_status": "hermes_pending",
+                    "created_at_ms": 10,
+                    "updated_at_ms": 20,
+                    "source_start_ms": 1_000,
+                    "source_end_ms": 3_000,
+                    "sequence_number": 901,
+                    "provenance": "transcription_sequence:901",
+                    "transcript": "Unknown speaker material is still eligible.",
+                    "segments": [
+                        {
+                            "segment_id": "segment-901",
+                            "type": "speech",
+                            "start_ms": 0,
+                            "end_ms": 2_000,
+                            "occurred_at_ms": 1_000,
+                            "text": "Unknown speaker material is still eligible.",
+                            "speaker": {
+                                "source_speaker_id": "SPEAKER_UNKNOWN_1",
+                                "canonical_speaker_id": None,
+                                "canonical_display_name": None,
+                                "canonical_is_user": None,
+                                "attribution": "unknown",
+                            },
+                            "audio_ref": "gs://redacted/audio-901",
+                            "chunk_ref": None,
+                        }
+                    ],
+                }
+            ],
+            "extensions": {},
+        }
+    )
+
+
+def _acknowledgement(
+    *, claim_id: str, run_id: str, memory_version: str
+) -> TranscriptAck:
+    return TranscriptAck.from_dict(
+        {
+            "schema_version": {"major": 1, "minor": 0},
+            "ack_id": f"ack:{claim_id}",
+            "claim_id": claim_id,
+            "run_id": run_id,
+            "memory_version": memory_version,
+            "acknowledged_at_ms": 500,
+            "deleted_buffer_entry_ids": [41],
+            "durable_receipt_written": True,
+            "canonical_transcript_retained": True,
+            "extensions": {},
+        }
+    )
+
+
+class _TranscriptPort:
+    def __init__(
+        self,
+        *,
+        on_claim: Callable[[], None] | None = None,
+        lose_first_claim_response: bool = False,
+        lose_first_ack_response: bool = False,
+    ) -> None:
+        self.on_claim = on_claim
+        self.lose_first_claim_response = lose_first_claim_response
+        self.lose_first_ack_response = lose_first_ack_response
+        self.claim_requests = []
+        self.lookup_requests: list[str] = []
+        self.ack_requests: list[tuple[str, str, str]] = []
+        self.claim_by_request: dict[str, TranscriptClaim] = {}
+        self.available = False
+
+    def availability(self):
+        return TranscriptAvailability(
+            available=self.available,
+            source_hint="audio-buffer:41" if self.available else None,
+            occurred_at_ms=90 if self.available else None,
+        )
+
+    def claim(self, request):
+        self.claim_requests.append(request)
+        if self.on_claim is not None:
+            self.on_claim()
+        request_id = request.payload.claim_request_id
+        claim = self.claim_by_request.setdefault(
+            request_id,
+            _claimed_transcript(
+                claim_request_id=request_id,
+                lease_owner=request.payload.lease_owner,
+            ),
+        )
+        if self.lose_first_claim_response and len(self.claim_requests) == 1:
+            raise TimeoutError("claim response was lost after backend commit")
+        return claim
+
+    def lookup_claim(self, claim_request_id):
+        request_id = str(claim_request_id)
+        self.lookup_requests.append(request_id)
+        try:
+            return TranscriptClaimLookup.from_dict(
+                self.claim_by_request[request_id].to_dict()
+            )
+        except KeyError as exc:
+            raise TranscriptClaimNotFound(request_id) from exc
+
+    def acknowledge(self, claim_id, run_id, memory_version):
+        request = (str(claim_id), str(run_id), str(memory_version))
+        self.ack_requests.append(request)
+        acknowledgement = _acknowledgement(
+            claim_id=request[0], run_id=request[1], memory_version=request[2]
+        )
+        if self.lose_first_ack_response and len(self.ack_requests) == 1:
+            raise TimeoutError("ack response was lost after backend cleanup")
+        return acknowledgement
+
+    def renew(self, request):  # pragma: no cover - not used by this vertical slice
+        raise AssertionError("renew is not expected in the no-action happy path")
+
+    def reclaim(self, request):  # pragma: no cover - not used by this vertical slice
+        raise AssertionError("reclaim is not expected in the no-action happy path")
+
+    def release(self, claim_id, reason):  # pragma: no cover
+        raise AssertionError("release is not expected in the no-action happy path")
+
+    def canonical_lookup(self, sequence_number):
+        return TranscriptCanonicalLookup.from_dict(
+            {
+                "schema_version": {"major": 1, "minor": 0},
+                "sequence_number": int(sequence_number),
+                "transcript": "Canonical transcript remains.",
+                "segments": [],
+                "extensions": {},
+            }
+        )
+
+
+class _NoFeatureEffects:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def apply(self, command):
+        self.calls.append(command)
+        raise AssertionError("a no-action transcript run cannot execute visible effects")
+
+
+def _coordinator(
+    database: Path,
+    *,
+    transcript_port: _TranscriptPort,
+    runtime: FakeTranscriptNoActionRuntime,
+    feature_port: _NoFeatureEffects,
+    clock: Callable[[], int],
+):
+    state = DurableRunState(database)
+    pump = TranscriptInputPump(state, transcript_port=transcript_port, clock_ms=clock)
+    finalizer = TranscriptNoActionFinalizer(
+        state, transcript_port=transcript_port, clock_ms=clock
+    )
+    coordinator = RunCoordinator(
+        state,
+        runtime=runtime,
+        feature_port=feature_port,
+        input_port=pump,
+        finalizer=finalizer,
+        clock_ms=clock,
+    )
+    return state, pump, coordinator
+
+
+def test_transcript_is_claimed_only_after_lease_then_no_action_is_finalized_and_acked(
+    tmp_path: Path,
+):
+    now = 100
+    database = tmp_path / "state.sqlite3"
+    runtime = FakeTranscriptNoActionRuntime()
+    effects = _NoFeatureEffects()
+    transcript = _TranscriptPort()
+    state, pump, coordinator = _coordinator(
+        database,
+        transcript_port=transcript,
+        runtime=runtime,
+        feature_port=effects,
+        clock=lambda: now,
+    )
+    transcript.on_claim = lambda: (
+        len(state.diagnostics("daily-user").leases) == 1
+        or (_ for _ in ()).throw(AssertionError("claim happened before lease"))
+    )
+
+    tick_id = pump.enqueue_availability(
+        user_id="daily-user",
+        source_hint="aggregation-buffer-ready:901",
+        occurred_at_ms=90,
+        received_at_ms=95,
+    )
+
+    assert transcript.claim_requests == []
+    assert coordinator.diagnostics("daily-user").queue[0].tick_id == tick_id
+
+    result = coordinator.run_next("daily-user")
+
+    assert result is not None
+    assert result.status == "completed"
+    assert len(transcript.claim_requests) == 1
+    assert len(runtime.invocations) == 1
+    prepared = runtime.invocations[0].prepared_input
+    assert prepared.claim.payload.entries[0].segments[0].speaker.attribution == "unknown"
+    assert transcript.ack_requests == [
+        (
+            prepared.claim.payload.claim_id,
+            result.logical_run_id,
+            "0",
+        )
+    ]
+    assert effects.calls == []
+
+    record = state.transcript_run_record(
+        user_id="daily-user", logical_run_id=result.logical_run_id
+    )
+    assert record.queue_state == "completed"
+    assert record.decision_outcome == "no_action"
+    assert record.visible_action_intent_count == 0
+    assert record.working_memory_outcome == "unchanged"
+    assert record.memory_version == 0
+    assert record.finalization_phase == "completed"
+    assert record.input_receipt_id == f"input-receipt:{record.ack_id}"
+    assert record.run_receipt_id == f"run-receipt:{result.logical_run_id}"
+    assert record.canonical_transcript_retained is True
+    assert coordinator.run_next("daily-user") is None
+
+
+def test_transcript_availability_scan_enqueues_once_without_claiming(tmp_path: Path):
+    transcript = _TranscriptPort()
+    transcript.available = True
+    state, pump, coordinator = _coordinator(
+        tmp_path / "state.sqlite3",
+        transcript_port=transcript,
+        runtime=FakeTranscriptNoActionRuntime(),
+        feature_port=_NoFeatureEffects(),
+        clock=lambda: 100,
+    )
+
+    first = pump.scan_available("daily-user")
+    second = pump.scan_available("daily-user")
+
+    assert first == second
+    assert transcript.claim_requests == []
+    queued = coordinator.diagnostics("daily-user").queue
+    assert len(queued) == 1
+    assert queued[0].tick_id == first
+    assert state.transcript_run_record(
+        user_id="daily-user", logical_run_id=queued[0].logical_run_id
+    ).queue_state == "queued"
+
+
+def test_transcript_driver_uses_fixed_ten_minute_boundaries_and_wakes_for_data(
+    tmp_path: Path,
+):
+    now = int(datetime(2026, 8, 29, 5, 1, tzinfo=timezone.utc).timestamp() * 1000)
+    # 05:01 UTC is 10:31 Asia/Kolkata, so the next local boundary is 10:40.
+    assert next_ten_minute_boundary_ms(now, "Asia/Kolkata") == now + 9 * 60_000
+
+    transcript = _TranscriptPort()
+    transcript.available = True
+    state = DurableRunState(tmp_path / "state.sqlite3")
+    pump = TranscriptInputPump(state, transcript_port=transcript, clock_ms=lambda: now)
+    wakeups: list[str] = []
+    driver = TenMinuteTranscriptDriver(
+        pump=pump,
+        user_id="daily-user",
+        wake_coordinator=lambda: wakeups.append("wake"),
+        timezone_name="Asia/Kolkata",
+        clock_ms=lambda: now,
+    )
+    try:
+        tick_id = driver.scan_now()
+    finally:
+        driver.close()
+
+    assert tick_id is not None
+    assert wakeups == ["wake"]
+    assert len(state.diagnostics("daily-user").queue) == 1
+
+
+def test_lost_claim_response_reuses_request_and_does_not_duplicate_inference(
+    tmp_path: Path,
+):
+    transcript = _TranscriptPort(lose_first_claim_response=True)
+    runtime = FakeTranscriptNoActionRuntime()
+    state, pump, coordinator = _coordinator(
+        tmp_path / "state.sqlite3",
+        transcript_port=transcript,
+        runtime=runtime,
+        feature_port=_NoFeatureEffects(),
+        clock=lambda: 100,
+    )
+    pump.enqueue_availability(
+        user_id="daily-user",
+        source_hint="aggregation-buffer-ready:901",
+        occurred_at_ms=90,
+        received_at_ms=95,
+    )
+
+    first = coordinator.run_next("daily-user")
+    second = coordinator.run_next("daily-user")
+
+    assert first is not None and first.status == "input_retry_pending"
+    assert second is not None and second.status == "completed"
+    assert len(transcript.claim_requests) == 1
+    assert len(runtime.invocations) == 1
+    assert transcript.lookup_requests[0] == transcript.lookup_requests[1]
+    assert state.transcript_run_record(
+        user_id="daily-user", logical_run_id=second.logical_run_id
+    ).attempts_total == 1
+
+
+def test_ack_only_recovery_never_reinvokes_fake_decision_or_stop_hook(
+    tmp_path: Path,
+):
+    database = tmp_path / "state.sqlite3"
+    transcript = _TranscriptPort(lose_first_ack_response=True)
+    runtime = FakeTranscriptNoActionRuntime()
+    effects = _NoFeatureEffects()
+    state, pump, coordinator = _coordinator(
+        database,
+        transcript_port=transcript,
+        runtime=runtime,
+        feature_port=effects,
+        clock=lambda: 100,
+    )
+    tick_id = pump.enqueue_availability(
+        user_id="daily-user",
+        source_hint="aggregation-buffer-ready:901",
+        occurred_at_ms=90,
+        received_at_ms=95,
+    )
+
+    pending = coordinator.run_next("daily-user")
+
+    assert pending is not None and pending.status == "awaiting_audio_ack"
+    assert len(runtime.invocations) == 1
+    interim = state.transcript_run_record(
+        user_id="daily-user", logical_run_id=pending.logical_run_id
+    )
+    assert interim.finalization_phase == "awaiting_audio_ack"
+    assert interim.working_memory_outcome == "unchanged"
+    assert interim.input_receipt_id is None
+
+    _, replay_pump, restarted = _coordinator(
+        database,
+        transcript_port=transcript,
+        runtime=runtime,
+        feature_port=effects,
+        clock=lambda: 200,
+    )
+    completed = restarted.run_next("daily-user")
+
+    assert completed is not None and completed.status == "completed"
+    assert completed.tick_id == tick_id
+    assert len(runtime.invocations) == 1
+    assert len(transcript.claim_requests) == 1
+    assert len(transcript.ack_requests) == 2
+    assert replay_pump.enqueue_availability(
+        user_id="daily-user",
+        source_hint="aggregation-buffer-ready:901",
+        occurred_at_ms=90,
+        received_at_ms=95,
+    ) == tick_id
+    assert restarted.run_next("daily-user") is None
+    assert effects.calls == []
+
+
+def test_backend_transcript_client_uses_only_explicit_loopback_helpers():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = __import__("json").loads(request.content)
+        if request.url.path == "/v1/transcripts/availability":
+            return httpx.Response(
+                200,
+                json={
+                    "available": True,
+                    "source_hint": "audio-buffer:41",
+                    "occurred_at_ms": 90,
+                },
+            )
+        if request.url.path == "/v1/transcripts/claims":
+            return httpx.Response(
+                200,
+                json=_claimed_transcript(
+                    claim_request_id=body["claim_request_id"],
+                    lease_owner=body["lease_owner"],
+                ).to_dict(),
+            )
+        if request.url.path == "/v1/transcripts/claims/ack":
+            return httpx.Response(
+                200,
+                json=_acknowledgement(
+                    claim_id=body["claim_id"],
+                    run_id=body["run_id"],
+                    memory_version=body["memory_version"],
+                ).to_dict(),
+            )
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    client = BackendTranscriptClient(
+        origin="http://127.0.0.1:8790",
+        credential="private-token",
+        firebase_uid="daily-user",
+        clock_ms=lambda: 123,
+        transport=httpx.MockTransport(handler),
+    )
+    request = TranscriptInputPump.claim_request(
+        user_id="daily-user",
+        logical_run_id="run-1",
+        claim_request_id="claim-request-1",
+        now_ms=100,
+    )
+
+    try:
+        availability = client.availability()
+        claim = client.claim(request)
+        ack = client.acknowledge(claim.payload.claim_id, "run-1", "0")
+    finally:
+        client.close()
+
+    assert availability == TranscriptAvailability(
+        available=True,
+        source_hint="audio-buffer:41",
+        occurred_at_ms=90,
+    )
+    assert claim.payload.claim_request_id == "claim-request-1"
+    assert ack.payload.canonical_transcript_retained is True
+    assert [request.url.path for request in requests] == [
+        "/v1/transcripts/availability",
+        "/v1/transcripts/claims",
+        "/v1/transcripts/claims/ack",
+    ]
+    assert all(request.headers["authorization"] == "Bearer private-token" for request in requests)
+    assert all(request.headers["x-thine-firebase-uid"] == "daily-user" for request in requests)
+
+
+class _FakeWireTransport:
+    def convert_tools(self, tools):
+        return list(tools)
+
+
+class _RealGPTContractAgent:
+    provider = "openai-codex"
+    model = "gpt-5.6-sol"
+    api_mode = "codex_responses"
+    reasoning_config = {"enabled": True, "effort": "medium"}
+    context_compressor = type("Context", (), {"context_length": 272_000})()
+    skip_memory = True
+    skip_background_review = True
+    _fallback_chain = []
+    _fallback_model = None
+    _cached_system_prompt = "stable harness prefix"
+    ephemeral_system_prompt = "stable transcript policy"
+
+    def __init__(self):
+        self.session_id = "thine-background:daily-user"
+        self.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": name,
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+            for name in ("tool_search", "tool_describe", "tool_call")
+        ]
+        self._persist_disabled = False
+        self.primary_prompts: list[str] = []
+        self.hook_count = 0
+        self.measurement_count = 0
+        self._output_tokens = 0
+        self._reasoning_tokens = 0
+
+    def _get_transport(self):
+        return _FakeWireTransport()
+
+    def run_conversation(self, prompt, **kwargs):
+        history = list(kwargs.get("conversation_history") or [])
+        if prompt.startswith("Stop Hook:"):
+            self.hook_count += 1
+            self._output_tokens += 20
+            self._reasoning_tokens += 12
+            response = (
+                '{"worth_remembering":true,"markdown":'
+                '"# Recent operations\\n\\n- Inspected one transcript Tick and chose no action."}'
+                if self.hook_count == 1
+                else '{"worth_remembering":false,"markdown":null}'
+            )
+            return {
+                "final_response": response,
+                "completed": True,
+                "messages": [*history, {"role": "assistant", "content": response}],
+                "output_tokens": self._output_tokens,
+                "reasoning_tokens": self._reasoning_tokens,
+            }
+        if prompt.startswith("Configured-model token measurement."):
+            self.measurement_count += 1
+            candidate = "# Recent operations\n\n- Inspected one transcript Tick and chose no action."
+            self._output_tokens += 33
+            self._reasoning_tokens += 13
+            return {
+                "final_response": candidate,
+                "completed": True,
+                "messages": [*history, {"role": "assistant", "content": candidate}],
+                "output_tokens": self._output_tokens,
+                "reasoning_tokens": self._reasoning_tokens,
+            }
+        self.primary_prompts.append(prompt)
+        callback = kwargs.get("stream_callback")
+        if callback is not None:
+            callback("private progress")
+        self._output_tokens += 10
+        self._reasoning_tokens += 4
+        messages = (
+            [
+                {"role": "tool", "tool_name": "tool_search", "content": "found"},
+                {"role": "tool", "tool_name": "tool_describe", "content": "schema"},
+                {
+                    "role": "tool",
+                    "tool_name": INSPECT_CLAIM_TOOL_NAME,
+                    "content": "claim",
+                },
+                {
+                    "role": "assistant",
+                    "content": "No user-visible action is needed.",
+                },
+            ]
+            if len(self.primary_prompts) == 1
+            else [
+                {
+                    "role": "assistant",
+                    "content": "No tool or user-visible action is needed.",
+                }
+            ]
+        )
+        return {
+            "final_response": "No user-visible action is needed.",
+            "messages": messages,
+            "completed": True,
+            "failed": False,
+            "interrupted": False,
+            "input_tokens": 100 * len(self.primary_prompts),
+            "output_tokens": self._output_tokens,
+            "reasoning_tokens": self._reasoning_tokens,
+            "cache_read_tokens": 80,
+            "cache_write_tokens": 0,
+        }
+
+
+def test_real_gpt_transcript_path_commits_memory_then_loads_it_on_next_tick(
+    tmp_path: Path,
+):
+    database = tmp_path / "real-gpt.sqlite3"
+    transcript = _TranscriptPort()
+    state = DurableRunState(database)
+    pump = TranscriptInputPump(state, transcript_port=transcript, clock_ms=lambda: 100)
+    agent = _RealGPTContractAgent()
+    runtime = RealTranscriptAgentRuntime(
+        state,
+        agent=agent,
+        binding=TranscriptClaimToolBinding(),
+        communication_context=lambda _user_id: {
+            "allowance": {"remaining": 1, "status": "available"},
+            "permission_stale": False,
+        },
+    )
+    coordinator = RunCoordinator(
+        state,
+        runtime=runtime,
+        feature_port=_NoFeatureEffects(),
+        input_port=pump,
+        finalizer=TranscriptAgentFinalizer(
+            state, transcript_port=transcript, clock_ms=lambda: 100
+        ),
+        clock_ms=lambda: 100,
+    )
+
+    pump.enqueue_availability(
+        user_id="daily-user",
+        source_hint="aggregation-buffer-ready:901",
+        occurred_at_ms=90,
+        received_at_ms=95,
+    )
+    first = coordinator.run_next("daily-user")
+
+    assert first is not None and first.status == "completed"
+    assert (
+        '<communication_context>\n{"allowance":{"remaining":1,"status":"available"},'
+        '"permission_stale":false}\n</communication_context>'
+        in agent.primary_prompts[0]
+    )
+    memory = state.working_memory_snapshot("daily-user")
+    assert memory.version == 1
+    assert memory.token_count == 20
+    assert "Inspected one transcript Tick" in memory.markdown
+    inspection = state.inspect_agent_run(
+        user_id="daily-user", logical_run_id=first.logical_run_id
+    )
+    assert inspection.model == "gpt-5.6-sol"
+    assert inspection.reasoning_effort == "medium"
+    assert inspection.decision_outcome == "no_action"
+    assert inspection.stop_hook_outcome == "committed"
+    assert inspection.tool_discoveries == (
+        "tool_search",
+        "tool_describe",
+        INSPECT_CLAIM_TOOL_NAME,
+    )
+    assert inspection.memory_version == 1
+    assert inspection.memory_token_count == 20
+    inspected_receipts = __import__("json").loads(
+        RunInspectionToolBinding(state=state, user_id="daily-user").inspect(
+            {"logical_run_id": first.logical_run_id}
+        )
+    )
+    assert inspected_receipts["ok"] is True
+    assert inspected_receipts["agent_run"]["model"] == "gpt-5.6-sol"
+    assert inspected_receipts["transcript_receipt"]["run_receipt_id"] == (
+        f"run-receipt:{first.logical_run_id}"
+    )
+
+    pump.enqueue_availability(
+        user_id="daily-user",
+        source_hint="aggregation-buffer-ready:902",
+        occurred_at_ms=101,
+        received_at_ms=102,
+    )
+    second = coordinator.run_next("daily-user")
+
+    assert second is not None and second.status == "completed"
+    assert "Inspected one transcript Tick" in agent.primary_prompts[1]
+    assert state.working_memory_snapshot("daily-user").version == 1
+    second_inspection = state.inspect_agent_run(
+        user_id="daily-user", logical_run_id=second.logical_run_id
+    )
+    assert second_inspection.tool_discoveries == ()
+    assert second_inspection.decision_outcome == "no_action"
+    assert agent.hook_count == 2
+    assert agent.measurement_count == 1
+
+
+def test_empty_claim_is_acknowledged_without_invoking_the_model(tmp_path: Path):
+    class EmptyTranscriptPort(_TranscriptPort):
+        def claim(self, request):
+            self.claim_requests.append(request)
+            request_id = request.payload.claim_request_id
+            claim = TranscriptClaim.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "claim_id": f"audio-claim:{request_id}",
+                "claim_request_id": request_id,
+                "lease_owner": request.payload.lease_owner,
+                "claimed_at_ms": 100,
+                "lease_expires_at_ms": 600_100,
+                "claim_state": "claimed",
+                "acknowledged_at_ms": None,
+                "released_at_ms": None,
+                "release_reason": None,
+                "window_token_count": 0,
+                "window_source_duration_ms": 0,
+                "input_continuation_cursor": None,
+                "next_continuation_cursor": None,
+                "window_complete": True,
+                "entries": [],
+                "extensions": {},
+            })
+            self.claim_by_request[request_id] = claim
+            return claim
+
+        def acknowledge(self, claim_id, run_id, memory_version):
+            request = (str(claim_id), str(run_id), str(memory_version))
+            self.ack_requests.append(request)
+            return TranscriptAck.from_dict({
+                "schema_version": {"major": 1, "minor": 0},
+                "ack_id": f"ack:{claim_id}",
+                "claim_id": str(claim_id),
+                "run_id": str(run_id),
+                "memory_version": str(memory_version),
+                "acknowledged_at_ms": 500,
+                "deleted_buffer_entry_ids": [],
+                "durable_receipt_written": True,
+                "canonical_transcript_retained": True,
+                "extensions": {},
+            })
+
+    transcript = EmptyTranscriptPort()
+    state = DurableRunState(tmp_path / "empty-claim.sqlite3")
+    pump = TranscriptInputPump(state, transcript_port=transcript, clock_ms=lambda: 100)
+    agent = _RealGPTContractAgent()
+    coordinator = RunCoordinator(
+        state,
+        runtime=RealTranscriptAgentRuntime(
+            state,
+            agent=agent,
+            binding=TranscriptClaimToolBinding(),
+        ),
+        feature_port=_NoFeatureEffects(),
+        input_port=pump,
+        finalizer=TranscriptAgentFinalizer(
+            state, transcript_port=transcript, clock_ms=lambda: 100
+        ),
+        clock_ms=lambda: 100,
+    )
+    pump.enqueue_availability(
+        user_id="daily-user",
+        source_hint="audio-buffer-raced-away",
+        occurred_at_ms=90,
+        received_at_ms=95,
+    )
+
+    result = coordinator.run_next("daily-user")
+
+    assert result is not None and result.status == "completed"
+    assert agent.primary_prompts == []
+    assert len(transcript.ack_requests) == 1
+    record = state.transcript_run_record(
+        user_id="daily-user", logical_run_id=result.logical_run_id
+    )
+    assert record.decision_outcome == "no_action"
+    assert record.working_memory_outcome == "unchanged"

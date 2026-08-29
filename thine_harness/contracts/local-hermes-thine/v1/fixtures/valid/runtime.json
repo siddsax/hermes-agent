@@ -1,0 +1,1317 @@
+{
+  "suite_id": "runtime.valid.v1",
+  "cases": [
+    {
+      "case_id": "attempt.first-running",
+      "target": "attempt",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "attempt_id": "attempt-1",
+        "logical_run_id": "run-1",
+        "ordinal": 1,
+        "cause": "initial",
+        "status": "running",
+        "started_at_ms": 1787644800000,
+        "finished_at_ms": null,
+        "failure_code": null,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "tick.interaction-independent",
+      "target": "tick",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "tick_id": "tick-interaction-1",
+        "user_id": "user-local",
+        "logical_run_id": "run-1",
+        "kind": "p1_interaction",
+        "priority": "p1",
+        "occurred_at_ms": 1787644800000,
+        "received_at_ms": 1787644800100,
+        "queued_at_ms": 1787644800200,
+        "source_ref": {
+          "kind": "interaction_window",
+          "id": "window-2026-08-25T12:00+05:30"
+        },
+        "causation_id": null,
+        "correlation_id": "correlation-interaction-1",
+        "attempt_ordinal": 1,
+        "lease": null,
+        "communication_allowance_snapshot": {},
+        "payload": {
+          "payload_kind": "interaction_window",
+          "reference_id": "window-2026-08-25T12:00+05:30"
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "attempt.retry-failed-third",
+      "target": "attempt",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "attempt_id": "attempt-3",
+        "logical_run_id": "run-faulted",
+        "ordinal": 3,
+        "cause": "fault_retry",
+        "status": "failed_fault",
+        "started_at_ms": 1787644800000,
+        "finished_at_ms": 1787644801000,
+        "failure_code": "provider_timeout",
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "tick.user-chat-p0",
+      "target": "tick",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "tick_id": "tick-chat-1",
+        "user_id": "user-local",
+        "logical_run_id": "run-chat-1",
+        "kind": "p0_user_chat",
+        "priority": "p0",
+        "occurred_at_ms": 1787644799000,
+        "received_at_ms": 1787644800000,
+        "queued_at_ms": 1787644800001,
+        "source_ref": {
+          "kind": "user_message",
+          "id": "message-user-1"
+        },
+        "causation_id": null,
+        "correlation_id": "correlation-chat-1",
+        "attempt_ordinal": 1,
+        "lease": null,
+        "communication_allowance_snapshot": {},
+        "payload": {
+          "payload_kind": "user_message",
+          "reference_id": "message-user-1"
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "attempt.retry-succeeded-second",
+      "target": "attempt",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "attempt_id": "attempt-2",
+        "logical_run_id": "run-recovered",
+        "ordinal": 2,
+        "cause": "fault_retry",
+        "status": "succeeded",
+        "started_at_ms": 1787644800000,
+        "finished_at_ms": 1787644801000,
+        "failure_code": null,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "tick.schedule-aged-to-p1",
+      "target": "tick",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "tick_id": "tick-scheduled-aged-1",
+        "user_id": "user-local",
+        "logical_run_id": "run-scheduled-aged-1",
+        "kind": "p2_scheduled",
+        "priority": "p1",
+        "occurred_at_ms": 1787643000000,
+        "received_at_ms": 1787644800100,
+        "queued_at_ms": 1787644800200,
+        "source_ref": {
+          "kind": "schedule",
+          "id": "schedule-1"
+        },
+        "causation_id": null,
+        "correlation_id": "correlation-scheduled-aged-1",
+        "attempt_ordinal": 1,
+        "lease": null,
+        "communication_allowance_snapshot": {},
+        "payload": {
+          "payload_kind": "schedule",
+          "reference_id": "schedule-1"
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "invocation-request.new",
+      "target": "invocation_request",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "invocation_id": "invocation-chat-1",
+        "logical_run_id": "run-chat-1",
+        "tick_id": "tick-chat-1",
+        "mode": "new",
+        "kind": "p0_user_chat",
+        "prompt": "Respond to the persisted user message.",
+        "prompt_token_count": 8,
+        "input_ref": {
+          "kind": "user_message",
+          "id": "message-user-1"
+        },
+        "source_ref": {
+          "kind": "user_message",
+          "id": "message-user-1"
+        },
+        "resume_token": null,
+        "checkpoint_id": null,
+        "context_messages": [
+          {
+            "role": "user",
+            "message_id": "message-user-1",
+            "content": "What changed?"
+          }
+        ],
+        "completed_tool_result_ids": [],
+        "successful_action_receipt_ids": [],
+        "partial_visible_assistant_output": "",
+        "input_gap_ids": [],
+        "runtime_diagnostics": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-sol",
+          "api_mode": "codex_responses",
+          "reasoning_effort": "medium",
+          "context_window_tokens": 272000
+        },
+        "requested_at_ms": 1787644800000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "invocation-request.resumed",
+      "target": "invocation_request",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "invocation_id": "invocation-background-2",
+        "logical_run_id": "run-1",
+        "tick_id": "tick-interaction-1",
+        "mode": "resumed",
+        "kind": "p1_interaction",
+        "prompt": "Resume only the remaining checkpointed work.",
+        "prompt_token_count": 9,
+        "input_ref": {
+          "kind": "interaction_batch",
+          "id": "interaction-batch-1"
+        },
+        "source_ref": {
+          "kind": "interaction_window",
+          "id": "window-2026-08-25T12:00+05:30"
+        },
+        "resume_token": "checkpoint:run-1",
+        "checkpoint_id": "checkpoint-1",
+        "context_messages": [
+          {
+            "role": "assistant",
+            "message_id": "assistant-partial-1",
+            "content": "I persisted the first action."
+          },
+          {
+            "role": "tool",
+            "tool_result_id": "tool-result-1",
+            "safe_summary": "Message accepted"
+          }
+        ],
+        "completed_tool_result_ids": [
+          "tool-result-1"
+        ],
+        "successful_action_receipt_ids": [
+          "receipt-1"
+        ],
+        "partial_visible_assistant_output": "I persisted the first action.",
+        "input_gap_ids": [
+          "gap-transcript-1"
+        ],
+        "runtime_diagnostics": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-sol",
+          "api_mode": "codex_responses",
+          "reasoning_effort": "medium",
+          "context_window_tokens": 272000
+        },
+        "requested_at_ms": 1787644802000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "invocation-event.accepted",
+      "target": "invocation_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "inv-event-1",
+        "invocation_id": "invocation-chat-1",
+        "logical_run_id": "run-chat-1",
+        "sequence": 1,
+        "kind": "accepted",
+        "safe_display_text": "Accepted",
+        "ephemeral": true,
+        "result_ref": null,
+        "error_code": null,
+        "usage": null,
+        "resume_token": null,
+        "runtime_diagnostics": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-sol",
+          "api_mode": "codex_responses",
+          "reasoning_effort": "medium",
+          "context_window_tokens": 272000
+        },
+        "emitted_at_ms": 1787644800001,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "tick.transcript-failed",
+      "target": "tick",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "tick_id": "tick-transcript-failed",
+        "user_id": "user-local",
+        "logical_run_id": "run-failed",
+        "kind": "p1_transcript",
+        "priority": "p1",
+        "occurred_at_ms": 1787644799000,
+        "received_at_ms": 1787644800000,
+        "queued_at_ms": 1787644800001,
+        "source_ref": {
+          "kind": "transcript_availability",
+          "id": "availability-failed"
+        },
+        "causation_id": null,
+        "correlation_id": "correlation-transcript-failed",
+        "attempt_ordinal": 1,
+        "lease": null,
+        "communication_allowance_snapshot": {},
+        "payload": {
+          "payload_kind": "transcript_availability",
+          "reference_id": "availability-failed"
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "invocation-request.background-failed",
+      "target": "invocation_request",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "invocation_id": "invocation-failed",
+        "logical_run_id": "run-failed",
+        "tick_id": "tick-transcript-failed",
+        "mode": "new",
+        "kind": "p1_transcript",
+        "prompt": "Process the claimed transcript input.",
+        "prompt_token_count": 7,
+        "input_ref": {
+          "kind": "transcript_claim",
+          "id": "audio-claim:failed"
+        },
+        "source_ref": {
+          "kind": "transcript_availability",
+          "id": "availability-failed"
+        },
+        "resume_token": null,
+        "checkpoint_id": null,
+        "context_messages": [],
+        "completed_tool_result_ids": [],
+        "successful_action_receipt_ids": [],
+        "partial_visible_assistant_output": "",
+        "input_gap_ids": [],
+        "runtime_diagnostics": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-sol",
+          "api_mode": "codex_responses",
+          "reasoning_effort": "medium",
+          "context_window_tokens": 272000
+        },
+        "requested_at_ms": 1787644800005,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "invocation-event.started",
+      "target": "invocation_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "inv-event-2",
+        "invocation_id": "invocation-chat-1",
+        "logical_run_id": "run-chat-1",
+        "sequence": 2,
+        "kind": "started",
+        "safe_display_text": "Started",
+        "ephemeral": true,
+        "result_ref": null,
+        "error_code": null,
+        "usage": null,
+        "resume_token": null,
+        "runtime_diagnostics": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-sol",
+          "api_mode": "codex_responses",
+          "reasoning_effort": "medium",
+          "context_window_tokens": 272000
+        },
+        "emitted_at_ms": 1787644800002,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "invocation-event.progress",
+      "target": "invocation_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "inv-event-3",
+        "invocation_id": "invocation-chat-1",
+        "logical_run_id": "run-chat-1",
+        "sequence": 3,
+        "kind": "progress",
+        "safe_display_text": "Checking recent context",
+        "ephemeral": true,
+        "result_ref": null,
+        "error_code": null,
+        "usage": null,
+        "resume_token": null,
+        "runtime_diagnostics": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-sol",
+          "api_mode": "codex_responses",
+          "reasoning_effort": "medium",
+          "context_window_tokens": 272000
+        },
+        "emitted_at_ms": 1787644800003,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "invocation-event.final",
+      "target": "invocation_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "inv-event-4",
+        "invocation_id": "invocation-chat-1",
+        "logical_run_id": "run-chat-1",
+        "sequence": 4,
+        "kind": "final",
+        "safe_display_text": "Done",
+        "ephemeral": false,
+        "result_ref": "final-reply:message-assistant-1",
+        "error_code": null,
+        "usage": {
+          "input_tokens": 100,
+          "output_tokens": 40,
+          "cache_read_tokens": 80,
+          "cache_write_tokens": 0
+        },
+        "resume_token": null,
+        "runtime_diagnostics": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-sol",
+          "api_mode": "codex_responses",
+          "reasoning_effort": "medium",
+          "context_window_tokens": 272000
+        },
+        "emitted_at_ms": 1787644800004,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "invocation-event.failed",
+      "target": "invocation_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "inv-event-failed",
+        "invocation_id": "invocation-failed",
+        "logical_run_id": "run-failed",
+        "sequence": 1,
+        "kind": "failed",
+        "safe_display_text": "Could not complete",
+        "ephemeral": false,
+        "result_ref": null,
+        "error_code": "attempts_exhausted",
+        "usage": {
+          "input_tokens": 50,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "resume_token": null,
+        "runtime_diagnostics": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-sol",
+          "api_mode": "codex_responses",
+          "reasoning_effort": "medium",
+          "context_window_tokens": 272000
+        },
+        "emitted_at_ms": 1787644800010,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "invocation-event.interrupted",
+      "target": "invocation_event",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "event_id": "inv-event-interrupted",
+        "invocation_id": "invocation-background-2",
+        "logical_run_id": "run-1",
+        "sequence": 1,
+        "kind": "interrupted",
+        "safe_display_text": "Paused for your message",
+        "ephemeral": false,
+        "result_ref": null,
+        "error_code": "p0_preempted",
+        "usage": {
+          "input_tokens": 90,
+          "output_tokens": 5,
+          "cache_read_tokens": 70,
+          "cache_write_tokens": 0
+        },
+        "resume_token": "checkpoint:run-1",
+        "runtime_diagnostics": {
+          "provider": "openai-codex",
+          "model": "gpt-5.6-sol",
+          "api_mode": "codex_responses",
+          "reasoning_effort": "medium",
+          "context_window_tokens": 272000
+        },
+        "emitted_at_ms": 1787644800020,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "checkpoint.safe-boundary",
+      "target": "checkpoint",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "checkpoint_id": "checkpoint-1",
+        "resume_token": "checkpoint:run-1",
+        "logical_run_id": "run-1",
+        "input_reference": "tick:tick-interaction-1",
+        "remaining_work": "Continue after the completed notification receipt.",
+        "context_messages": [
+          {
+            "role": "assistant",
+            "message_id": "assistant-partial-1",
+            "content": "I persisted the first action."
+          },
+          {
+            "role": "tool",
+            "tool_result_id": "tool-result-1",
+            "safe_summary": "Message accepted"
+          }
+        ],
+        "completed_tool_result_ids": [
+          "tool-result-1"
+        ],
+        "successful_action_receipt_ids": [
+          "receipt-1"
+        ],
+        "partial_visible_assistant_output": "I persisted the first action.",
+        "updated_at_ms": 1787644801000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "tool-result.applied",
+      "target": "tool_result",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "tool_result_id": "tool-result-1",
+        "logical_run_id": "run-1",
+        "attempt_id": "attempt-1",
+        "tool_call_id": "call-1",
+        "wire_name": "thine_communications_send",
+        "logical_namespace": "communications",
+        "status": "succeeded",
+        "effect_disposition": "applied",
+        "safe_summary": "Message accepted",
+        "payload_ref": "receipt:receipt-1",
+        "deadline_at_ms": 1787644810100,
+        "timeout_ms": 10000,
+        "timed_out": false,
+        "reconciliation": "not_needed",
+        "started_at_ms": 1787644800100,
+        "finished_at_ms": 1787644800200,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "action-intent.background-message",
+      "target": "action_intent",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "identity": {
+          "action_id": "action-1",
+          "logical_run_id": "run-1",
+          "effect_ordinal": 1,
+          "intent_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "kind": "background_message",
+        "status": "pending",
+        "created_at_ms": 1787644800000,
+        "safe_payload": {
+          "payload_kind": "background_message",
+          "reference_id": "message-1"
+        },
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "action-receipt.accepted",
+      "target": "action_receipt",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "receipt_id": "receipt-1",
+        "action_identity": {
+          "action_id": "action-1",
+          "logical_run_id": "run-1",
+          "effect_ordinal": 1,
+          "intent_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "status": "succeeded",
+        "provider_correlation_id": "provider-1",
+        "accepted_at_ms": 1787644800300,
+        "reconciliation_state": "not_needed",
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "working-memory.current",
+      "target": "working_memory_snapshot",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "user_id": "user-local",
+        "version": 7,
+        "markdown": "# Working memory\n\nDo not repeat the speaker-tag request from the last tick.",
+        "configured_model_token_count": null,
+        "tokenizer_status": "unresolved_fail_closed",
+        "max_tokens": 16000,
+        "debug_retention_versions": 50,
+        "restorable": false,
+        "committed_at_ms": 1787644800000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "stop-hook.interrupted-skip",
+      "target": "stop_hook_decision",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "logical_run_id": "run-1",
+        "outcome": "skipped_interrupted",
+        "worth_remembering": false,
+        "memory_write_performed": false,
+        "memory_version": 7,
+        "configured_model_token_count": null,
+        "tokenizer_status": "unresolved_fail_closed",
+        "cache_identity": {
+          "session_id": "session-1",
+          "prompt_cache_key": "pck-1",
+          "tool_schema_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "hook_only_recovery": false,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "stop-hook.committed-exact",
+      "target": "stop_hook_decision",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "logical_run_id": "run-memory-1",
+        "outcome": "committed",
+        "worth_remembering": true,
+        "memory_write_performed": true,
+        "memory_version": 8,
+        "configured_model_token_count": 1200,
+        "tokenizer_status": "exact",
+        "cache_identity": {
+          "session_id": "session-memory-1",
+          "prompt_cache_key": "pck-memory-1",
+          "tool_schema_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "hook_only_recovery": false,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "stop-hook.unchanged-no-write",
+      "target": "stop_hook_decision",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "logical_run_id": "run-memory-2",
+        "outcome": "unchanged",
+        "worth_remembering": false,
+        "memory_write_performed": false,
+        "memory_version": 8,
+        "configured_model_token_count": 1200,
+        "tokenizer_status": "exact",
+        "cache_identity": {
+          "session_id": "session-memory-2",
+          "prompt_cache_key": "pck-memory-2",
+          "tool_schema_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "hook_only_recovery": false,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "quarantine.third-fault",
+      "target": "quarantine_record",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "quarantine_id": "quarantine-1",
+        "source_kind": "interaction",
+        "source_identity": "interaction-range:1-8",
+        "immutable_range": {
+          "range_kind": "interaction_cursors",
+          "first_cursor": 1,
+          "last_cursor": 8
+        },
+        "logical_run_id": "run-1",
+        "fault_attempts_total": 3,
+        "normal_cursor_advanced": true,
+        "created_at_ms": 1787644800000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "input-receipt.transcript-acknowledged",
+      "target": "input_receipt",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "receipt_id": "input-receipt-transcript-1",
+        "source_kind": "transcript",
+        "source_identity": "audio-claim:claim-request-event",
+        "logical_run_id": "run-event",
+        "ack_id": "transcript-ack-1",
+        "disposition": "acknowledged",
+        "recorded_at_ms": 1787644900100,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "input-receipt.speaker-quarantined",
+      "target": "input_receipt",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "receipt_id": "input-receipt-speaker-1",
+        "source_kind": "speaker_mapping",
+        "source_identity": "speaker-event-1",
+        "logical_run_id": "run-speaker-1",
+        "ack_id": "speaker-ack-1",
+        "disposition": "quarantined",
+        "recorded_at_ms": 1787644900100,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "explicit-retry.fresh-run",
+      "target": "explicit_retry",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "retry_run_id": "run-retry-1",
+        "quarantine_id": "quarantine-1",
+        "source_identity": "interaction-range:1-8",
+        "preserved_receipt_ids": [
+          "receipt-1"
+        ],
+        "created_at_ms": 1787644900000,
+        "rewinds_normal_cursor": false,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "quarantine.transcript-gap",
+      "target": "quarantine_record",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "quarantine_id": "quarantine-transcript-99",
+        "source_kind": "transcript",
+        "source_identity": "legacy_buffer:99",
+        "immutable_range": {
+          "range_kind": "transcript_entries",
+          "aggregation_buffer_ids": [
+            99
+          ],
+          "first_sequence_number": null,
+          "last_sequence_number": null
+        },
+        "logical_run_id": "run-transcript-99",
+        "fault_attempts_total": 3,
+        "normal_cursor_advanced": true,
+        "created_at_ms": 1787645500000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "quarantine.speaker-mapping",
+      "target": "quarantine_record",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "quarantine_id": "quarantine-speaker-1",
+        "source_kind": "speaker_mapping",
+        "source_identity": "speaker-event-1",
+        "immutable_range": {
+          "range_kind": "speaker_mapping_event",
+          "mapping_event_id": "speaker-event-1"
+        },
+        "logical_run_id": "run-speaker-1",
+        "fault_attempts_total": 3,
+        "normal_cursor_advanced": true,
+        "created_at_ms": 1787644900000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "reset.full-confirmed",
+      "target": "reset_command",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reset_id": "reset-1",
+        "scope": "all_hermes_state",
+        "confirmed": true,
+        "confirmed_preferences_revision": 1,
+        "current_preferences_revision": 1,
+        "explicit_preferences_to_delete": [
+          {
+            "key": "notifications_enabled",
+            "current_value": false
+          },
+          {
+            "key": "speaker_tag_nudges_enabled",
+            "current_value": false
+          }
+        ],
+        "execute": true,
+        "harness_stopped": true,
+        "live_work_count": 0,
+        "requested_at_ms": 1787644800000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "reset.result-preserves-data",
+      "target": "reset_result",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reset_id": "reset-1",
+        "status": "completed",
+        "execution_requested": true,
+        "preconditions_satisfied": true,
+        "preserved_authorities": [
+          "canonical_transcripts",
+          "speaker_mappings_and_relationships",
+          "aggregation_buffer",
+          "quarantine"
+        ],
+        "default_home_recreated": true,
+        "completed_at_ms": 1787644801000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "reset.scoped-empty-preference-snapshot",
+      "target": "reset_command",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reset_id": "reset-home-only",
+        "scope": "home_state",
+        "confirmed": true,
+        "confirmed_preferences_revision": null,
+        "current_preferences_revision": null,
+        "explicit_preferences_to_delete": [],
+        "execute": true,
+        "harness_stopped": true,
+        "live_work_count": 0,
+        "requested_at_ms": 1787644800000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "reset.scoped-result-no-home-recreation",
+      "target": "reset_result",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "reset_id": "reset-home-only",
+        "status": "completed",
+        "execution_requested": true,
+        "preconditions_satisfied": true,
+        "preserved_authorities": [
+          "canonical_transcripts",
+          "speaker_mappings_and_relationships",
+          "aggregation_buffer",
+          "quarantine"
+        ],
+        "default_home_recreated": false,
+        "completed_at_ms": 1787644801000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "p0-submission.enqueued-durable",
+      "target": "p0_submission_outbox",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "submission_id": "submission-1",
+        "user_id": "user-local",
+        "user_message_id": "message-user-1",
+        "idempotency_key": "user-message:message-user-1",
+        "status": "enqueued",
+        "queue_receipt_id": "queue-receipt-1",
+        "cancellable": false,
+        "created_at_ms": 1787644800000,
+        "updated_at_ms": 1787644800100,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "mobile-chat-outbox.waiting-cancellable",
+      "target": "mobile_chat_outbox",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "local_outbox_id": "mobile-outbox-waiting-1",
+        "user_id": "user-local",
+        "user_message_id": "message-waiting-1",
+        "idempotency_key": "user-message:message-waiting-1",
+        "submission_order": 2,
+        "status": "waiting_for_connection",
+        "backend_submission_id": null,
+        "queue_receipt_id": null,
+        "cancellable": true,
+        "created_at_ms": 1787644799000,
+        "updated_at_ms": 1787644799000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "mobile-chat-outbox.submitting-not-cancellable",
+      "target": "mobile_chat_outbox",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "local_outbox_id": "mobile-outbox-submitting-1",
+        "user_id": "user-local",
+        "user_message_id": "message-submitting-1",
+        "idempotency_key": "user-message:message-submitting-1",
+        "submission_order": 3,
+        "status": "submitting",
+        "backend_submission_id": null,
+        "queue_receipt_id": null,
+        "cancellable": false,
+        "created_at_ms": 1787644799000,
+        "updated_at_ms": 1787644799500,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "mobile-chat-outbox.submitted",
+      "target": "mobile_chat_outbox",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "local_outbox_id": "mobile-outbox-1",
+        "user_id": "user-local",
+        "user_message_id": "message-user-1",
+        "idempotency_key": "user-message:message-user-1",
+        "submission_order": 1,
+        "status": "submitted",
+        "backend_submission_id": "submission-1",
+        "queue_receipt_id": "queue-receipt-1",
+        "cancellable": false,
+        "created_at_ms": 1787644799000,
+        "updated_at_ms": 1787644800200,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "final-reply-outbox.persisted",
+      "target": "final_reply_outbox",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "outbox_id": "final-outbox-1",
+        "assistant_message_id": "message-assistant-1",
+        "user_message_id": "message-user-1",
+        "idempotency_key": "assistant-message:message-assistant-1",
+        "logical_run_id": "run-chat-1",
+        "content_ref": "content:message-assistant-1",
+        "status": "persisted",
+        "backend_receipt_id": "final-receipt-1",
+        "created_at_ms": 1787644806000,
+        "updated_at_ms": 1787644807000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "final-reply-receipt.persisted-once",
+      "target": "final_reply_receipt",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "receipt_id": "final-receipt-1",
+        "assistant_message_id": "message-assistant-1",
+        "user_message_id": "message-user-1",
+        "backend_message_id": "backend-message-assistant-1",
+        "idempotency_key": "assistant-message:message-assistant-1",
+        "resolution": "persisted_now",
+        "persisted_at_ms": 1787644807000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "run-finalization.chat-after-receipt",
+      "target": "run_finalization",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "finalization_id": "finalization-chat-1",
+        "logical_run_id": "run-chat-1",
+        "tick_id": "tick-chat-1",
+        "tick_kind": "p0_user_chat",
+        "phase": "completed",
+        "source_ack_id": null,
+        "final_reply_receipt_id": "final-receipt-1",
+        "recovery_mode": "normal",
+        "inference_allowed": false,
+        "restream_allowed": false,
+        "working_memory_outcome": "written",
+        "finalized_at_ms": 1787644807100,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "run-receipt.completed",
+      "target": "run_receipt",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "receipt_id": "run-receipt-1",
+        "logical_run_id": "run-chat-1",
+        "tick_id": "tick-chat-1",
+        "outcome": "completed",
+        "attempts_total": 1,
+        "finalization_id": "finalization-chat-1",
+        "recorded_at_ms": 1787644807200,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "input-receipt.interaction-consumed",
+      "target": "input_receipt",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "receipt_id": "input-receipt-1",
+        "source_kind": "interaction",
+        "source_identity": "interaction-batch-1",
+        "logical_run_id": "run-1",
+        "ack_id": "interaction-consumption-1",
+        "disposition": "acknowledged",
+        "recorded_at_ms": 1787644807200,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "interaction-consumption.completed",
+      "target": "interaction_cursor_consumption_receipt",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "consumption_receipt_id": "interaction-consumption-1",
+        "batch_id": "interaction-batch-1",
+        "first_cursor": 1,
+        "last_cursor": 1,
+        "logical_run_id": "run-1",
+        "finalization_id": "finalization-interaction-1",
+        "consumed_cursor": 1,
+        "consumed_at_ms": 1787644807200,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "run-finalization.interaction-consumed",
+      "target": "run_finalization",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "finalization_id": "finalization-interaction-1",
+        "logical_run_id": "run-1",
+        "tick_id": "tick-interaction-1",
+        "tick_kind": "p1_interaction",
+        "phase": "completed",
+        "source_ack_id": "interaction-consumption-1",
+        "final_reply_receipt_id": null,
+        "recovery_mode": "normal",
+        "inference_allowed": false,
+        "restream_allowed": false,
+        "working_memory_outcome": "unchanged",
+        "finalized_at_ms": 1787644807200,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "queue-receipt.p0-enqueued",
+      "target": "queue_receipt",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "receipt_id": "queue-receipt-1",
+        "user_id": "user-local",
+        "user_message_id": "message-user-1",
+        "idempotency_key": "user-message:message-user-1",
+        "logical_run_id": "run-chat-1",
+        "tick_id": "tick-chat-1",
+        "resolution": "enqueued_now",
+        "enqueued_at_ms": 1787644800100,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "control.submit-p0-request",
+      "target": "hermes_control_request",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "request_id": "control-request-1",
+        "operation": "submit_p0",
+        "user_id": "user-local",
+        "deadline_at_ms": 1787644810000,
+        "timeout_ms": 10000,
+        "idempotency_key": "user-message:message-user-1",
+        "payload_ref": "p0-submission:submission-1",
+        "created_at_ms": 1787644800000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "control.submit-p0-response",
+      "target": "hermes_control_response",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "request_id": "control-request-1",
+        "operation": "submit_p0",
+        "idempotency_key": "user-message:message-user-1",
+        "deadline_at_ms": 1787644810000,
+        "timeout_ms": 10000,
+        "status": "succeeded",
+        "result_ref": "queue-receipt:queue-receipt-1",
+        "error_code": null,
+        "responded_at_ms": 1787644800100,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "topic.asked-with-cooldown",
+      "target": "topic_lifecycle",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "topic_id": "topic-1",
+        "user_id": "user-local",
+        "topic_key": "tag_unknown_speakers",
+        "state": "asked",
+        "last_asked_at_ms": 1787644800000,
+        "next_eligible_at_ms": 1787731200000,
+        "evidence_refs": [
+          "speaker:unknown-1"
+        ],
+        "authorizing_message_id": null,
+        "do_not_ask": false,
+        "updated_at_ms": 1787644800000,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "dashboard.queue-read-model",
+      "target": "dashboard_read_model",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "model_id": "queue",
+        "generated_at_ms": 1787644800000,
+        "source_state_paths": [
+          "hermes.queue_ticks"
+        ],
+        "item_count": 2,
+        "status": "ok",
+        "summary_ref": "dashboard:queue:1787644800000",
+        "authoritative": false,
+        "redacted": true,
+        "extensions": {}
+      }
+    },
+    {
+      "case_id": "dashboard.loopback-snapshot",
+      "target": "dashboard_snapshot",
+      "payload": {
+        "schema_version": {
+          "major": 1,
+          "minor": 0
+        },
+        "snapshot_id": "dashboard-snapshot-1",
+        "generated_at_ms": 1787644800000,
+        "binding": "mac_loopback_only",
+        "authoritative": false,
+        "read_models": [
+          {
+            "schema_version": {
+              "major": 1,
+              "minor": 0
+            },
+            "model_id": "queue",
+            "generated_at_ms": 1787644800000,
+            "source_state_paths": [
+              "hermes.queue_ticks"
+            ],
+            "item_count": 2,
+            "status": "ok",
+            "summary_ref": "dashboard:queue:1787644800000",
+            "authoritative": false,
+            "redacted": true,
+            "extensions": {}
+          }
+        ],
+        "extensions": {}
+      }
+    }
+  ]
+}
