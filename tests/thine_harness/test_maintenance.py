@@ -191,6 +191,83 @@ def test_v10_database_migrates_without_changing_existing_state(tmp_path: Path) -
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+def test_operator_snapshot_returns_bounded_recent_maintenance_owner_state(
+    tmp_path: Path,
+) -> None:
+    state = DurableRunState(tmp_path / "state.sqlite3")
+    home = HomeStateProjector(tmp_path / "home.sqlite3", clock_ms=lambda: NOW)
+    service = RetentionResetService(state, home=home, clock_ms=lambda: NOW)
+    older = service.plan_reset(USER, "working_memory_topics")
+    newer = service.plan_reset(USER, "home_state")
+    _seed_queue(state, "live", state_name="running")
+    with state._transaction() as connection:
+        connection.execute(
+            "UPDATE maintenance_plans SET created_at_ms = ? WHERE reset_id = ?",
+            (NOW - 20, older.reset_id),
+        )
+        connection.execute(
+            "UPDATE maintenance_plans SET created_at_ms = ? WHERE reset_id = ?",
+            (NOW - 10, newer.reset_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO maintenance_events (
+                event_id, user_id, event_kind, subject_id,
+                details_json, recorded_at_ms
+            ) VALUES
+                ('event-old', ?, 'retention_cleanup', 'cleanup-old', '{}', ?),
+                ('event-new', ?, 'retention_cleanup', 'cleanup-new',
+                 '{"changed":{"tool_receipts":2}}', ?)
+            """,
+            (USER, NOW - 30, USER, NOW - 5),
+        )
+
+    snapshot = service.operator_snapshot(USER, limit=1)
+
+    assert snapshot["authoritative"] is True
+    assert snapshot["read_at_ms"] == NOW
+    assert snapshot["owner_observed_at_ms"] == NOW - 5
+    assert snapshot["live_work_count"] == 1
+    assert snapshot["policy"] == service.retention_policy()
+    assert snapshot["events"] == [
+        {
+            "event_id": "event-new",
+            "event_kind": "retention_cleanup",
+            "subject_id": "cleanup-new",
+            "details": {"changed": {"tool_receipts": 2}},
+            "recorded_at_ms": NOW - 5,
+        }
+    ]
+    assert len(snapshot["reset_plans"]) == 1
+    assert snapshot["reset_plans"][0]["reset_id"] == newer.reset_id
+    assert snapshot["reset_plans"][0]["scope"] == "home_state"
+    assert snapshot["reset_plans"][0]["status"] == "planned"
+    assert snapshot["reset_plans"][0]["plan"]["targets"] == newer.targets
+
+
+def test_authoritative_quarantine_helper_bounds_each_recent_owner_collection(
+    tmp_path: Path,
+) -> None:
+    state = DurableRunState(tmp_path / "state.sqlite3")
+    home = HomeStateProjector(tmp_path / "home.sqlite3", clock_ms=lambda: NOW)
+    for index in range(3):
+        quarantine_id = f"quarantine-{index}"
+        _seed_quarantine(state, quarantine_id)
+        with state._transaction() as connection:
+            connection.execute(
+                "UPDATE quarantines SET quarantined_at_ms = ? WHERE quarantine_id = ?",
+                (NOW + index, quarantine_id),
+            )
+
+    snapshot = AuthoritativeStateReader(state, home=home).quarantines(USER, limit=2)
+
+    assert snapshot["retention_limit"] == 2
+    assert [item["quarantine_id"] for item in snapshot["generic"]] == [
+        "quarantine-2",
+        "quarantine-1",
+    ]
+
+
 def test_time_frozen_retention_matrix_prunes_only_expired_derived_state(
     tmp_path: Path,
 ) -> None:

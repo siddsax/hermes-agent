@@ -241,25 +241,30 @@ class AuthoritativeStateReader:
             for row in rows
         ]
 
-    def quarantines(self, user_id: str) -> dict[str, object]:
+    def quarantines(
+        self, user_id: str, *, limit: int = HISTORY_LIMIT
+    ) -> dict[str, object]:
+        bounded = _bounded_limit(limit)
         with self._state._connect() as connection:
             generic = connection.execute(
                 """
                 SELECT quarantine_id, logical_run_id, tick_id, source_kind,
                        source_id, attempt_ordinal, failure_code, quarantined_at_ms
                 FROM quarantines WHERE user_id = ?
-                ORDER BY quarantined_at_ms, quarantine_id
+                ORDER BY quarantined_at_ms DESC, quarantine_id DESC
+                LIMIT ?
                 """,
-                (user_id,),
+                (user_id, bounded),
             ).fetchall()
             transcript = connection.execute(
                 """
                 SELECT quarantine_id, original_logical_run_id, claim_id,
                        failure_code, quarantined_at_ms, sync_state
                 FROM transcript_quarantines WHERE user_id = ?
-                ORDER BY quarantined_at_ms, quarantine_id
+                ORDER BY quarantined_at_ms DESC, quarantine_id DESC
+                LIMIT ?
                 """,
-                (user_id,),
+                (user_id, bounded),
             ).fetchall()
             speaker = connection.execute(
                 """
@@ -267,9 +272,10 @@ class AuthoritativeStateReader:
                        state, updated_at_ms
                 FROM speaker_mapping_inputs
                 WHERE user_id = ? AND quarantine_id IS NOT NULL
-                ORDER BY cursor, event_id
+                ORDER BY cursor DESC, event_id DESC
+                LIMIT ?
                 """,
-                (user_id,),
+                (user_id, bounded),
             ).fetchall()
             interaction = connection.execute(
                 """
@@ -277,9 +283,10 @@ class AuthoritativeStateReader:
                        first_cursor, last_cursor, failure_code,
                        quarantined_at_ms, sync_state
                 FROM interaction_quarantines WHERE user_id = ?
-                ORDER BY quarantined_at_ms, quarantine_id
+                ORDER BY quarantined_at_ms DESC, quarantine_id DESC
+                LIMIT ?
                 """,
-                (user_id,),
+                (user_id, bounded),
             ).fetchall()
             retries: dict[str, list[dict[str, object]]] = {}
             for table in (
@@ -292,15 +299,17 @@ class AuthoritativeStateReader:
                     SELECT retry_run_id, quarantine_id, state, created_at_ms,
                            completed_at_ms
                     FROM {table} WHERE user_id = ?
-                    ORDER BY created_at_ms, retry_run_id
+                    ORDER BY created_at_ms DESC, retry_run_id DESC
+                    LIMIT ?
                     """,
-                    (user_id,),
+                    (user_id, bounded),
                 ).fetchall()
                 retries[table.removesuffix("_explicit_retries")] = [
                     dict(row) for row in rows
                 ]
         return {
             "authoritative": True,
+            "retention_limit": bounded,
             "quarantine_is_immutable": True,
             "normal_cursor_rewind_allowed": False,
             "generic": [dict(row) for row in generic],
@@ -347,6 +356,78 @@ class RetentionResetService:
             "explicit_preferences": "until_user_reverses_or_confirmed_full_reset",
             "quarantines_and_retry_provenance": "indefinite",
             "canonical_transcripts_and_speakers": "backend_owned_not_touched",
+        }
+
+    def operator_snapshot(
+        self, user_id: str, *, limit: int = HISTORY_LIMIT
+    ) -> dict[str, object]:
+        """Return bounded authoritative reset and retention owner state."""
+        bounded = _bounded_limit(limit)
+        read_at_ms = int(self._clock_ms())
+        with self._state._connect() as connection:
+            event_rows = connection.execute(
+                """
+                SELECT event_id, event_kind, subject_id, details_json,
+                       recorded_at_ms
+                FROM maintenance_events
+                WHERE user_id = ?
+                ORDER BY recorded_at_ms DESC, event_id DESC
+                LIMIT ?
+                """,
+                (user_id, bounded),
+            ).fetchall()
+            plan_rows = connection.execute(
+                """
+                SELECT reset_id, scope, plan_json, status, created_at_ms,
+                       completed_at_ms
+                FROM maintenance_plans
+                WHERE user_id = ?
+                ORDER BY created_at_ms DESC, reset_id DESC
+                LIMIT ?
+                """,
+                (user_id, bounded),
+            ).fetchall()
+        observed_candidates = [int(row["recorded_at_ms"]) for row in event_rows] + [
+            (
+                int(row["completed_at_ms"])
+                if row["completed_at_ms"] is not None
+                else int(row["created_at_ms"])
+            )
+            for row in plan_rows
+        ]
+        return {
+            "authoritative": True,
+            "read_at_ms": read_at_ms,
+            "owner_observed_at_ms": (
+                max(observed_candidates) if observed_candidates else None
+            ),
+            "policy": self.retention_policy(),
+            "live_work_count": self.live_work_count(user_id),
+            "events": [
+                {
+                    "event_id": str(row["event_id"]),
+                    "event_kind": str(row["event_kind"]),
+                    "subject_id": str(row["subject_id"]),
+                    "details": json.loads(str(row["details_json"])),
+                    "recorded_at_ms": int(row["recorded_at_ms"]),
+                }
+                for row in event_rows
+            ],
+            "reset_plans": [
+                {
+                    "reset_id": str(row["reset_id"]),
+                    "scope": str(row["scope"]),
+                    "status": str(row["status"]),
+                    "plan": json.loads(str(row["plan_json"])),
+                    "created_at_ms": int(row["created_at_ms"]),
+                    "completed_at_ms": (
+                        None
+                        if row["completed_at_ms"] is None
+                        else int(row["completed_at_ms"])
+                    ),
+                }
+                for row in plan_rows
+            ],
         }
 
     def cleanup(self, user_id: str) -> RetentionResult:

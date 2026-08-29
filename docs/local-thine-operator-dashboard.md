@@ -32,17 +32,32 @@ The page shows queue/lease/attempt/checkpoint/receipt state, current-run status,
 transcript claims, Working Memory and its last 50 versions, Home head/history,
 interaction and speaker ingestion state, communication delivery and permission
 state, a redacted push-registration summary, schedules, topics/preferences,
-retention/reset policy, and the last 50 redacted invocation records. Each panel
-names its authoritative helper and reports freshness and errors. The
-push-registration summary contains only whether a registration exists, its
+recent durable retention/reset events and plans, current live-work count, and
+the last 50 redacted invocation records. Queue, Attempt, checkpoint, receipt,
+and quarantine rows are bounded in SQLite before they enter the projection;
+checkpoints and receipts are the newest 50, and the active-run receipt count is
+queried for that run rather than inferred from the bounded timeline.
+
+Each panel names its authoritative helper and reports two different clocks:
+`read_at_ms` is when the dashboard called the helper, while
+`owner_observed_at_ms` is the newest durable observation or mutation represented
+by that value. An empty but successful owner read therefore says `read` and does
+not pretend that state changed during refresh. Composite panels include the
+same freshness fields per source value, and the page renders those component
+clocks under **source freshness**.
+
+The product-attached communications panel independently reads the backend-owned
+notification permission and redacted push-registration summary. A failure in
+one leaves local action/allowance history and the other backend value visible.
+The registration summary contains only whether a registration exists, its
 count, and when one was last observed; device tokens and provider credentials
 never enter the dashboard projection.
 
-The product-attached dashboard reads that summary through the existing private
-backend communications client. The standalone dashboard has no backend client,
-so the communications panel is explicitly partial and reports push registration
-as unavailable. A failed backend read is isolated to the communications panel
-and exposes no response body or registration content.
+Those values use the existing private backend communications client. The
+standalone dashboard has no backend client,
+so the communications panel is explicitly partial and reports both live
+permission and push registration as unavailable. A failed backend value is
+isolated and exposes neither a response body nor registration content.
 
 Operator controls always use a preview followed by exact confirmation. They
 include schedule run-now/cancel, Home replacement/reactivation, explicit
