@@ -177,7 +177,7 @@ class BackendCommunicationClient:
 
     def permission(self) -> NotificationPermission:
         response = self._client.get(
-            "/_local-hermes/private/v1/communications/permission",
+            "/v1/communications/permission",
             headers=self._headers(),
         )
         response.raise_for_status()
@@ -185,7 +185,7 @@ class BackendCommunicationClient:
 
     def push_registration_status(self) -> PushRegistrationStatus:
         response = self._client.get(
-            "/_local-hermes/private/v1/communications/push-registration",
+            "/v1/communications/push-registration",
             headers=self._headers(),
         )
         response.raise_for_status()
@@ -193,7 +193,7 @@ class BackendCommunicationClient:
 
     def deliver(self, intent: NotificationIntent) -> NotificationOutcome:
         response = self._client.post(
-            "/_local-hermes/private/v1/communications/background-message",
+            "/v1/communications/background-message",
             headers=self._headers(),
             json=intent.to_dict(),
         )
@@ -211,7 +211,7 @@ class BackendCommunicationClient:
 
     def deliver_standalone(self, intent: NotificationIntent) -> NotificationOutcome:
         response = self._client.post(
-            "/_local-hermes/private/v1/communications/standalone-notification",
+            "/v1/communications/standalone-notification",
             headers=self._headers(),
             json=intent.to_dict(),
         )
@@ -222,8 +222,7 @@ class BackendCommunicationClient:
 
     def standalone_receipt(self, action_id: str) -> NotificationOutcome | None:
         response = self._client.get(
-            "/_local-hermes/private/v1/communications/standalone-notification/"
-            + quote(action_id, safe=""),
+            "/v1/communications/standalone-notification/" + quote(action_id, safe=""),
             headers=self._headers(),
         )
         if response.status_code == 404:

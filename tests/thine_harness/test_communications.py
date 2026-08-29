@@ -407,13 +407,17 @@ def test_backend_client_posts_only_frozen_intent_and_replays_exactly():
 
     assert first.to_json() == replay.to_json()
     assert [request.url.path for request in requests] == [
-        "/_local-hermes/private/v1/communications/permission",
-        "/_local-hermes/private/v1/communications/background-message",
-        "/_local-hermes/private/v1/communications/background-message",
+        "/v1/communications/permission",
+        "/v1/communications/background-message",
+        "/v1/communications/background-message",
     ]
     posted = json.loads(requests[1].content)
     assert posted == intent.to_dict()
-    assert requests[1].headers["x-thine-firebase-uid"] == "daily-user"
+    for request in requests:
+        assert request.headers["authorization"] == "Bearer private-token"
+        assert request.headers["x-thine-firebase-uid"] == "daily-user"
+        assert request.headers["x-request-id"]
+    assert len({request.headers["x-request-id"] for request in requests}) == 3
 
 
 def test_push_registration_status_is_a_strict_frozen_wire_value() -> None:
@@ -507,9 +511,7 @@ def test_backend_client_reads_redacted_push_registration_status() -> None:
     assert len(requests) == 1
     request = requests[0]
     assert request.method == "GET"
-    assert request.url.path == (
-        "/_local-hermes/private/v1/communications/push-registration"
-    )
+    assert request.url.path == "/v1/communications/push-registration"
     assert request.headers["authorization"] == "Bearer private-token"
     assert request.headers["x-thine-firebase-uid"] == "daily-user"
     assert request.headers["x-request-id"]

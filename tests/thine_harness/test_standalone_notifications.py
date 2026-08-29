@@ -437,11 +437,16 @@ def test_backend_client_uses_frozen_standalone_routes_and_receipt_lookup():
     assert replay is not None
     assert delivered.to_json() == replay.to_json()
     assert [request.url.path for request in requests] == [
-        "/_local-hermes/private/v1/communications/standalone-notification/missing",
-        "/_local-hermes/private/v1/communications/standalone-notification",
-        "/_local-hermes/private/v1/communications/standalone-notification/action-standalone-1",
+        "/v1/communications/standalone-notification/missing",
+        "/v1/communications/standalone-notification",
+        "/v1/communications/standalone-notification/action-standalone-1",
     ]
     assert json.loads(requests[1].content) == intent.to_dict()
+    for request in requests:
+        assert request.headers["authorization"] == "Bearer private-token"
+        assert request.headers["x-thine-firebase-uid"] == "daily-user"
+        assert request.headers["x-request-id"]
+    assert len({request.headers["x-request-id"] for request in requests}) == 3
 
 
 def test_schema_upgrade_preserves_existing_proactive_action(tmp_path: Path):
