@@ -30,6 +30,7 @@ from .maintenance import (
 from .operator_dashboard import (
     OperatorDashboard,
     OperatorDashboardControl,
+    OperatorDashboardConfigurationError,
     OperatorDashboardReadService,
     load_operator_dashboard_config,
 )
@@ -101,6 +102,46 @@ def _harness_is_stopped(hermes_home: Path) -> bool:
     return False
 
 
+class OperatorDashboardStartupError(RuntimeError):
+    """The loopback dashboard listener did not become ready."""
+
+
+def _start_operator_dashboard_thread(
+    server: uvicorn.Server, *, timeout_seconds: float = 5.0
+) -> threading.Thread:
+    """Start Uvicorn and surface background bind/startup failures synchronously."""
+    finished = threading.Event()
+    failures: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            server.run()
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            finished.set()
+
+    thread = threading.Thread(
+        target=run,
+        name="thine-operator-dashboard",
+        daemon=True,
+    )
+    thread.start()
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if server.started and thread.is_alive():
+            return thread
+        if finished.wait(0.01):
+            break
+    server.should_exit = True
+    if thread.ident is not None:
+        thread.join(timeout=1)
+    error = OperatorDashboardStartupError("operator dashboard listener did not start")
+    if failures:
+        raise error from failures[0]
+    raise error
+
+
 def build_private_service_server(
     config: PrivateServiceConfig,
     *,
@@ -165,14 +206,18 @@ def operator_dashboard_main() -> int:
             )
         private_config = load_private_service_config()
         state = DurableRunState(hermes_home / "thine-harness" / "run-state.sqlite3")
-        home = HomeStateProjector(
-            hermes_home / "thine-harness" / "home-state.sqlite3"
-        )
+        home = HomeStateProjector(hermes_home / "thine-harness" / "home-state.sqlite3")
         schedules = OneShotScheduleService(state)
+        topics = TopicPreferenceService(state)
+        actions = ActionDispatcher(state)
         maintenance = RetentionResetService(state, home=home)
         dashboard = OperatorDashboard(
             reads=OperatorDashboardReadService(
                 AuthoritativeStateReader(state, home=home, schedules=schedules),
+                state=state,
+                actions=actions,
+                topics=topics,
+                schedules=schedules,
                 maintenance=maintenance,
             ),
             controls=OperatorDashboardControl(
@@ -189,7 +234,11 @@ def operator_dashboard_main() -> int:
         ).run()
     except KeyboardInterrupt:
         return 0
-    except (PrivateServiceConfigurationError, ValueError) as exc:
+    except (
+        PrivateServiceConfigurationError,
+        OperatorDashboardConfigurationError,
+        OperatorDashboardStartupError,
+    ) as exc:
         print(f"Hermes operator dashboard configuration error: {exc}", file=sys.stderr)
         return 2
     return 0
@@ -244,14 +293,15 @@ def build_product_p0_controller(
     )
     interaction_binding = InteractionBatchToolBinding()
     speaker_binding = SpeakerMappingToolBinding()
+    action_dispatcher = ActionDispatcher(store.run_state)
     communication_binding = CommunicationToolBinding(
-        dispatcher=ActionDispatcher(store.run_state),
+        dispatcher=action_dispatcher,
         backend=communications,
     )
     topic_service = TopicPreferenceService(store.run_state)
     topic_binding = TopicPreferenceToolBinding(service=topic_service)
     notification_binding = StandaloneNotificationToolBinding(
-        dispatcher=ActionDispatcher(store.run_state),
+        dispatcher=action_dispatcher,
         backend=communications,
         preference_lookup=lambda user_id: topic_service.preference_value(
             user_id, "notifications_enabled"
@@ -431,7 +481,7 @@ def build_product_p0_controller(
         return retry_run_id
 
     def retry_action(action_id: str) -> dict[str, object]:
-        record = ActionDispatcher(store.run_state).record(action_id)
+        record = action_dispatcher.record(action_id)
         reconciled = (
             communication_binding.reconcile_one(private_config.firebase_uid, action_id)
             if record.action_kind == "background_message"
@@ -445,7 +495,12 @@ def build_product_p0_controller(
         OperatorDashboard(
             reads=OperatorDashboardReadService(
                 authoritative_reader,
+                state=store.run_state,
+                actions=action_dispatcher,
+                topics=topic_service,
+                schedules=schedules,
                 maintenance=maintenance,
+                run_diagnostics=controller.coordinator.diagnostics,
                 live_run=controller.coordinator.active_snapshot,
             ),
             controls=OperatorDashboardControl(
@@ -487,46 +542,53 @@ def main() -> int:
             home_state=home_state,
         )
         marker = _harness_marker(get_hermes_home())
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(str(os.getpid()), encoding="utf-8")
         operator_server: uvicorn.Server | None = None
         operator_thread: threading.Thread | None = None
-        operator_config = load_operator_dashboard_config()
-        if operator_config.enabled:
-            dashboard = controller.operator_dashboard
-            if not isinstance(dashboard, OperatorDashboard):
-                raise RuntimeError("product controller did not attach operator dashboard")
-            operator_server = build_operator_dashboard_server(
-                dashboard,
-                host=operator_config.host,
-                port=operator_config.port,
-            )
-            operator_thread = threading.Thread(
-                target=operator_server.run,
-                name="thine-operator-dashboard",
-                daemon=True,
-            )
-            operator_thread.start()
         try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(str(os.getpid()), encoding="utf-8")
+            operator_config = load_operator_dashboard_config()
+            if operator_config.enabled:
+                dashboard = controller.operator_dashboard
+                if not isinstance(dashboard, OperatorDashboard):
+                    raise OperatorDashboardStartupError(
+                        "product controller did not attach operator dashboard"
+                    )
+                operator_server = build_operator_dashboard_server(
+                    dashboard,
+                    host=operator_config.host,
+                    port=operator_config.port,
+                )
+                operator_thread = _start_operator_dashboard_thread(operator_server)
             build_private_service_server(
                 config,
                 p0_control=controller,
                 home_state=home_state,
             ).run()
         finally:
-            if operator_server is not None:
-                operator_server.should_exit = True
-            if operator_thread is not None:
-                operator_thread.join(timeout=5)
-            controller.close()
             try:
-                if marker.read_text(encoding="utf-8").strip() == str(os.getpid()):
-                    marker.unlink()
-            except FileNotFoundError:
-                pass
+                if operator_server is not None:
+                    operator_server.should_exit = True
+                if operator_thread is not None and operator_thread.ident is not None:
+                    operator_thread.join(timeout=5)
+            finally:
+                try:
+                    controller.close()
+                finally:
+                    try:
+                        if marker.read_text(encoding="utf-8").strip() == str(
+                            os.getpid()
+                        ):
+                            marker.unlink()
+                    except FileNotFoundError:
+                        pass
     except KeyboardInterrupt:
         return 0
-    except PrivateServiceConfigurationError as exc:
+    except (
+        PrivateServiceConfigurationError,
+        OperatorDashboardConfigurationError,
+        OperatorDashboardStartupError,
+    ) as exc:
         print(f"Hermes private service configuration error: {exc}", file=sys.stderr)
         return 2
     return 0

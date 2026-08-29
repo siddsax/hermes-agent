@@ -14,7 +14,9 @@ import time
 from typing import Any, Protocol, cast
 import uuid
 
+from .action_dispatcher import ActionDispatcher
 from .home_state import HomeStateProjector
+from .interactions import inspect_interaction_inputs
 from .maintenance import (
     AuthoritativeStateReader,
     HISTORY_LIMIT,
@@ -22,6 +24,8 @@ from .maintenance import (
     RetentionResetService,
 )
 from .schedules import OneShotScheduleService
+from .run_state import DurableRunState, diagnostics_as_dict
+from .topics_preferences import TopicPreferenceService
 
 
 class OperatorDashboardConfigurationError(ValueError):
@@ -95,196 +99,154 @@ class OperatorDashboardReadService:
         self,
         reader: AuthoritativeStateReader,
         *,
+        state: DurableRunState,
+        actions: ActionDispatcher,
+        topics: TopicPreferenceService,
+        schedules: OneShotScheduleService,
         maintenance: RetentionResetService,
+        run_diagnostics: Callable[[str], object] | None = None,
         live_run: Callable[[str], Mapping[str, object] | None] | None = None,
         clock_ms: Callable[[], int] | None = None,
     ) -> None:
         self._reader = reader
+        self._state = state
+        self._actions = actions
+        self._topics = topics
+        self._schedules = schedules
         self._maintenance = maintenance
+        self._run_diagnostics = run_diagnostics
         self._live_run = live_run
         self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
 
-    def snapshot(self, user_id: str, *, limit: int = HISTORY_LIMIT) -> dict[str, object]:
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+    def snapshot(
+        self, user_id: str, *, limit: int = HISTORY_LIMIT
+    ) -> dict[str, object]:
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 50
+        ):
             raise ValueError("limit_must_be_between_1_and_50")
         now_ms = int(self._clock_ms())
-        state = self._reader.snapshot(user_id)
-        details = self._reader.operator_details(user_id, limit=limit)
-        history = self._reader.working_memory_history(user_id, limit=limit)
-        debug = self._reader.debug_invocations(user_id, limit=limit)
-        quarantines = self._reader.quarantines(user_id)
-        home_history = self._reader.home_history(user_id)
-        queue_state = cast(dict[str, object], state["queue_state"])
-        leases = cast(list[dict[str, object]], queue_state["leases"])
-        attempts = cast(list[dict[str, object]], queue_state["attempts"])[-limit:]
-        checkpoints = cast(list[dict[str, object]], queue_state["checkpoints"])[-limit:]
-        receipts = cast(list[dict[str, object]], queue_state["receipts"])[-limit:]
-        live = self._live_run(user_id) if self._live_run is not None else None
-        if live is not None:
-            live = dict(live)
-            logical_run_id = live.get("logical_run_id")
-            live["completed_tool_receipts"] = sum(
-                1 for item in receipts if item["logical_run_id"] == logical_run_id
-            )
-            live["token_estimate"] = unavailable(
-                "hermes.agent_runtime",
-                "provider usage is authoritative only after the current segment returns",
-            )
-        if live is None and leases:
-            lease = leases[0]
-            logical_run_id = str(lease["logical_run_id"])
-            running_attempts = [
-                item for item in attempts if item["logical_run_id"] == logical_run_id
-            ]
-            started_value = (
-                running_attempts[-1].get("started_at_ms") if running_attempts else None
-            )
-            started_at = started_value if isinstance(started_value, int) else now_ms
-            live = {
-                "logical_run_id": logical_run_id,
-                "state": lease["state"],
-                "elapsed_ms": max(0, now_ms - started_at),
-                "completed_tool_receipts": sum(
-                    1 for item in receipts if item["logical_run_id"] == logical_run_id
-                ),
-                "token_estimate": unavailable(
-                    "hermes.agent_runtime",
-                    "provider usage is authoritative only after the current segment returns",
-                ),
-                "interruption_request": unavailable(
-                    "hermes.run_coordinator",
-                    "this reader is not attached to the live coordinator instance",
-                ),
-            }
-
         panels = {
-            "queue": self._panel(
+            "queue": self._capture(
                 now_ms,
-                "hermes.run_state.diagnostics",
-                {
-                    "items": cast(list[object], queue_state["queue"])[-limit:],
-                    "leases": leases[-limit:],
-                    "attempts": attempts,
-                    "checkpoints": checkpoints,
-                    "tool_receipts": receipts,
-                    "quarantines": quarantines,
-                },
+                (
+                    "hermes.run_coordinator.diagnostics"
+                    if self._run_diagnostics is not None
+                    else "hermes.run_state.diagnostics"
+                )
+                + ";hermes.maintenance.quarantines",
+                lambda: self._queue_data(user_id, limit),
             ),
-            "current_run": self._panel(
+            "current_run": self._capture(
                 now_ms,
-                "hermes.run_coordinator.active_snapshot",
-                {
-                    "active": live,
-                    "runtime": {
-                        "provider": "openai-codex",
-                        "model": "gpt-5.6-sol",
-                        "api_mode": "codex_responses",
-                        "reasoning_effort": "medium",
-                        "tool_search_enabled": True,
-                        "tool_search_listing": False,
-                    },
-                },
-                status=(
-                    "partial"
-                    if live is not None
-                    else "ok" if not leases else "unavailable"
+                (
+                    "hermes.run_coordinator.diagnostics+active_snapshot"
+                    if self._run_diagnostics is not None
+                    else "hermes.run_coordinator.unavailable"
                 ),
-                error=(
-                    "live provider token usage is unavailable until segment completion"
-                    if live is not None
+                lambda: self._current_run_data(user_id),
+                partial_error=(
+                    "standalone dashboard is not attached to the live coordinator"
+                    if self._run_diagnostics is None
                     else None
-                    if not leases
-                    else "live coordinator telemetry is not attached"
                 ),
             ),
-            "transcripts": self._panel(
+            "transcripts": self._capture(
                 now_ms,
-                "hermes.transcript_claim_repository",
-                {
-                    "claims": details["transcript_claims"],
+                "hermes.run_state.recent_transcript_runs",
+                lambda: {
+                    "claims": list(
+                        self._state.recent_transcript_runs(user_id, limit=limit)
+                    ),
                     "canonical_transcripts": unavailable(
                         "thine.dataplane",
                         "backend owner has no bounded dashboard read helper in this process",
                     ),
                 },
-                status="partial",
-                error="canonical transcript content is backend-owned and unavailable here",
+                partial_error="canonical transcript content is backend-owned and unavailable here",
             ),
-            "working_memory": self._panel(
+            "working_memory": self._capture(
                 now_ms,
-                "hermes.working_memory_custodian",
-                {
-                    "current": state["working_memory"],
-                    "versions": history,
+                "hermes.maintenance.working_memory_current+history;hermes.run_state.recent_finalizations",
+                lambda: {
+                    "current": self._reader.working_memory_current(user_id),
+                    "versions": self._reader.working_memory_history(
+                        user_id, limit=limit
+                    ),
                     "restore_available": False,
-                    "finalizations": details["run_finalizations"],
+                    "finalizations": list(
+                        self._state.recent_finalizations(user_id, limit=limit)
+                    ),
                 },
             ),
-            "home": self._panel(
+            "home": self._capture(
                 now_ms,
-                "hermes.home_state_projector",
-                {
-                    "current": state["home"],
-                    "history": home_history,
+                "hermes.home_state_projector.current+history",
+                lambda: {
+                    "current": self._reader.home_current(user_id),
+                    "history": self._reader.home_history(user_id),
                     "last_mobile_ack": unavailable(
                         "thine.mobile_experience",
                         "mobile acknowledgement is owned outside Hermes and has no helper yet",
                     ),
                 },
-                status="partial",
-                error="last mobile acknowledgement has no Hermes owner helper",
+                partial_error="last mobile acknowledgement has no Hermes owner helper",
             ),
-            "interactions": self._panel(
+            "interactions": self._capture(
                 now_ms,
-                "hermes.interaction_input_repository",
-                {
-                    "clock": state["interaction_clock"],
-                    "claims": details["interaction_claims"],
+                "hermes.interactions.inspect_interaction_inputs",
+                lambda: {
+                    **inspect_interaction_inputs(
+                        self._state, user_id=user_id, limit=limit
+                    ),
                     "retention_days": 7,
-                    "quarantines": cast(dict[str, object], quarantines)["interaction"],
                 },
             ),
-            "speakers": self._panel(
+            "speakers": self._capture(
                 now_ms,
-                "hermes.speaker_mapping_input_repository",
-                {
-                    "cursor": details["speaker_cursor"],
-                    "inputs": details["speaker_inputs"],
-                    "quarantines": cast(dict[str, object], quarantines)["speaker"],
+                "hermes.run_state.speaker_cursor+recent_speaker_mappings",
+                lambda: {
+                    "cursor": self._state.speaker_cursor(user_id),
+                    "inputs": list(
+                        self._state.recent_speaker_mappings(user_id, limit=limit)
+                    ),
                     "canonical_mappings": unavailable(
                         "thine.dataplane",
                         "backend owner has no bounded dashboard read helper in this process",
                     ),
                 },
-                status="partial",
-                error="canonical speaker mappings are backend-owned and unavailable here",
+                partial_error="canonical speaker mappings are backend-owned and unavailable here",
             ),
-            "communications": self._panel(
+            "communications": self._capture(
                 now_ms,
-                "hermes.action_dispatcher",
-                {
-                    "actions": details["communications"],
-                    "allowance": details["communication_allowance"],
-                    "permission": state["notification_permission"],
-                    "last_permission_request": details[
-                        "last_notification_permission_request"
-                    ],
+                "hermes.action_dispatcher.operator_snapshot;hermes.topic_preference_service.inspect",
+                lambda: {
+                    **self._actions.operator_snapshot(user_id, limit=limit),
+                    "last_permission_request": self._topics.inspect(
+                        user_id, "enable_notifications"
+                    ),
                 },
             ),
-            "schedules": self._panel(
+            "schedules": self._capture(
                 now_ms,
-                "hermes.one_shot_schedule_service",
-                {"items": state["schedules"]},
+                "hermes.one_shot_schedule_service.list",
+                lambda: {
+                    "items": [
+                        item.to_tool_dict() for item in self._schedules.list(user_id)
+                    ]
+                },
             ),
-            "topics_preferences": self._panel(
+            "topics_preferences": self._capture(
                 now_ms,
-                "hermes.topic_preference_service",
-                cast(dict[str, object], state["topics_preferences"]),
+                "hermes.topic_preference_service.inspect",
+                lambda: self._topics.inspect(user_id),
             ),
-            "retention_reset": self._panel(
+            "retention_reset": self._capture(
                 now_ms,
-                "hermes.retention_reset_service",
-                {
+                "hermes.retention_reset_service.retention_policy",
+                lambda: {
                     "policy": self._maintenance.retention_policy(),
                     "reset_scopes": [
                         "working_memory_topics",
@@ -296,13 +258,15 @@ class OperatorDashboardReadService:
                     "full_reset_enumerates_explicit_preferences": True,
                 },
             ),
-            "debug_timeline": self._panel(
+            "debug_timeline": self._capture(
                 now_ms,
-                "hermes.agent_run_inspection_repository",
-                {
+                "hermes.maintenance.debug_invocations;hermes.run_state.diagnostics",
+                lambda: {
                     "redacted": True,
-                    "invocations": debug,
-                    "tool_receipts": receipts,
+                    "invocations": self._reader.debug_invocations(user_id, limit=limit),
+                    "tool_receipts": diagnostics_as_dict(
+                        self._state.diagnostics(user_id)
+                    )["receipts"][-limit:],
                 },
             ),
         }
@@ -317,21 +281,111 @@ class OperatorDashboardReadService:
             "panels": panels,
         }
 
+    def _queue_data(self, user_id: str, limit: int) -> dict[str, object]:
+        diagnostics = self._diagnostics_mapping(user_id)
+        return {
+            "items": cast(list[object], diagnostics["queue"])[-limit:],
+            "leases": cast(list[object], diagnostics["leases"])[-limit:],
+            "attempts": cast(list[object], diagnostics["attempts"])[-limit:],
+            "checkpoints": cast(list[object], diagnostics["checkpoints"])[-limit:],
+            "tool_receipts": cast(list[object], diagnostics["receipts"])[-limit:],
+            "quarantines": self._reader.quarantines(user_id),
+        }
+
+    def _current_run_data(self, user_id: str) -> dict[str, object]:
+        if self._run_diagnostics is None:
+            return {
+                "active": unavailable(
+                    "hermes.run_coordinator",
+                    "standalone dashboard is not attached to the live coordinator",
+                ),
+                "runtime": unavailable(
+                    "hermes.run_coordinator.diagnostics",
+                    "standalone dashboard is not attached to the live coordinator",
+                ),
+            }
+        diagnostics = self._diagnostics_mapping(user_id)
+        live = self._live_run(user_id) if self._live_run is not None else None
+        if live is not None:
+            live = dict(live)
+            logical_run_id = live.get("logical_run_id")
+            receipts_value = diagnostics.get("receipts", [])
+            if not isinstance(receipts_value, list):
+                raise TypeError("run diagnostics receipts must be a list")
+            receipts = cast(list[object], receipts_value)
+            live["completed_tool_receipts"] = sum(
+                1
+                for receipt in receipts
+                if isinstance(receipt, dict)
+                and cast(dict[str, object], receipt).get("logical_run_id")
+                == logical_run_id
+            )
+            live["token_estimate"] = unavailable(
+                "hermes.agent_runtime",
+                "provider usage is authoritative only after the current segment returns",
+            )
+        return {"active": live, "runtime": diagnostics["runtime"]}
+
+    def _diagnostics_mapping(self, user_id: str) -> dict[str, object]:
+        if self._run_diagnostics is None:
+            return cast(
+                dict[str, object], diagnostics_as_dict(self._state.diagnostics(user_id))
+            )
+        value = self._run_diagnostics(user_id)
+        as_dict = getattr(value, "as_dict", None)
+        value = as_dict() if callable(as_dict) else value
+        if not isinstance(value, Mapping):
+            raise TypeError("run diagnostics helper returned an invalid value")
+        return dict(cast(Mapping[str, object], value))
+
+    @staticmethod
+    def _capture(
+        now_ms: int,
+        source: str,
+        loader: Callable[[], object],
+        *,
+        partial_error: str | None = None,
+    ) -> dict[str, object]:
+        try:
+            data = loader()
+        except Exception as exc:
+            return OperatorDashboardReadService._panel(
+                now_ms,
+                source,
+                {},
+                observed_at_ms=None,
+                status="error",
+                error=f"owner_read_failed:{type(exc).__name__}",
+            )
+        return OperatorDashboardReadService._panel(
+            now_ms,
+            source,
+            data,
+            observed_at_ms=now_ms,
+            status="partial" if partial_error else "ok",
+            error=partial_error,
+        )
+
     @staticmethod
     def _panel(
         now_ms: int,
         source: str,
         data: object,
         *,
-        status: str = "ok",
-        error: str | None = None,
+        observed_at_ms: int | None,
+        status: str,
+        error: str | None,
     ) -> dict[str, object]:
         return {
             "source": source,
             "generated_at_ms": now_ms,
             "freshness": {
-                "status": "snapshot_time_only",
+                "status": "observed" if observed_at_ms is not None else "unknown",
+                "observed_at_ms": observed_at_ms,
                 "snapshot_generated_at_ms": now_ms,
+                "age_ms": (
+                    None if observed_at_ms is None else max(0, now_ms - observed_at_ms)
+                ),
             },
             "status": status,
             "error": error,
@@ -423,7 +477,10 @@ class OperatorDashboardControl:
             return {
                 "action": action,
                 "requires_confirmation": True,
-                "summary": {"expected_revision": current.payload.revision, "nodes": nodes},
+                "summary": {
+                    "expected_revision": current.payload.revision,
+                    "nodes": nodes,
+                },
                 "execute_payload": {
                     "action": action,
                     "expected_revision": current.payload.revision,
@@ -538,9 +595,7 @@ class OperatorDashboardControl:
                 raise ValueError("quarantine retry owner helper is unavailable")
             kind = self._required_string(command, "source_kind")
             quarantine_id = self._required_string(command, "quarantine_id")
-            self._confirm(
-                command, f"CONFIRM retry_quarantined {kind} {quarantine_id}"
-            )
+            self._confirm(command, f"CONFIRM retry_quarantined {kind} {quarantine_id}")
             run_id = self._retry_quarantine(kind, quarantine_id)
             self._wake_harness()
             return {"status": "completed", "retry_run_id": run_id}
@@ -549,7 +604,10 @@ class OperatorDashboardControl:
                 raise ValueError("action retry owner helper is unavailable")
             action_id = self._required_string(command, "action_id")
             self._confirm(command, f"CONFIRM retry_action {action_id}")
-            return {"status": "completed", "result": dict(self._retry_action(action_id))}
+            return {
+                "status": "completed",
+                "result": dict(self._retry_action(action_id)),
+            }
         raise ValueError("unsupported operator action")
 
     @staticmethod

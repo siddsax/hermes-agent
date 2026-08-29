@@ -4184,6 +4184,97 @@ class DurableRunState:
             ),
         )
 
+    def recent_transcript_runs(
+        self, user_id: str, *, limit: int = 50
+    ) -> tuple[dict[str, object], ...]:
+        """Return bounded, content-redacted transcript claim diagnostics."""
+        if not 1 <= limit <= 50:
+            raise ValueError("transcript run limit must be between 1 and 50")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT logical_run_id, tick_id, claim_request_id, claim_id,
+                       state, memory_version, finalization_id, claim_json,
+                       ack_json, created_at_ms, updated_at_ms
+                FROM transcript_claims WHERE user_id = ?
+                ORDER BY updated_at_ms DESC LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+        result: list[dict[str, object]] = []
+        for row in rows:
+            item = dict(row)
+            claim_json = item.pop("claim_json", None)
+            ack_json = item.pop("ack_json", None)
+            claim = json.loads(str(claim_json)) if claim_json else {}
+            entries = claim.get("entries", []) if isinstance(claim, dict) else []
+            item["claim_metadata"] = {
+                key: claim.get(key)
+                for key in (
+                    "claimed_at_ms",
+                    "lease_expires_at_ms",
+                    "claim_state",
+                    "acknowledged_at_ms",
+                    "window_token_count",
+                    "window_source_duration_ms",
+                    "window_complete",
+                )
+            }
+            item["source_ranges"] = [
+                {
+                    "aggregation_buffer_id": entry.get("aggregation_buffer_id"),
+                    "source_start_ms": entry.get("source_start_ms"),
+                    "source_end_ms": entry.get("source_end_ms"),
+                }
+                for entry in entries[:50]
+                if isinstance(entry, dict)
+            ]
+            item["acknowledgement_recorded"] = ack_json is not None
+            result.append(item)
+        return tuple(result)
+
+    def recent_finalizations(
+        self, user_id: str, *, limit: int = 50
+    ) -> tuple[dict[str, object], ...]:
+        """Return bounded finalization metadata without stored prompt content."""
+        if not 1 <= limit <= 50:
+            raise ValueError("finalization limit must be between 1 and 50")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT finalization_id, logical_run_id, tick_id, phase,
+                       working_memory_outcome, source_ack_id, updated_at_ms
+                FROM run_finalizations WHERE user_id = ?
+                ORDER BY updated_at_ms DESC LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def recent_speaker_mappings(
+        self, user_id: str, *, limit: int = 50
+    ) -> tuple[dict[str, object], ...]:
+        """Return bounded Hermes-retained mapping identities and cursor state."""
+        if not 1 <= limit <= 50:
+            raise ValueError("speaker mapping limit must be between 1 and 50")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_id, cursor, original_logical_run_id, state,
+                       quarantine_id, ack_json, created_at_ms, updated_at_ms
+                FROM speaker_mapping_inputs WHERE user_id = ?
+                ORDER BY cursor DESC LIMIT ?
+                """,
+                (user_id, limit),
+            ).fetchall()
+        return tuple(
+            {
+                **{key: value for key, value in dict(row).items() if key != "ack_json"},
+                "acknowledgement_recorded": row["ack_json"] is not None,
+            }
+            for row in rows
+        )
+
     def _recover_expired_locked(
         self, connection: sqlite3.Connection, *, user_id: str, now_ms: int
     ) -> None:

@@ -185,9 +185,36 @@ class AuthoritativeStateReader:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def working_memory_current(self, user_id: str) -> dict[str, object]:
+        """Return the authoritative current Working Memory projection."""
+        with self._state._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT version, markdown, token_count, last_run_id
+                FROM working_memory_state WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+            unchanged = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM working_memory_unchanged WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0]
+            )
+        current = (
+            {"version": 0, "markdown": "", "token_count": None, "last_run_id": None}
+            if row is None
+            else dict(row)
+        )
+        return {**current, "unchanged_markers": unchanged}
+
     def home_history(self, user_id: str) -> dict[str, object]:
         """Return bounded Home history through the Home owner Interface."""
         return cast(dict[str, object], self._home.history(user_id).to_dict())
+
+    def home_current(self, user_id: str) -> dict[str, object]:
+        """Return current Home state through the Home owner Interface."""
+        return cast(dict[str, object], self._home.current(user_id).to_dict())
 
     def debug_invocations(
         self, user_id: str, *, limit: int = HISTORY_LIMIT
@@ -281,131 +308,6 @@ class AuthoritativeStateReader:
             "speaker": [dict(row) for row in speaker],
             "interaction": [dict(row) for row in interaction],
             "explicit_retries": retries,
-        }
-
-    def operator_details(
-        self, user_id: str, *, limit: int = HISTORY_LIMIT
-    ) -> dict[str, object]:
-        """Return bounded Hermes-owned detail for the local operator surface.
-
-        This is the explicit owner helper for the dashboard.  It deliberately
-        omits message/transcript bodies and never opens backend or mobile state.
-        """
-        bounded = _bounded_limit(limit)
-        with self._state._connect() as connection:
-            transcript_claims = connection.execute(
-                """
-                SELECT logical_run_id, tick_id, claim_request_id, claim_id,
-                       state, memory_version, finalization_id,
-                       claim_json, ack_json, created_at_ms, updated_at_ms
-                FROM transcript_claims WHERE user_id = ?
-                ORDER BY updated_at_ms DESC LIMIT ?
-                """,
-                (user_id, bounded),
-            ).fetchall()
-            communications = connection.execute(
-                """
-                SELECT action_id, logical_run_id, tick_id, effect_ordinal,
-                       action_kind, assistant_message_id, state,
-                       last_error_code, created_at_ms, updated_at_ms
-                FROM communication_actions WHERE user_id = ?
-                ORDER BY updated_at_ms DESC LIMIT ?
-                """,
-                (user_id, bounded),
-            ).fetchall()
-            allowance = connection.execute(
-                """
-                SELECT action_id, state, reserved_at_ms, consumed_at_ms,
-                       released_at_ms
-                FROM communication_allowance_ledger WHERE user_id = ?
-                ORDER BY reserved_at_ms DESC LIMIT ?
-                """,
-                (user_id, bounded),
-            ).fetchall()
-            interactions = connection.execute(
-                """
-                SELECT logical_run_id, tick_id, claim_request_id,
-                       boundary_start_ms, boundary_end_ms, batch_id, state,
-                       memory_version, working_memory_outcome,
-                       created_at_ms, updated_at_ms
-                FROM interaction_claims WHERE user_id = ?
-                ORDER BY updated_at_ms DESC LIMIT ?
-                """,
-                (user_id, bounded),
-            ).fetchall()
-            speaker_cursor = connection.execute(
-                "SELECT * FROM speaker_cursors WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
-            speakers = connection.execute(
-                """
-                SELECT event_id, cursor, original_logical_run_id, state,
-                       quarantine_id, created_at_ms, updated_at_ms
-                FROM speaker_mapping_inputs WHERE user_id = ?
-                ORDER BY cursor DESC LIMIT ?
-                """,
-                (user_id, bounded),
-            ).fetchall()
-            finalizations = connection.execute(
-                """
-                SELECT finalization_id, logical_run_id, tick_id, phase,
-                       working_memory_outcome, source_ack_id, updated_at_ms
-                FROM run_finalizations WHERE user_id = ?
-                ORDER BY updated_at_ms DESC LIMIT ?
-                """,
-                (user_id, bounded),
-            ).fetchall()
-            permission_request = connection.execute(
-                """
-                SELECT topic_key, state, last_asked_at_ms, updated_at_ms
-                FROM durable_topics
-                WHERE user_id = ? AND topic_key = 'enable_notifications'
-                """,
-                (user_id,),
-            ).fetchone()
-        claim_details: list[dict[str, object]] = []
-        for row in transcript_claims:
-            item = dict(row)
-            claim_json = item.pop("claim_json", None)
-            ack_json = item.pop("ack_json", None)
-            claim = json.loads(str(claim_json)) if claim_json else {}
-            ack = json.loads(str(ack_json)) if ack_json else {}
-            entries = claim.get("entries", []) if isinstance(claim, dict) else []
-            safe_ranges = [
-                {
-                    "aggregation_buffer_id": entry.get("aggregation_buffer_id"),
-                    "source_start_ms": entry.get("source_start_ms"),
-                    "source_end_ms": entry.get("source_end_ms"),
-                }
-                for entry in entries[:50]
-                if isinstance(entry, dict)
-            ]
-            item["claim_metadata"] = {
-                key: claim.get(key)
-                for key in (
-                    "claimed_at_ms",
-                    "lease_expires_at_ms",
-                    "claim_state",
-                    "acknowledged_at_ms",
-                    "window_token_count",
-                    "window_source_duration_ms",
-                    "window_complete",
-                )
-            }
-            item["source_ranges"] = safe_ranges
-            item["acknowledgement_recorded"] = bool(ack)
-            claim_details.append(item)
-        return {
-            "transcript_claims": claim_details,
-            "communications": [dict(row) for row in communications],
-            "communication_allowance": [dict(row) for row in allowance],
-            "interaction_claims": [dict(row) for row in interactions],
-            "speaker_cursor": None if speaker_cursor is None else dict(speaker_cursor),
-            "speaker_inputs": [dict(row) for row in speakers],
-            "run_finalizations": [dict(row) for row in finalizations],
-            "last_notification_permission_request": (
-                None if permission_request is None else dict(permission_request)
-            ),
         }
 
     @staticmethod

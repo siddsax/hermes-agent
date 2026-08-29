@@ -597,6 +597,45 @@ def next_half_hour_boundary_ms(now_ms: int, timezone_name: str) -> int:
     raise RuntimeError("could not resolve the next local half-hour boundary")
 
 
+def inspect_interaction_inputs(
+    state: DurableRunState, *, user_id: str, limit: int = 50
+) -> dict[str, object]:
+    """Return bounded safe clock/range/quarantine state for the interaction owner."""
+    if not 1 <= limit <= 50:
+        raise ValueError("interaction inspection limit must be between 1 and 50")
+    with state._connect() as connection:
+        clock = connection.execute(
+            "SELECT * FROM interaction_clock_state WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        claims = connection.execute(
+            """
+            SELECT logical_run_id, tick_id, claim_request_id, boundary_end_ms,
+                   boundary_start_ms, batch_id, state, memory_version,
+                   working_memory_outcome, finalization_id,
+                   created_at_ms, updated_at_ms
+            FROM interaction_claims WHERE user_id = ?
+            ORDER BY updated_at_ms DESC, logical_run_id DESC LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+        quarantines = connection.execute(
+            """
+            SELECT quarantine_id, original_logical_run_id, batch_id,
+                   first_cursor, last_cursor, failure_code,
+                   quarantined_at_ms, sync_state
+            FROM interaction_quarantines WHERE user_id = ?
+            ORDER BY quarantined_at_ms DESC, quarantine_id DESC LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+    return {
+        "clock": None if clock is None else dict(clock),
+        "claims": [dict(row) for row in claims],
+        "quarantines": [dict(row) for row in quarantines],
+    }
+
+
 class InteractionInputPump:
     """Scan fixed boundaries, enqueue a non-empty P1 Tick, and claim after lease."""
 
@@ -1016,38 +1055,9 @@ class InteractionInputPump:
             )
         return tick_id
 
-    def inspect(self, *, user_id: str) -> dict[str, object]:
+    def inspect(self, *, user_id: str, limit: int = 50) -> dict[str, object]:
         """Return safe clock/range/quarantine state for explicit helpers."""
-        with self._state._connect() as connection:
-            clock = connection.execute(
-                "SELECT * FROM interaction_clock_state WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
-            claims = connection.execute(
-                """
-                SELECT logical_run_id, tick_id, claim_request_id, boundary_end_ms,
-                       boundary_start_ms, batch_id, state, memory_version,
-                       finalization_id
-                FROM interaction_claims WHERE user_id = ?
-                ORDER BY created_at_ms, logical_run_id
-                """,
-                (user_id,),
-            ).fetchall()
-            quarantines = connection.execute(
-                """
-                SELECT quarantine_id, original_logical_run_id, batch_id,
-                       first_cursor, last_cursor, failure_code,
-                       quarantined_at_ms, sync_state
-                FROM interaction_quarantines WHERE user_id = ?
-                ORDER BY quarantined_at_ms, quarantine_id
-                """,
-                (user_id,),
-            ).fetchall()
-        return {
-            "clock": None if clock is None else dict(clock),
-            "claims": [dict(row) for row in claims],
-            "quarantines": [dict(row) for row in quarantines],
-        }
+        return inspect_interaction_inputs(self._state, user_id=user_id, limit=limit)
 
     @staticmethod
     def _stored_claim(row: Any) -> StoredInteractionClaim:
