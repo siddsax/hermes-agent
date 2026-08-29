@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Callable
 
@@ -18,7 +22,20 @@ from .input_pump import (
     TenMinuteTranscriptDriver,
     TranscriptInputPump,
 )
-from .maintenance import AuthoritativeReadToolBinding, AuthoritativeStateReader
+from .maintenance import (
+    AuthoritativeReadToolBinding,
+    AuthoritativeStateReader,
+    RetentionResetService,
+)
+from .operator_dashboard import (
+    OperatorDashboard,
+    OperatorDashboardControl,
+    OperatorDashboardConfigurationError,
+    OperatorDashboardReadService,
+    load_operator_dashboard_config,
+)
+from .operator_dashboard_server import create_operator_dashboard_app
+from .run_state import DurableRunState
 from .interactions import (
     BackendInteractionClient,
     BackgroundFinalizerRouter,
@@ -66,6 +83,65 @@ from .transcript_agent import TranscriptAgentFinalizer, build_real_transcript_ru
 from .topics_preferences import TopicPreferenceService, TopicPreferenceToolBinding
 
 
+def _harness_marker(hermes_home: Path) -> Path:
+    return hermes_home / "thine-harness" / "harness-active.pid"
+
+
+def _harness_is_stopped(hermes_home: Path) -> bool:
+    marker = _harness_marker(hermes_home)
+    try:
+        pid = int(marker.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, ValueError):
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+class OperatorDashboardStartupError(RuntimeError):
+    """The loopback dashboard listener did not become ready."""
+
+
+def _start_operator_dashboard_thread(
+    server: uvicorn.Server, *, timeout_seconds: float = 5.0
+) -> threading.Thread:
+    """Start Uvicorn and surface background bind/startup failures synchronously."""
+    finished = threading.Event()
+    failures: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            server.run()
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            finished.set()
+
+    thread = threading.Thread(
+        target=run,
+        name="thine-operator-dashboard",
+        daemon=True,
+    )
+    thread.start()
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if server.started and thread.is_alive():
+            return thread
+        if finished.wait(0.01):
+            break
+    server.should_exit = True
+    if thread.ident is not None:
+        thread.join(timeout=1)
+    error = OperatorDashboardStartupError("operator dashboard listener did not start")
+    if failures:
+        raise error from failures[0]
+    raise error
+
+
 def build_private_service_server(
     config: PrivateServiceConfig,
     *,
@@ -92,6 +168,80 @@ def build_private_service_server(
         timeout_graceful_shutdown=timeout_seconds,
     )
     return uvicorn.Server(uvicorn_config)
+
+
+def build_operator_dashboard_server(
+    dashboard: OperatorDashboard,
+    *,
+    host: str,
+    port: int,
+) -> uvicorn.Server:
+    """Build the separate, non-tunneled loopback operator listener."""
+    app = create_operator_dashboard_app(dashboard)
+    return uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            access_log=False,
+            proxy_headers=False,
+            forwarded_allow_ips="",
+            server_header=False,
+        )
+    )
+
+
+def operator_dashboard_main() -> int:
+    """Run the local operator page against Hermes-owned durable state."""
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+        load_hermes_dotenv(hermes_home=hermes_home)
+        config = load_operator_dashboard_config()
+        if not config.enabled:
+            raise PrivateServiceConfigurationError(
+                "thine_harness.operator_dashboard.enabled is false"
+            )
+        private_config = load_private_service_config()
+        state = DurableRunState(hermes_home / "thine-harness" / "run-state.sqlite3")
+        home = HomeStateProjector(hermes_home / "thine-harness" / "home-state.sqlite3")
+        schedules = OneShotScheduleService(state)
+        topics = TopicPreferenceService(state)
+        actions = ActionDispatcher(state)
+        maintenance = RetentionResetService(state, home=home)
+        dashboard = OperatorDashboard(
+            reads=OperatorDashboardReadService(
+                AuthoritativeStateReader(state, home=home, schedules=schedules),
+                state=state,
+                actions=actions,
+                topics=topics,
+                schedules=schedules,
+                maintenance=maintenance,
+            ),
+            controls=OperatorDashboardControl(
+                user_id=private_config.firebase_uid,
+                home=home,
+                schedules=schedules,
+                maintenance=maintenance,
+                harness_stopped=lambda: _harness_is_stopped(hermes_home),
+            ),
+            user_id=private_config.firebase_uid,
+        )
+        build_operator_dashboard_server(
+            dashboard, host=config.host, port=config.port
+        ).run()
+    except KeyboardInterrupt:
+        return 0
+    except (
+        PrivateServiceConfigurationError,
+        OperatorDashboardConfigurationError,
+        OperatorDashboardStartupError,
+    ) as exc:
+        print(f"Hermes operator dashboard configuration error: {exc}", file=sys.stderr)
+        return 2
+    return 0
 
 
 def build_product_p0_controller(
@@ -143,14 +293,15 @@ def build_product_p0_controller(
     )
     interaction_binding = InteractionBatchToolBinding()
     speaker_binding = SpeakerMappingToolBinding()
+    action_dispatcher = ActionDispatcher(store.run_state)
     communication_binding = CommunicationToolBinding(
-        dispatcher=ActionDispatcher(store.run_state),
+        dispatcher=action_dispatcher,
         backend=communications,
     )
     topic_service = TopicPreferenceService(store.run_state)
     topic_binding = TopicPreferenceToolBinding(service=topic_service)
     notification_binding = StandaloneNotificationToolBinding(
-        dispatcher=ActionDispatcher(store.run_state),
+        dispatcher=action_dispatcher,
         backend=communications,
         preference_lookup=lambda user_id: topic_service.preference_value(
             user_id, "notifications_enabled"
@@ -300,6 +451,70 @@ def build_product_p0_controller(
             wake_coordinator=controller.wake_background,
         )
     )
+    maintenance = RetentionResetService(store.run_state, home=home_projector)
+
+    def retry_quarantine(source_kind: str, quarantine_id: str) -> str:
+        retry_run_id = f"operator-retry:{uuid.uuid4()}"
+        now_ms = time.time_ns() // 1_000_000
+        if source_kind == "transcript":
+            transcript_input.enqueue_explicit_retry(
+                user_id=private_config.firebase_uid,
+                quarantine_id=quarantine_id,
+                retry_run_id=retry_run_id,
+                created_at_ms=now_ms,
+            )
+        elif source_kind == "interaction":
+            interaction_input.enqueue_explicit_retry(
+                user_id=private_config.firebase_uid,
+                quarantine_id=quarantine_id,
+                retry_run_id=retry_run_id,
+                created_at_ms=now_ms,
+            )
+        elif source_kind == "speaker":
+            retry_run_id = speaker_input.enqueue_explicit_retry(
+                user_id=private_config.firebase_uid,
+                quarantine_id=quarantine_id,
+                coordinator=controller.coordinator,
+            )
+        else:
+            raise ValueError("source_kind must be transcript, interaction, or speaker")
+        return retry_run_id
+
+    def retry_action(action_id: str) -> dict[str, object]:
+        record = action_dispatcher.record(action_id)
+        reconciled = (
+            communication_binding.reconcile_one(private_config.firebase_uid, action_id)
+            if record.action_kind == "background_message"
+            else notification_binding.reconcile_one(
+                private_config.firebase_uid, action_id
+            )
+        )
+        return {"action_id": reconciled.action_id, "state": reconciled.state}
+
+    controller.attach_operator_dashboard(
+        OperatorDashboard(
+            reads=OperatorDashboardReadService(
+                authoritative_reader,
+                state=store.run_state,
+                actions=action_dispatcher,
+                topics=topic_service,
+                schedules=schedules,
+                maintenance=maintenance,
+                run_diagnostics=controller.coordinator.diagnostics,
+                live_run=controller.coordinator.active_snapshot,
+            ),
+            controls=OperatorDashboardControl(
+                user_id=private_config.firebase_uid,
+                home=home_projector,
+                schedules=schedules,
+                maintenance=maintenance,
+                retry_quarantine=retry_quarantine,
+                retry_action=retry_action,
+                wake_harness=controller.wake_background,
+            ),
+            user_id=private_config.firebase_uid,
+        )
+    )
     return controller
 
 
@@ -326,17 +541,54 @@ def main() -> int:
             database_path=get_hermes_home() / "thine-harness" / "run-state.sqlite3",
             home_state=home_state,
         )
+        marker = _harness_marker(get_hermes_home())
+        operator_server: uvicorn.Server | None = None
+        operator_thread: threading.Thread | None = None
         try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(str(os.getpid()), encoding="utf-8")
+            operator_config = load_operator_dashboard_config()
+            if operator_config.enabled:
+                dashboard = controller.operator_dashboard
+                if not isinstance(dashboard, OperatorDashboard):
+                    raise OperatorDashboardStartupError(
+                        "product controller did not attach operator dashboard"
+                    )
+                operator_server = build_operator_dashboard_server(
+                    dashboard,
+                    host=operator_config.host,
+                    port=operator_config.port,
+                )
+                operator_thread = _start_operator_dashboard_thread(operator_server)
             build_private_service_server(
                 config,
                 p0_control=controller,
                 home_state=home_state,
             ).run()
         finally:
-            controller.close()
+            try:
+                if operator_server is not None:
+                    operator_server.should_exit = True
+                if operator_thread is not None and operator_thread.ident is not None:
+                    operator_thread.join(timeout=5)
+            finally:
+                try:
+                    controller.close()
+                finally:
+                    try:
+                        if marker.read_text(encoding="utf-8").strip() == str(
+                            os.getpid()
+                        ):
+                            marker.unlink()
+                    except FileNotFoundError:
+                        pass
     except KeyboardInterrupt:
         return 0
-    except PrivateServiceConfigurationError as exc:
+    except (
+        PrivateServiceConfigurationError,
+        OperatorDashboardConfigurationError,
+        OperatorDashboardStartupError,
+    ) as exc:
         print(f"Hermes private service configuration error: {exc}", file=sys.stderr)
         return 2
     return 0
@@ -346,4 +598,10 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["build_private_service_server", "build_product_p0_controller", "main"]
+__all__ = [
+    "build_operator_dashboard_server",
+    "build_private_service_server",
+    "build_product_p0_controller",
+    "main",
+    "operator_dashboard_main",
+]

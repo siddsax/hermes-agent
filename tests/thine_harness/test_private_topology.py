@@ -315,11 +315,23 @@ def _network_health_request(
         connection.close()
 
 
+def _network_operator_request(port: int, *, forwarded: bool = False) -> tuple[int, str]:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=0.5)
+    headers = {"X-Forwarded-For": "127.0.0.1"} if forwarded else {}
+    try:
+        connection.request("GET", "/api/snapshot", headers=headers)
+        response = connection.getresponse()
+        return response.status, response.read().decode("utf-8")
+    finally:
+        connection.close()
+
+
 @pytest.mark.macos_only
 def test_private_server_module_serves_authenticated_loopback_requests(
     tmp_path: Path,
 ) -> None:
     port = _unused_loopback_port()
+    dashboard_port = _unused_loopback_port()
     hermes_home = tmp_path / "daily-driver-hermes"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(
@@ -334,6 +346,10 @@ thine_harness:
     credential:
       env: HERMES_CONTROL_TOKEN
       file: ""
+  operator_dashboard:
+    enabled: true
+    host: 127.0.0.1
+    port: {dashboard_port}
 """,
         encoding="utf-8",
     )
@@ -377,6 +393,30 @@ thine_harness:
             assert '"status":"ready"' in body
             break
 
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                dashboard_status, dashboard_body = _network_operator_request(
+                    dashboard_port
+                )
+            except (OSError, http.client.HTTPException):
+                if time.monotonic() >= deadline:
+                    pytest.fail(
+                        "operator dashboard did not become ready within 10 seconds"
+                    )
+                time.sleep(0.05)
+                continue
+            assert dashboard_status == 200
+            assert '"binding":"mac_loopback_only"' in dashboard_body
+            assert '"current_run"' in dashboard_body
+            break
+
+        proxy_status, proxy_body = _network_operator_request(
+            dashboard_port, forwarded=True
+        )
+        assert proxy_status == 403
+        assert '"error":"proxied_operator_access_forbidden"' in proxy_body
+
         rejected_status, rejected_body = _network_health_request(
             port,
             firebase_uid="another-user",
@@ -388,8 +428,115 @@ thine_harness:
         output, _ = process.communicate(timeout=10)
         assert process.returncode == 0
         assert "Traceback" not in output
+        assert not (hermes_home / "thine-harness" / "harness-active.pid").exists()
+        for stopped_port in (port, dashboard_port):
+            with pytest.raises(OSError):
+                _network_operator_request(stopped_port)
     finally:
         if process.poll() is None:
             process.kill()
             trailing_output, _ = process.communicate(timeout=5)
             output += trailing_output
+
+
+@pytest.mark.macos_only
+def test_invalid_operator_config_cleans_controller_and_owned_marker(
+    tmp_path: Path,
+) -> None:
+    hermes_home = tmp_path / "invalid-operator-hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        """\
+thine_harness:
+  private_service:
+    enabled: true
+    host: 127.0.0.1
+    port: 8789
+    firebase_uid: firebase-e2e-user
+    credential:
+      env: HERMES_CONTROL_TOKEN
+      file: ""
+  operator_dashboard:
+    enabled: true
+    host: 0.0.0.0
+    port: 8792
+""",
+        encoding="utf-8",
+    )
+    (hermes_home / ".env").write_text(
+        "HERMES_CONTROL_TOKEN=private-e2e-token\n"
+        "BACKEND_PRIVATE_TOKEN=backend-e2e-token\n",
+        encoding="utf-8",
+    )
+    environment = dict(os.environ)
+    environment.update(HERMES_HOME=str(hermes_home), PYTHONUNBUFFERED="1")
+    environment.pop("HERMES_CONTROL_TOKEN", None)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "thine_harness.private_server"],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "operator dashboard host must be loopback-only" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not (hermes_home / "thine-harness" / "harness-active.pid").exists()
+
+
+@pytest.mark.macos_only
+def test_operator_startup_failure_cleans_controller_and_owned_marker(
+    tmp_path: Path,
+) -> None:
+    private_port = _unused_loopback_port()
+    hermes_home = tmp_path / "occupied-operator-hermes"
+    hermes_home.mkdir()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied_listener:
+        occupied_listener.bind(("127.0.0.1", 0))
+        occupied_listener.listen()
+        dashboard_port = int(occupied_listener.getsockname()[1])
+        (hermes_home / "config.yaml").write_text(
+            f"""\
+thine_harness:
+  private_service:
+    enabled: true
+    host: 127.0.0.1
+    port: {private_port}
+    firebase_uid: firebase-e2e-user
+    credential:
+      env: HERMES_CONTROL_TOKEN
+      file: ""
+  operator_dashboard:
+    enabled: true
+    host: 127.0.0.1
+    port: {dashboard_port}
+""",
+            encoding="utf-8",
+        )
+        (hermes_home / ".env").write_text(
+            "HERMES_CONTROL_TOKEN=private-e2e-token\n"
+            "BACKEND_PRIVATE_TOKEN=backend-e2e-token\n",
+            encoding="utf-8",
+        )
+        environment = dict(os.environ)
+        environment.update(HERMES_HOME=str(hermes_home), PYTHONUNBUFFERED="1")
+        environment.pop("HERMES_CONTROL_TOKEN", None)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "thine_harness.private_server"],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    assert result.returncode == 2
+    assert "operator dashboard listener did not start" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not (hermes_home / "thine-harness" / "harness-active.pid").exists()

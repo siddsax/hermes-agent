@@ -185,6 +185,37 @@ class AuthoritativeStateReader:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def working_memory_current(self, user_id: str) -> dict[str, object]:
+        """Return the authoritative current Working Memory projection."""
+        with self._state._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT version, markdown, token_count, last_run_id
+                FROM working_memory_state WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+            unchanged = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM working_memory_unchanged WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()[0]
+            )
+        current = (
+            {"version": 0, "markdown": "", "token_count": None, "last_run_id": None}
+            if row is None
+            else dict(row)
+        )
+        return {**current, "unchanged_markers": unchanged}
+
+    def home_history(self, user_id: str) -> dict[str, object]:
+        """Return bounded Home history through the Home owner Interface."""
+        return cast(dict[str, object], self._home.history(user_id).to_dict())
+
+    def home_current(self, user_id: str) -> dict[str, object]:
+        """Return current Home state through the Home owner Interface."""
+        return cast(dict[str, object], self._home.current(user_id).to_dict())
+
     def debug_invocations(
         self, user_id: str, *, limit: int = HISTORY_LIMIT
     ) -> list[dict[str, object]]:

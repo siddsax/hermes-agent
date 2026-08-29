@@ -750,6 +750,40 @@ class ActionDispatcher:
             else NotificationPermission.from_json(str(row["permission_json"]))
         )
 
+    def operator_snapshot(self, user_id: str, *, limit: int = 50) -> dict[str, object]:
+        """Return bounded, content-redacted communication owner state."""
+        actions = self.recent_actions(user_id, limit=limit)
+        allowance = self.allowance_snapshot(user_id)
+        permission = self.latest_permission(user_id)
+        return {
+            "actions": [
+                {
+                    "action_id": item.action_id,
+                    "logical_run_id": item.logical_run_id,
+                    "tick_id": item.tick_id,
+                    "effect_ordinal": item.effect_ordinal,
+                    "action_kind": item.action_kind,
+                    "assistant_message_id": item.assistant_message_id,
+                    "state": item.state,
+                    "last_error_code": item.last_error_code,
+                    "created_at_ms": item.created_at_ms,
+                    "updated_at_ms": item.updated_at_ms,
+                }
+                for item in actions
+            ],
+            "allowance": allowance.to_dict(),
+            "permission": None if permission is None else permission.to_dict(),
+            "observed_at_ms": max(
+                [allowance.generated_at_ms]
+                + [item.updated_at_ms for item in actions]
+                + (
+                    []
+                    if permission is None
+                    else [int(permission.payload.observed_at_ms)]
+                )
+            ),
+        }
+
     @staticmethod
     def _record_from_row(row: Any) -> CommunicationActionRecord:
         return CommunicationActionRecord(
