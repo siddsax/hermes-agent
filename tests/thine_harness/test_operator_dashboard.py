@@ -47,21 +47,23 @@ def _dashboard(tmp_path: Path, *, harness_stopped: bool = False) -> OperatorDash
 
 
 def test_config_accepts_only_a_loopback_literal() -> None:
-    assert load_operator_dashboard_config({}).enabled is False
+    defaults = load_operator_dashboard_config({})
+    assert defaults.enabled is False
+    assert defaults.port == 8792
     config = load_operator_dashboard_config(
         {
             "thine_harness": {
                 "operator_dashboard": {
                     "enabled": True,
                     "host": "127.0.0.1",
-                    "port": 8791,
+                    "port": 8792,
                 }
             }
         }
     )
     assert config.enabled is True
     assert config.host == "127.0.0.1"
-    assert config.port == 8791
+    assert config.port == 8792
 
     with pytest.raises(OperatorDashboardConfigurationError):
         load_operator_dashboard_config(
@@ -70,7 +72,7 @@ def test_config_accepts_only_a_loopback_literal() -> None:
                     "operator_dashboard": {
                         "enabled": True,
                         "host": "0.0.0.0",
-                        "port": 8791,
+                        "port": 8792,
                     }
                 }
             }

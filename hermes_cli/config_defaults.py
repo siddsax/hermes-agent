@@ -3701,7 +3701,7 @@ DEFAULT_CONFIG = {
         "operator_dashboard": {
             "enabled": False,
             "host": "127.0.0.1",
-            "port": 8791,
+            "port": 8792,
         },
     },
 

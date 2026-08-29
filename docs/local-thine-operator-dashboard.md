@@ -12,7 +12,7 @@ thine_harness:
   operator_dashboard:
     enabled: true
     host: 127.0.0.1
-    port: 8791
+    port: 8792
 ```
 
 The normal private-service launcher starts this second loopback listener in the
@@ -24,7 +24,7 @@ maintenance while that service is stopped, it can also be started directly:
 hermes-thine-operator
 ```
 
-Then open `http://127.0.0.1:8791`. The listener accepts only a literal loopback
+Then open `http://127.0.0.1:8792`. The listener accepts only a literal loopback
 address and rejects forwarded/proxy headers. Control requests also require a
 process-local token embedded in the same-origin page.
 

@@ -76,7 +76,7 @@ def load_operator_dashboard_config(
         raise OperatorDashboardConfigurationError(
             "operator dashboard host must be loopback-only"
         )
-    port = dashboard_config.get("port", 8791)
+    port = dashboard_config.get("port", 8792)
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise OperatorDashboardConfigurationError(
             "operator dashboard port must be between 1 and 65535"
